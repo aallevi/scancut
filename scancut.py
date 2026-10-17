@@ -93,6 +93,16 @@ def background(lab):
 NSEG = 8
 
 
+def nanmed(X):
+    # come np.nanmedian(X, -1), stessi numeri, ma senza la versione lenta per pochi valori
+    S = np.sort(X, -1)                     # i NaN finiscono in fondo
+    n = (~np.isnan(X)).sum(-1)
+    lo = np.take_along_axis(S, np.maximum((n - 1) // 2, 0)[..., None], -1)[..., 0]
+    hi = np.take_along_axis(S, np.maximum(n // 2, 0)[..., None], -1)[..., 0]
+    out = np.where(n % 2 == 1, lo, (lo + hi) / X.dtype.type(2))
+    return np.where(n > 0, out, X.dtype.type(np.nan))
+
+
 def profiles(M, G, A, B, Lw, lp, axis):
     # per ogni riga (axis=1) o colonna (axis=0), divisa in NSEG tratti:
     # quanto e' "fessura" e che colore ha la carta in ogni tratto
@@ -108,8 +118,8 @@ def profiles(M, G, A, B, Lw, lp, axis):
     clean = Ms & (seg(Lw) > lp - 25)          # niente matita nel colore della carta
     cnt = Ms.sum(2)
     gap = np.where(cnt > 0, (seg(G) * Ms).sum(2) / np.maximum(cnt, 1), np.nan)
-    ca = np.nanmedian(np.where(clean, seg(A), np.nan), 2)
-    cb = np.nanmedian(np.where(clean, seg(B), np.nan), 2)
+    ca = nanmed(np.where(clean, seg(A), np.nan))
+    cb = nanmed(np.where(clean, seg(B), np.nan))
     ext = M.sum(1)
     return ext, gap, ca, cb
 
@@ -140,7 +150,7 @@ def best_cut(M, G, A, B, Lw, lp):
             # colore sopra e sotto ogni riga, tratto per tratto
             above = np.full((n, NSEG, 2), np.nan); below = np.full((n, NSEG, 2), np.nan)
             ab = np.stack([ca, cb], 2)
-            wv = np.nanmedian(win(ab, k1 - k0, axis=0), -1)        # finestre di righe
+            wv = nanmed(win(ab, k1 - k0, axis=0))        # finestre di righe
             idx = np.arange(n)
             ia, ib = idx - k1, idx + k0
             okr = (ia >= 0) & (ib + (k1 - k0) <= n)
@@ -148,7 +158,7 @@ def best_cut(M, G, A, B, Lw, lp):
             jump = np.linalg.norm(above - below, axis=2)            # (n, NSEG)
             gp = np.fmax(np.fmax(gap, np.roll(gap, 1, 0)), np.roll(gap, -1, 0))
             # una fessura e' una riga piu' "fondo" della carta ai due lati
-            gw = np.nanmedian(win(gap, k1 - k0, axis=0), -1)
+            gw = nanmed(win(gap, k1 - k0, axis=0))
             ga = np.full_like(gap, np.nan); gb = np.full_like(gap, np.nan)
             ga[okr] = gw[ia[okr]]; gb[okr] = gw[ib[okr]]
             gp = gp - np.fmax(ga, gb)
@@ -160,7 +170,7 @@ def best_cut(M, G, A, B, Lw, lp):
             gfrac = (ghit & valid).sum(1) / np.maximum(nv, 1)
             strength = np.nanmean(np.fmax(np.nan_to_num(gp / 0.35), np.nan_to_num(jump / 7)), 1)
             # la linea deve attraversare tutto il foglio
-            loc = np.nanmedian(win(np.pad(ext.astype(float), 25, constant_values=np.nan), 51), 1)
+            loc = nanmed(win(np.pad(ext.astype(float), 25, constant_values=np.nan), 51))
             span = ext >= 0.85 * loc
             lo, hi = rows[0] + m, rows[-1] - m
             for y in np.where((frac >= 0.75) & span)[0]:
@@ -170,8 +180,14 @@ def best_cut(M, G, A, B, Lw, lp):
             # La riga di carta si stringe a meno di un terzo rispetto ai fogli dei due lati
             k = int(10 * WORK)
             e = ext.astype(float)
-            for y in range(max(lo, k), min(hi, n - k) + 1):
-                side_a, side_b = np.median(e[y - k:y - 2]), np.median(e[y + 3:y + k])
+            y0, y1 = max(lo, k), min(hi, n - k)
+            if y1 < y0:
+                continue
+            # mediane dei due lati per tutte le righe insieme: e[y-k:y-2] e e[y+3:y+k]
+            med_a = np.median(win(e[y0 - k:y1 - 2], k - 2), -1)
+            med_b = np.median(win(e[y0 + 3:y1 + k], k - 3), -1)
+            for y in range(y0, y1 + 1):
+                side_a, side_b = med_a[y - y0], med_b[y - y0]
                 if 0 < e[y] < 0.3 * min(side_a, side_b) and e[y] <= e[y - 1] and e[y] <= e[y + 1]:
                     found.append((2.0 - e[y] / min(side_a, side_b), th, axis, y, (R, axis, y + 0.5), 1.0))
     # una sola linea per ogni posto (le altre inclinazioni e le righe vicine sono doppioni)
@@ -251,10 +267,24 @@ def split(M, G, A, B, Lw, lp, min_area, depth=0):
 
 # ---------------------------------------------------------------- un foglio
 
+def median_int(v):
+    # come np.median(v) per valori interi 0..255 (il Lab viene da immagini a 8 bit):
+    # contando quanti ce ne sono per valore, senza ordinare milioni di pixel
+    vi = v.astype(np.intp)
+    if v.size == 0 or vi.min() < 0 or vi.max() > 255 or not np.array_equal(vi, v):
+        return np.median(v)
+    cs = np.cumsum(np.bincount(vi, minlength=256))
+    n = cs[-1]
+    lo = v.dtype.type(np.searchsorted(cs, (n - 1) // 2, side='right'))
+    hi = v.dtype.type(np.searchsorted(cs, n // 2, side='right'))
+    return lo if n % 2 else (lo + hi) / v.dtype.type(2)
+
+
 def paper_color(lab, M):
     px = lab[M]
-    L = np.median(px[:, 0])
-    return np.median(px[px[:, 0] > L - 25], axis=0)
+    L = median_int(px[:, 0])
+    px = px[px[:, 0] > L - 25]
+    return np.array([median_int(px[:, c]) for c in range(3)], lab.dtype)
 
 
 def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
@@ -307,7 +337,6 @@ def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
         m &= ~(~cv2.erode(piece.astype(np.uint8), disk(5 * ppm)).astype(bool)
                & (d_oth + 6 < d_own) & (lab[..., 0] > own[0] - 25))
     # contro il bordo della scansione resta solo cio' che ha il colore di questo foglio
-    Dp = np.median(d[piece & ~bg]) if (piece & ~bg).any() else T * 3
     m &= ~(scanedge & (d_own > max(12, 0.5 * Dp)))
     # ombre: l'orlo del foglio fa ombra sul fondo. Sono pixel piu' scuri del fondo ma
     # della sua stessa tinta, nell'ultimo millimetro e mezzo, collegati al fuori.
@@ -508,9 +537,10 @@ def cut_scan(path):
             if P.sum() >= min_area:
                 masks.append(P)
         bgc = bg[y0:y1, x0:x1]
-        cols = [paper_color(lab_c, cv2.erode(P.astype(np.uint8), disk(6 * ppm)).astype(bool) & ~bgc)
-                if (cv2.erode(P.astype(np.uint8), disk(6 * ppm)).astype(bool) & ~bgc).sum() > 1000
-                else paper_color(lab_c, P & ~bgc) for P in masks]
+        cols = []
+        for P in masks if len(masks) > 1 else []:   # servono solo per confrontare i fogli fra loro
+            core = cv2.erode(P.astype(np.uint8), disk(6 * ppm)).astype(bool) & ~bgc
+            cols.append(paper_color(lab_c, core if core.sum() > 1000 else P & ~bgc))
         for k, P in enumerate(masks):
             others = [col] + [c for j, c in enumerate(cols) if j != k]
             nflags = len(flags)
