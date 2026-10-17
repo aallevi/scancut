@@ -1,0 +1,12 @@
+# stato del giro, non codice
+done.tsv
+done.tsv.*
+log.txt
+errors.txt
+lock
+.mask-*.png
+*.bak-*
+__pycache__/
+.DS_Store
+# si ricompila: swiftc -O vision_mask.swift -o vision_mask
+vision_mask
