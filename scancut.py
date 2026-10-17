@@ -25,7 +25,7 @@ LOG = os.path.join(ROOT, '.scancut', 'log.txt')
 EXT = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
 WORK = 4.0            # px/mm della copia ridotta su cui si cercano i tagli
 STABLE_S = 4          # il file deve stare fermo tanto prima di toccarlo
-MAX_RUN_S = 20 * 60
+MAX_RUN_S = 3 * 3600   # niente giri a orario: un lotto grosso va finito nello stesso giro
 
 
 def log(msg):
@@ -703,8 +703,14 @@ def read_done():
         for line in open(DONE):
             parts = line.rstrip('\n').split('\t')
             if len(parts) >= 4:
-                done[parts[0]] = parts[3]
+                done.setdefault(parts[0], set()).add((parts[1], parts[2]))
     return done
+
+
+def is_done(done, rel, p):
+    # stesso percorso ma file diverso (un nome riusato dopo aver svuotato originals/): da rifare
+    st = os.stat(p)
+    return (str(st.st_size), str(int(st.st_mtime))) in done.get(rel, ())
 
 
 def mark_done(rel, result):
@@ -787,7 +793,7 @@ def uncut(done):
         for f in sorted(os.listdir(bd)):
             p = os.path.join(bd, f)
             rel = os.path.join(b, f)
-            if f.startswith('.') or f.endswith('.part') or not os.path.isfile(p) or rel in done:
+            if f.startswith('.') or f.endswith('.part') or not os.path.isfile(p) or is_done(done, rel, p):
                 continue
             if re.search(r'[\t\n\r]', rel) or time.time() - os.path.getmtime(p) < STABLE_S:
                 continue

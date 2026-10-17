@@ -61,6 +61,9 @@ numbering each time it opens, so a taken name gets the next free number.
 - Python: `/opt/miniconda3/bin/python3` (OpenCV, NumPy, Pillow).
 - Redo a scan: delete its line in `done.tsv` (move old cutouts aside first, or
   identical ones are skipped and changed ones get ` (2)`).
+- The agent starts only when the inbox changes (WatchPaths; no timer, no run at
+  login) and runs as a background process (efficiency cores, low-priority I/O) to
+  keep the Mac cool. Leftover uncut originals wait for the next scan, or a kickstart.
 - Reload after editing the plist:
   `launchctl unload ~/Library/LaunchAgents/com.antonioallevi.scancut.plist && launchctl load ...`
   (the script itself is re-read on every run, no reload needed).

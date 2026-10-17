@@ -10,8 +10,9 @@
     <string>~/Scans/.scancut/scancut.py</string>
   </array>
   <key>WatchPaths</key><array><string>~/Scans/inbox</string></array>
-  <key>StartInterval</key><integer>600</integer>
-  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Background</string>
+  <key>LowPriorityIO</key><true/>
+  <key>LowPriorityBackgroundIO</key><true/>
   <key>Nice</key><integer>5</integer>
   <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>~/Scans/.scancut/errors.txt</string>
