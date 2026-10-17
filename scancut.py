@@ -617,6 +617,14 @@ def unique(path):
     return path
 
 
+def same_png(path, rgba):
+    # c'e' gia' un ritaglio identico con questo nome? (un giro rifatto non fa doppioni)
+    try:
+        return os.path.exists(path) and np.array_equal(np.asarray(Image.open(path)), rgba)
+    except Exception:
+        return False
+
+
 def notify(msg):
     try:
         msg = msg.replace('\\', '').replace('"', "'")
@@ -741,7 +749,10 @@ def process(keep):
     od = os.path.join(CUT, batch); os.makedirs(od, exist_ok=True)
     for j, (_, _, rgba, ang, rect) in enumerate(sheets):
         suffix = '' if len(sheets) == 1 else ' ' + 'abcdefghijklmnopqrstuvwxyz'[j % 26]
-        out = unique(os.path.join(od, stem + suffix + '.png'))
+        out = os.path.join(od, stem + suffix + '.png')
+        if same_png(out, rgba):
+            log(f'  {os.path.relpath(out, ROOT)}  already there, identical'); continue
+        out = unique(out)
         tmp = out + '.part'
         kw = {'dpi': (dpi, dpi)}
         if icc: kw['icc_profile'] = icc
