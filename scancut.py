@@ -588,9 +588,10 @@ def clean_stem(stem):
 
 
 def split_name(stem):
-    # "sketchbook 3", "sketchbook_3", "sketchbook-3", "sketchbook 3 (2)", "sketchbook.3" -> ("sketchbook", 3)
+    # "sketchbook 3", "sketchbook_3", "sketchbook-3", "sketchbook3", "sketchbook 3 (2)" -> ("sketchbook", 3);
+    # dopo un punto il numero non conta: "sketchbook 04.05.14" e' un lotto intero
     stem = re.sub(r'\s*\(\d+\)$', '', stem)
-    m = re.match(r'^(.*?)[ ._-]*(\d+)$', stem)
+    m = re.match(r'^(.*\S)[ _-]+(\d+)$', stem) or re.match(r'^(.*[^\d\s._-])(\d+)$', stem)
     if m and m.group(1).strip(' ._-'):
         return m.group(1).strip(' ._-'), int(m.group(2))
     return (stem.strip(' ._-') or 'unsorted'), None
@@ -699,7 +700,10 @@ def read_done():
 
 
 def mark_done(rel, result):
-    st = os.stat(os.path.join(ORIG, rel))
+    try:
+        st = os.stat(os.path.join(ORIG, rel))
+    except OSError:
+        return                            # spostato via durante il ritaglio
     with open(DONE, 'a') as f:
         f.write(f'{rel}\t{st.st_size}\t{int(st.st_mtime)}\t{result}\n')
 
@@ -731,6 +735,9 @@ def process(keep):
     if not sheets:
         to_failed(keep, 'no sheet found, not even by the AI')
         return batch, 0
+    if not os.path.exists(keep):
+        log(f'{name}: moved away from originals while being cut, cutouts not saved')
+        return batch, -1
     od = os.path.join(CUT, batch); os.makedirs(od, exist_ok=True)
     for j, (_, _, rgba, ang, rect) in enumerate(sheets):
         suffix = '' if len(sheets) == 1 else ' ' + 'abcdefghijklmnopqrstuvwxyz'[j % 26]
@@ -809,7 +816,11 @@ def main():
             seen.pop(p, None)
             progressed = True
         for keep, rel in uncut(read_done()):
-            batch, n = process(keep)
+            try:
+                batch, n = process(keep)
+            except Exception:
+                log(f'ERROR {rel}\n' + traceback.format_exc())
+                batch, n = os.path.dirname(rel), -1
             mark_done(rel, 'ok' if n > 0 else 'failed')
             b = summary.setdefault(batch, [0, 0, 0])
             b[0] += 1
