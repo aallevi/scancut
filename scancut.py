@@ -257,8 +257,10 @@ def paper_color(lab, M):
     return np.median(px[px[:, 0] > L - 25], axis=0)
 
 
-def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge):
-    # piece: maschera piena del foglio (crop). Buchi, rifilo, raddrizzo.
+def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
+    # piece: maschera piena del foglio (crop). Buchi, bordo con la bacchetta, raddrizzo.
+    # dw, Tw: distanza dal fondo quasi senza sfocatura (le fibre restano) e tolleranza.
+    # forbid: gli altri fogli, che la bacchetta non deve prendere.
     bg = d < T
     Dp = np.median(d[piece & ~bg]) if (piece & ~bg).any() else T * 3
     # buchi del raccoglitore: chiazze tonde di fondo, di misura giusta, vicino a un bordo
@@ -279,42 +281,45 @@ def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge):
                 continue
             holes[y:y+h, x:x+w] |= reg
     holes = cv2.dilate(holes.astype(np.uint8), disk(0.3 * ppm)) > 0
-    # rifilo: lungo i bordi via cio' che somiglia piu' al fondo o al foglio accanto
-    # che a questo foglio (fessure, cunei bianchi, lembi dell'altro colore).
-    # La matita, piu' scura di ogni carta, resta.
+    col_bg = others[0]
     dist = edge_dist(piece)
-    band = dist < 5 * ppm
     core = piece & (dist > 6 * ppm) & ~bg
     own = paper_color(lab, core if core.sum() > 1000 else piece & ~bg)
     if np.linalg.norm((own - others[0]) * W_LAB) < 1.6 * T:
         flags.append('same')              # carta quasi del colore del fondo: bordo incerto
+    # bacchetta magica, contigua: via solo il fondo collegato al fuori, come in Photoshop.
+    # Le fibre e gli strappi non hanno il colore del fondo e restano.
+    zone = cv2.dilate(piece.astype(np.uint8), disk(2.5 * ppm)).astype(bool) & ~forbid
+    zone[[0, -1], :] = False; zone[:, [0, -1]] = False
+    _, L = cv2.connectedComponents(((dw < Tw) | ~zone).astype(np.uint8), connectivity=4)
+    m = zone & ~np.isin(L, np.unique(L[~zone]))
+    # lembi del foglio accanto (di un altro colore) rimasti di qua dal taglio
     d_own = np.linalg.norm((lab - own) * W_LAB, axis=2)
-    # i fogli accanto dello stesso colore non contano: li separa solo il taglio
-    others = [o for o in others if np.linalg.norm((o - own) * W_LAB) > 12]
+    others = [o for o in others[1:] if np.linalg.norm((o - own) * W_LAB) > 12]
     if others:
         d_oth = np.min([np.linalg.norm((lab - o) * W_LAB, axis=2) for o in others], axis=0)
-        rim = band & (d_oth + 6 < d_own) & (lab[..., 0] > own[0] - 25)
-    else:
-        rim = np.zeros_like(piece)
-    rim |= (dist < 1.5 * ppm) & (d < 0.55 * Dp)
+        m &= ~(~cv2.erode(piece.astype(np.uint8), disk(5 * ppm)).astype(bool)
+               & (d_oth + 6 < d_own) & (lab[..., 0] > own[0] - 25))
     # contro il bordo della scansione resta solo cio' che ha il colore di questo foglio
-    rim |= scanedge & (d_own > max(12, 0.5 * Dp))
-    # solo cio' che e' attaccato al fuori e largo: le righe sottili che toccano il bordo restano
-    rim = cv2.morphologyEx((rim | ~piece).astype(np.uint8), cv2.MORPH_OPEN, disk(0.45 * ppm)) > 0
-    m = piece & ~rim
-    m = cv2.morphologyEx(m.astype(np.uint8), cv2.MORPH_OPEN, disk(0.6 * ppm))
-    n, lab_m, st, _ = cv2.connectedComponentsWithStats(m, 8)
-    if n > 2:
-        m = (lab_m == 1 + st[1:, 4].argmax()).astype(np.uint8)
-    # riempi i buchini interni (matita chiara, granelli), non i buchi veri
-    filled = m.copy()
-    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-    cv2.drawContours(filled, cnts, -1, 1, cv2.FILLED)
-    m = cv2.erode(filled, disk(0.35 * ppm)).astype(bool)
+    Dp = np.median(d[piece & ~bg]) if (piece & ~bg).any() else T * 3
+    m &= ~(scanedge & (d_own > max(12, 0.5 * Dp)))
+    # ombre: l'orlo del foglio fa ombra sul fondo. Sono pixel piu' scuri del fondo ma
+    # della sua stessa tinta, nell'ultimo millimetro e mezzo, collegati al fuori.
+    # Penna e carta colorata hanno un'altra tinta, la carta bianca e' piu' chiara: restano
+    shadow = ((lab[..., 0] < col_bg[0] - 6)
+              & (np.hypot(lab[..., 1] - col_bg[1], lab[..., 2] - col_bg[2]) < 6)
+              & (cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 3) < 1.5 * ppm))
+    _, L = cv2.connectedComponents((shadow | ~m).astype(np.uint8), connectivity=4)
+    m &= ~np.isin(L, np.unique(L[~m]))
+    # come la seconda bacchetta: resta il foglio, le isolette sparse se ne vanno
+    n, lab_m, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), connectivity=8)
+    if n < 2:
+        return None
+    m = lab_m == 1 + st[1:, 4].argmax()
     if m.sum() < 150 * ppm * ppm:
         return None
     holes = cv2.dilate(holes.astype(np.uint8), disk(0.35 * ppm)).astype(bool) & m
-    return cutout(rgb, m, holes, ppm)
+    return cutout(rgb, m, holes, ppm, exact=True)
 
 
 def straight_side(prof, sign, ppm):
@@ -348,11 +353,11 @@ def soft(M, ppm):
     return np.clip((g - 0.5) * k + 0.5, 0, 1)
 
 
-def cutout(rgb, m, holes, ppm):
+def cutout(rgb, m, holes, ppm, exact=False):
     # m: sagoma piena del foglio, holes: buchi da lasciare trasparenti.
     # I pixel sono sempre quelli della scansione: cambia solo la trasparenza.
-    # Raddrizza, poi i lati dritti diventano rette esatte (con bordo sfumato al
-    # sottopixel) e quelli strappati o storti restano come sono, lisciati.
+    # Raddrizza; poi con exact il bordo resta pixel per pixel quello della bacchetta,
+    # altrimenti (Apple Vision) i lati dritti diventano rette e gli altri si lisciano.
     cnt = max(cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
               key=cv2.contourArea)
     (cx, cy), _, ang = cv2.minAreaRect(cnt)
@@ -381,6 +386,9 @@ def cutout(rgb, m, holes, ppm):
             else:
                 cv2.drawContours(tondi, [c], -1, 1, cv2.FILLED)
         Hm = tondi > 0
+    if exact:
+        alpha = np.clip(mf, 0, 1) * (1 - soft(Hm, ppm))
+        return crop_rgba(rgb, alpha), ang, rect
     h, w = M.shape
     ys, xs = np.nonzero(M)
     y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
@@ -408,13 +416,17 @@ def cutout(rgb, m, holes, ppm):
         dist = sign * (pos - e)                # >0 dentro il foglio
         cover = np.minimum(cover, np.clip(dist + 1.0, 0, 1))
     alpha = np.minimum(soft(M, ppm), cover) * (1 - soft(Hm, ppm))
+    return crop_rgba(rgb, alpha), ang, rect
+
+
+def crop_rgba(rgb, alpha):
     ys, xs = np.nonzero(alpha > 0.02)
     alpha = alpha[ys.min():ys.max()+1, xs.min():xs.max()+1]
     rgb = rgb[ys.min():ys.max()+1, xs.min():xs.max()+1]
     a8 = np.round(alpha * 255).astype(np.uint8)
     rgba = np.dstack([rgb, a8])
     rgba[a8 == 0, :3] = 0
-    return rgba, ang, rect
+    return rgba
 
 
 def cut_scan(path):
@@ -424,6 +436,11 @@ def cut_scan(path):
     col, T = background(lab)
     d = np.linalg.norm((lab - col) * W_LAB, axis=2)
     bg = d < T
+    # per la bacchetta: sfocatura di un pixel appena, toglie la grana ma non le fibre
+    labw = cv2.cvtColor(cv2.GaussianBlur(rgb, (3, 3), 0), cv2.COLOR_RGB2LAB).astype(np.float32)
+    colw, Tw = background(labw)
+    dw = np.linalg.norm((labw - colw) * W_LAB, axis=2)
+    del labw
     # il fondo largo, senza fessure e righe di matita sottili
     # (fuori dalla scansione e' fondo: cosi' un filo di coperchio contro il bordo se ne va)
     k = int(2 * ppm)
@@ -481,9 +498,14 @@ def cut_scan(path):
             nflags = len(flags)
             ys, xs = np.where(P)
             bx0, by0, bx1, by1 = max(0, xs.min()-mg), max(0, ys.min()-mg), xs.max()+mg+1, ys.max()+mg+1
-            res = finish(rgb_c[by0:by1, bx0:bx1], lab_c[by0:by1, bx0:bx1],
-                         d_c[by0:by1, bx0:bx1], T, P[by0:by1, bx0:bx1], ppm, others, flags,
-                         scanedge[y0:y1, x0:x1][by0:by1, bx0:bx1])
+            # gli altri fogli: altri pezzi di carta della scansione e le altre parti di questo
+            forbid = (labs[y0:y1, x0:x1] > 0) & (labs[y0:y1, x0:x1] != i)
+            for j, Q in enumerate(masks):
+                if j != k:
+                    forbid |= Q
+            sl = (slice(by0, by1), slice(bx0, bx1))
+            res = finish(rgb_c[sl], lab_c[sl], d_c[sl], T, P[sl], ppm, others, flags,
+                         scanedge[y0:y1, x0:x1][sl], dw[y0:y1, x0:x1][sl], Tw, forbid[sl])
             if res is None:
                 continue
             rgba, ang, rect = res
