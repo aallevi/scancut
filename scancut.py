@@ -285,10 +285,16 @@ def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
     dist = edge_dist(piece)
     core = piece & (dist > 6 * ppm) & ~bg
     own = paper_color(lab, core if core.sum() > 1000 else piece & ~bg)
-    if np.linalg.norm((own - others[0]) * W_LAB) < 1.6 * T:
+    same = np.linalg.norm((own - others[0]) * W_LAB) < 1.6 * T
+    if same:
         flags.append('same')              # carta quasi del colore del fondo: bordo incerto
     # bacchetta magica, contigua: via solo il fondo collegato al fuori, come in Photoshop.
     # Le fibre e gli strappi non hanno il colore del fondo e restano.
+    if same:
+        # carta vicina al fondo: la grana piu' chiara passerebbe per fondo e la bacchetta
+        # entrerebbe nel foglio. Soglia a meta' fra il fondo e la carta
+        dp = np.median(dw[core]) if core.sum() > 1000 else np.median(dw[piece & ~bg])
+        Tw = min(Tw, max(5.0, 0.5 * dp))
     zone = cv2.dilate(piece.astype(np.uint8), disk(2.5 * ppm)).astype(bool) & ~forbid
     zone[[0, -1], :] = False; zone[:, [0, -1]] = False
     _, L = cv2.connectedComponents(((dw < Tw) | ~zone).astype(np.uint8), connectivity=4)
@@ -306,11 +312,23 @@ def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
     # ombre: l'orlo del foglio fa ombra sul fondo. Sono pixel piu' scuri del fondo ma
     # della sua stessa tinta, nell'ultimo millimetro e mezzo, collegati al fuori.
     # Penna e carta colorata hanno un'altra tinta, la carta bianca e' piu' chiara: restano
-    shadow = ((lab[..., 0] < col_bg[0] - 6)
-              & (np.hypot(lab[..., 1] - col_bg[1], lab[..., 2] - col_bg[2]) < 6)
-              & (cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 3) < 1.5 * ppm))
-    _, L = cv2.connectedComponents((shadow | ~m).astype(np.uint8), connectivity=4)
-    m &= ~np.isin(L, np.unique(L[~m]))
+    near = cv2.distanceTransform(m.astype(np.uint8), cv2.DIST_L2, 3) < 1.5 * ppm
+    neutral = np.hypot(lab[..., 1] - col_bg[1], lab[..., 2] - col_bg[2]) < 6
+    if same and own[0] < col_bg[0] and np.hypot(own[1] - col_bg[1], own[2] - col_bg[2]) < 6:
+        # carta grigia o avorio, tinta del fondo ma piu' scura: "piu' scuro del fondo" e'
+        # anche la carta. Dal fuori se ne va solo cio' che non sembra carta: piu' chiaro
+        # (coperchio), piu' scuro (la riga d'ombra) e i 3 px intorno alla riga, dove il
+        # coperchio risale verso il bianco con lo stesso grigio della carta
+        Lr = cv2.cvtColor(cv2.GaussianBlur(rgb, (3, 3), 0), cv2.COLOR_RGB2LAB)[..., 0].astype(np.float32)
+        line = (Lr < own[0] - 10) & neutral & near
+        ramp = cv2.dilate(line.astype(np.uint8), disk(7)).astype(bool)
+        cand = near & neutral & ((Lr > own[0] + 5) | (Lr < own[0] - 10) | ramp)
+        _, L = cv2.connectedComponents((cand | ~m).astype(np.uint8), connectivity=4)
+        m &= ~np.isin(L, np.unique(L[~m]))
+    else:
+        shadow = (lab[..., 0] < col_bg[0] - 6) & neutral & near
+        _, L = cv2.connectedComponents((shadow | ~m).astype(np.uint8), connectivity=4)
+        m &= ~np.isin(L, np.unique(L[~m]))
     # come la seconda bacchetta: resta il foglio, le isolette sparse se ne vanno
     n, lab_m, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), connectivity=8)
     if n < 2:

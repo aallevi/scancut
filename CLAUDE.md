@@ -45,6 +45,9 @@ numbering each time it opens, so a taken name gets the next free number.
 3. Edge = contiguous magic wand from outside on a 3x3-blurred copy (tolerance ≈
    Photoshop 13-15), then shadow pass (darker than background, same tint, last
    1.5 mm, reached from outside), then largest component. Fibres and tears stay.
+   Paper close to the lid colour: wand tolerance halfway between lid and paper; for
+   grey/ivory paper (lid tint, darker) the shadow pass removes only what is lighter
+   than the paper, darker than it, or within 3 px of the shadow line.
 4. Punch holes transparent (fitted ellipses). Deskew via minAreaRect: up to 10°,
    up to 45° if clearly rectangular.
 5. Paper close to background colour: Apple Vision too (512x512 internal mask,
