@@ -1187,11 +1187,19 @@ async function detect(box, engine, add) {
   const eng = S.engines.find(e => e.id === engine);
   if (!eng?.available) return status(`${eng?.name || engine} is not available`);
   const many = Array.isArray(box) || !!add;
-  if (!many && S.st.sheets.some(sheetEdited) && !confirm('Detecting again replaces the sheets and your edits on them. Continue?')) return;
+  let addOnly = !!add;
+  if (!many && S.st.sheets.some(s => s.src)) {
+    const edited = S.st.sheets.filter(s => s.src && sheetEdited(s)).length;
+    const choice = await choose('Detect', 'Keep the sheets you have?',
+      `This scan already has ${S.st.sheets.length} sheet(s)${edited ? `, ${edited} with your edits` : ''}. Sheets you made by hand are always kept; detected ones can be kept too, or replaced (they stay in “Earlier” either way).`,
+      [['keep', 'Keep them, add the new ones', true], ['replace', 'Replace them'], [null, 'Cancel']]);
+    if (!choice) return;
+    addOnly = choice === 'keep';
+  }
   busy(true, `${eng.name}${many ? ' (inside the box)' : ''}…` + (engine === 'sam3' && !S.samLoaded ? ' loading the model the first time (~10 s)' : ''));
   try {
-    if (!many) pushHist();
-    const r = await api.post('detect', { rel: S.rel, engine, params: engine === 'sam3' ? samParams() : engine === S.engine ? engParams() : {}, box: Array.isArray(box) ? box : null, replace: !many });
+    pushHist();
+    const r = await api.post('detect', { rel: S.rel, engine, params: engine === 'sam3' ? samParams() : engine === S.engine ? engParams() : {}, box: Array.isArray(box) ? box : null, replace: !many && !addOnly });
     if (engine === 'sam3') S.samLoaded = true;
     setState(r.state); const fresh = await api.get('state', { rel: S.rel }); S.names = fresh.names || {};
     status(`${eng.name}: ${r.state.sheets.length} sheet(s) in ${r.meta.seconds ?? 0}s`);
@@ -1253,6 +1261,14 @@ function dialog(title, instr, body, buttons, opts = {}) {
       h('div', { class: 'foot' }, (buttons || [['OK', () => true, true]]).map(([l, fn, def]) => h('button', { class: 'btn' + (def ? ' default' : ''), onclick: async () => { if ((await fn()) !== false) back.remove(); } }, l)))));
   back.append(d); document.body.append(back);
   return back;
+}
+// una domanda con piu' risposte, come le finestre di Vista: risolve con il valore del pulsante scelto
+function choose(title, instr, text, buttons) {
+  return new Promise(res => {
+    const back = dialog(title, instr, h('div', { style: { maxWidth: '480px', lineHeight: 1.45 } }, text),
+      buttons.map(([v, l, def]) => [l, () => { res(v); return true; }, def]), { modal: true });
+    back.querySelector('.titlebar .close')?.addEventListener('click', () => res(null));
+  });
 }
 const alertDialog = (title, body) => dialog('Scan Studio', title, typeof body === 'string' ? h('div', {}, body) : body);
 
