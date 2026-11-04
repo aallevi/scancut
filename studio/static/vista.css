@@ -345,9 +345,8 @@ html.native .client { border-radius: 2px; }
 .titlebar .title { text-shadow: none; }
 .titlebar .title > span { position: relative; z-index: 0; display: inline-block; padding: 0 2px; color: #000;
   text-shadow: 0 0 1px rgba(255,255,255,.9); }
-.titlebar .title > span::before { content: ''; position: absolute; z-index: -1; left: -10px; right: -10px; top: -5px; bottom: -5px;
-  border-radius: 50%; filter: blur(5px);
-  background: radial-gradient(ellipse at center, rgba(255,255,255,.55) 0%, rgba(255,255,255,.42) 45%, rgba(255,255,255,.14) 70%, rgba(255,255,255,0) 85%); }
+.titlebar .title > span::before { content: ''; position: absolute; z-index: -1; left: -8px; right: -8px; top: -3px; bottom: -3px;
+  border-radius: 7px; filter: blur(3px); background: rgba(255,255,255,.45); }
 html.native .window { overflow: hidden; }
 
 .toolbox .mode { font-size: 11px; }
