@@ -136,6 +136,24 @@ def image(rel):
 
 
 _alpha = {}
+_deep = {}
+
+
+def image16(rel):
+    # la scansione a 16 bit per canale (48 bit colore o 16 bit grigio), o None se e' a 8 bit
+    k = file_key(rel)
+    if k not in _deep:
+        m = cv2.imread(abspath(rel), cv2.IMREAD_UNCHANGED)
+        if m is None or m.dtype != np.uint16:
+            m = None
+        elif m.ndim == 3 and m.shape[2] == 3:
+            m = cv2.cvtColor(m, cv2.COLOR_BGR2RGB)
+        elif m.ndim == 3:
+            m = None                                    # 16 bit con alfa: non da scanner, si lascia stare
+        if len(_deep) > 1:
+            _deep.pop(next(iter(_deep)))
+        _deep[k] = m
+    return _deep[k]
 
 
 def alpha(rel):
@@ -186,6 +204,8 @@ def preview_path(rel, size):
         im = Image.open(abspath(rel))
         if alpha_:
             im = im.convert('RGBA')
+        elif im.mode in ('I;16', 'I;16B', 'I;16L', 'I'):
+            im = Image.fromarray((np.asarray(im).astype(np.uint32) >> 8).clip(0, 255).astype(np.uint8)).convert('RGB')
         else:
             im.draft('RGB', (size, size))
             im = im.convert('RGB')
@@ -932,7 +952,7 @@ def sheet_mask_cached(rel, sheet):
     return _mask_cache[k]
 
 
-def cut_sheet(rel, sheet):
+def cut_sheet(rel, sheet, deep=False):
     # il ritaglio come lo fa scancut: raddrizzato, solo la trasparenza cambia
     rgb, icc, dpi, ppm = image(rel)
     y0, x0, M, Hh, exact = sheet_mask_cached(rel, sheet)
@@ -949,6 +969,16 @@ def cut_sheet(rel, sheet):
         rgba[..., 3] = np.minimum(rgba[..., 3], old)
         rgba[rgba[..., 3] == 0, :3] = 0
     q = (int(sheet.get('rot', 0)) // 90) % 4          # gradi in senso orario, a passi di 90: senza perdita
+    d16 = image16(rel) if deep else None
+    if d16 is not None:
+        c16 = d16[y0:y0 + M.shape[0], x0:x0 + M.shape[1]]
+        if c16.ndim == 2:
+            c16 = np.dstack([c16, c16, c16])
+        col = sc.cutout(c16, M, Hh, ppm, exact=exact)[0][..., :3]
+        if col.shape[:2] == rgba.shape[:2]:
+            a16 = rgba[..., 3].astype(np.uint16) * 257
+            col = col.copy(); col[a16 == 0] = 0
+            rgba = np.dstack([col, a16])
     if q:
         rgba = np.ascontiguousarray(np.rot90(rgba, k=-q))
     return rgba, ang, rect
@@ -968,7 +998,8 @@ DEFAULT_SETTINGS = {
     'export_format': 'png',            # png | jxl (JPEG XL senza perdita, con la trasparenza)
     'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
     'export_subfolder': 'extra',
-    'verify_jxl': False,               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
+    'verify_jxl': False,
+    'keep_16bit': True,                # scansioni a 48/16 bit: i ritagli tengono i 16 bit               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
 
@@ -1094,7 +1125,33 @@ def icc_space(icc):
 
 def write_cutout(rgba, out, fmt, dpi, icc, src=None, gray=False):
     # PNG, o JPEG XL senza perdita (cjxl -d 0, con la trasparenza). Una scansione in grigio
-    # resta grigia (grigio + trasparenza) con il suo profilo; il profilo va solo se combacia
+    # resta grigia (grigio + trasparenza) con il suo profilo; il profilo va solo se combacia.
+    # A 16 bit per canale se la scansione li ha (png16, poi cjxl se si vuole il JPEG XL)
+    if rgba.dtype == np.uint16:
+        from . import png16
+        arr = np.dstack([rgba[..., 0], rgba[..., 3]]) if gray else rgba
+        prof = icc if icc and icc_space(icc) == (b'GRAY' if gray else b'RGB ') else None
+        if fmt == 'jxl' and shutil.which('cjxl'):
+            src_png = out + '.src.png'
+            png16.write(src_png, arr, dpi, prof, level=1)
+            try:
+                subprocess.run(['cjxl', src_png, out + '.part', '-d', '0', '-e', '7', '--quiet'], check=True, capture_output=True, timeout=1800)
+                os.replace(out + '.part', out)
+                if src:
+                    tag_metadata(out, src, dpi, rgba.shape[1], rgba.shape[0])
+                return out
+            except Exception:
+                if os.path.exists(out + '.part'):
+                    os.remove(out + '.part')
+                out = sc.unique(os.path.splitext(out)[0] + '.png')
+            finally:
+                if os.path.exists(src_png):
+                    os.remove(src_png)
+        png16.write(out + '.part', arr, dpi, prof)
+        os.replace(out + '.part', out)
+        if src:
+            tag_metadata(out, src, dpi, rgba.shape[1], rgba.shape[0])
+        return out
     img = Image.fromarray(rgba, 'RGBA')
     if gray:
         img = Image.fromarray(np.dstack([rgba[..., 0], rgba[..., 3]]), 'LA')
@@ -1140,6 +1197,25 @@ def is_gray(rel):
 def same_cutout(path, rgba):
     if not os.path.exists(path):
         return False
+    if rgba.dtype == np.uint16:
+        from . import png16
+        f = path
+        if path.endswith('.jxl'):
+            f = path + '.cmp.png'
+            if subprocess.run(['djxl', path, f, '--quiet'], capture_output=True).returncode:
+                return False
+        try:
+            m = png16.read(f)
+        finally:
+            if f != path and os.path.exists(f):
+                os.remove(f)
+        if m is None or m.dtype != np.uint16:
+            return False
+        if m.ndim == 3 and m.shape[2] == 2:                      # grigio + alfa
+            return np.array_equal(m[..., 0], rgba[..., 0]) and np.array_equal(m[..., 1], rgba[..., 3])
+        if m.ndim == 3 and m.shape[2] == 4 and m.shape == rgba.shape:
+            return np.array_equal(m, rgba) or (np.array_equal(m[..., 0], rgba[..., 0]) and np.array_equal(m[..., 3], rgba[..., 3]))
+        return False
     if path.endswith('.jxl'):
         back = path + '.cmp.png'
         try:
@@ -1171,7 +1247,7 @@ def export(rel, replace=None, log=print, subfolder=None):
     try:
         stamp = time.strftime('%Y%m%d-%H%M%S')
         for sid, out in out_names(rel, st):
-            res = cut_sheet(rel, sheets[sid])
+            res = cut_sheet(rel, sheets[sid], deep=s_.get('keep_16bit', True))
             if res is None:
                 continue
             rgba, ang, rect = res

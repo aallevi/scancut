@@ -1320,6 +1320,7 @@ async function settingsDialog() {
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Export'),
     field('export_format', 'Format', h('select', {}, [['png', 'PNG'], ['jxl', 'JPEG XL, lossless (smaller, keeps transparency)']].map(([v, l]) => h('option', { value: v, selected: s.export_format === v }, l))), 'JPEG XL is checked after writing: decoded back and compared pixel by pixel, else PNG is kept.'),
     field('verify_jxl', 'Check JPEG XL', h('input', { type: 'checkbox', checked: s.verify_jxl }), 'Decode every JPEG XL back and compare it pixel by pixel (cjxl -d 0 is lossless by design; this only guards against a tool bug). Slower.'),
+    field('keep_16bit', 'Keep 16 bits', h('input', { type: 'checkbox', checked: s.keep_16bit }), 'Cutouts of 48-bit colour or 16-bit grey scans keep all 16 bits per channel (PNG or JPEG XL). Off: 8-bit cutouts.'),
     field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
     field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by the second export button (“To …/”).'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Scan agent'),
@@ -1331,7 +1332,7 @@ async function settingsDialog() {
     const bf = {}; f.batch_folders.value.split('\n').forEach(l => { const m = l.split('='); if (m.length >= 2 && m[0].trim()) bf[m[0].trim()] = m.slice(1).join('=').trim(); });
     S.settings = await api.post('settings', { out_root: f.out_root.value.trim() || 'cut', template: f.template.value.trim() || '{batch}/{stem}{sheet}', batch_folders: bf,
       eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), export_format: f.export_format.value, export_existing: f.export_existing.value,
-      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
+      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, keep_16bit: f.keep_16bit.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
     if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); S.names = st.names || {}; renderSide(); }
   }, true], ['Cancel', () => true]]);
 }
@@ -1434,9 +1435,9 @@ function renderScanSide(side) {
       (o.resolutions || [300, 600]).map(r => h('option', { value: r, selected: r === SC.res }, r + ' dpi'))),
       info('Only the resolutions the scanner itself offers, never upscaled. For drawings 600 dpi is a good default; 1200 for fine pencil. The LiDE 400 sensor is 4800 dpi, but very high settings mostly add file size: I will measure what it really resolves on a test sheet.')),
     h('div', { class: 'row' }, h('label', {}, 'Colour'), h('select', { class: 'f', onchange: e => { SC.mode = e.target.value; renderScanSide(); } },
-      (o.modes || ['Color']).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: m === SC.mode, disabled: deep(m) },
-        ({ Color: 'Colour (24-bit)', Gray: 'Grey (8-bit)', '48 bits color': 'Colour 48-bit (coming)', '16 bits gray': 'Grey 16-bit (coming)' })[m] || m))),
-      info('48-bit colour works on your LiDE 400 through SANE (tested). It is greyed out until the cutting pipeline reads 16-bit scans; then cutouts keep all 16 bits.')),
+      (o.modes || ['Color']).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: m === SC.mode },
+        ({ Color: 'Colour (24-bit)', Gray: 'Grey (8-bit)', '48 bits color': 'Colour 48-bit (16 per channel)', '16 bits gray': 'Grey 16-bit' })[m] || m))),
+      info('48-bit colour and 16-bit grey keep 65,536 levels per channel instead of 256: smoother gradients and room for later corrections. Detection works on an 8-bit view; exported cutouts keep all 16 bits (16-bit PNG or JPEG XL). Files are twice as large.')),
     h('div', { class: 'row' }, h('label', {}, 'Batch'), h('input', { type: 'text', class: 'f', value: SC.batch, oninput: e => { SC.batch = e.target.value; nextName(); } }),
       info('Scans are named “<batch> <number>.tif” and go to the inbox; the agent moves them to originals/<batch>/ and cuts them, like your Image Capture scans.')),
     h('div', { class: 'small muted', id: 'nextname' }, '')));

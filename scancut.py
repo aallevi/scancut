@@ -63,7 +63,13 @@ def load(path, ppm_known=None):
     im = Image.open(path)
     icc = im.info.get('icc_profile')
     dpi = im.info.get('dpi', (0, 0))[0] or 0
-    rgb = np.asarray(im.convert('RGB'))
+    if im.mode in ('I;16', 'I;16B', 'I;16L', 'I'):
+        # grigio a 16 bit: convert('RGB') di Pillow lo fa tutto bianco; per cercare i bordi
+        # basta il byte alto (i pixel dei ritagli a 16 bit li prende lo studio dall'originale)
+        g = (np.asarray(im).astype(np.uint32) >> 8).clip(0, 255).astype(np.uint8)
+        rgb = np.dstack([g, g, g])
+    else:
+        rgb = np.asarray(im.convert('RGB'))
     h, w = rgb.shape[:2]
     # il letto di uno scanner A4 e' largo ~216 mm: se il dpi dichiarato
     # non torna con le dimensioni, si ricava da li'
