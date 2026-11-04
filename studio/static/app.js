@@ -98,6 +98,38 @@ function selectIds(ids, add) {
   S._primary = ids.length ? ids[ids.length - 1] : ([...S.selSet].pop() || null);
 }
 
+// ------------------------------------------------------------ (i): spiegazioni
+let tipEl = null;
+function hideTip() { if (tipEl) { tipEl.remove(); tipEl = null; } }
+function info(text) {
+  const b = h('span', { class: 'info', tabindex: 0, 'aria-label': 'More information' }, 'i');
+  const show = () => {
+    hideTip();
+    const r = b.getBoundingClientRect();
+    tipEl = h('div', { class: 'balloon' }, h('div', { class: 'bt' }, h('span', { class: 'info big' }, 'i'), ' ', text));
+    document.body.append(tipEl);
+    const w = tipEl.offsetWidth, hgt = tipEl.offsetHeight;
+    const left = Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - 28));
+    const below = r.bottom + hgt + 14 < window.innerHeight;
+    tipEl.style.left = left + 'px'; tipEl.style.top = (below ? r.bottom + 10 : r.top - hgt - 10) + 'px';
+    tipEl.classList.add(below ? 'down' : 'up'); tipEl.style.setProperty('--ax', (r.left + r.width / 2 - left - 7) + 'px');
+  };
+  b.addEventListener('mouseenter', show); b.addEventListener('focus', show);
+  b.addEventListener('mouseleave', hideTip); b.addEventListener('blur', hideTip);
+  b.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); tipEl ? hideTip() : show(); });
+  return b;
+}
+const TIPS = {
+  brush: 'Brush size in millimetres on the paper (not screen pixels). In Add mode it paints sheet in, in Cut mode it erases. [ and ] change it.',
+  wand: 'Magic wand tolerance, per colour channel, like Photoshop: a click selects every pixel within this many levels of the clicked colour. The automatic cut uses about 13-15. Raise it if the wand stops at shadows, lower it if it leaks into the paper.',
+  contig: 'Contiguous: only pixels connected to the click. Off: the same colour anywhere on the scan (e.g. every bit of lid showing through holes).',
+  cutview: 'Darkens what will be cut away. Zoomed in, it shows the exact final edge pixel by pixel, not the simplified outline. O toggles it.',
+  modes: 'What lasso, rectangle, wand and brush do: + adds to the sheet, − cuts away. X swaps; hold ⌥ while clicking for the other one.',
+  hist: 'How many pixels have each lightness (grey) and each R, G, B value. The dashed line is the lid colour the automatic cut found. Read-only; click to switch linear/log.',
+  template: 'How cutouts are named: {batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. A / makes subfolders.',
+  densit: 'Values of the real scan pixel under the cursor (or the 3×3 / 5×5 average, View menu). "vs lid" is the colour distance the automatic cut measures; under the tolerance it counts as lid.',
+};
+
 // ------------------------------------------------------------ menu a tendina
 let openMenu = null;
 function closeMenu() { if (openMenu) { openMenu.el.remove(); openMenu.btn.classList.remove('open'); openMenu = null; } }
@@ -107,7 +139,7 @@ function menu(btn, items) {
   const r = btn.getBoundingClientRect();
   const el = h('div', { class: 'menu', style: { left: r.left + 'px', top: r.bottom + 1 + 'px' } },
     items.map(it => it === '-' ? h('div', { class: 'sep' }) :
-      h('div', { class: 'mi' + (it.disabled ? ' disabled' : ''), onclick: () => { closeMenu(); it.do && it.do(); } },
+      h('div', { class: 'mi' + (it.disabled ? ' disabled' : ''), title: it.title || null, onclick: () => { closeMenu(); it.do && it.do(); } },
         it.check ? h('span', { class: 'ck' }, '✓') : null, it.label, it.kbd ? h('span', { class: 'kbd' }, it.kbd) : null)));
   document.body.append(el);
   btn.classList.add('open');
@@ -155,7 +187,7 @@ function renderCmdbar() {
       if (!ok) return [{ label: 'SAM 3 needs ~/sam3.pt', disabled: true }];
       return [
         { label: `Prompt: “${p}”…`, do: samPromptDialog },
-        ...SAM_PROMPTS.map(x => ({ label: '   ' + x, check: p === x, do: () => { S.params.prompt = x; renderSide(); } })),
+        ...samChoices().map(c => ({ label: '   ' + c.text, title: c.note, check: p === c.text, do: () => { S.params.prompt = c.text; renderSide(); status(c.note); } })),
         '-',
         { label: `Find every “${p}” (replace sheets)`, disabled: !ed, do: () => detect(null, 'sam3') },
         { label: `Find every “${p}” (add to sheets)`, disabled: !ed, do: () => detect(null, 'sam3', true) },
@@ -344,9 +376,17 @@ function engineChooser() {
   const e = S.engines.find(x => x.id === S.engine);
   for (const p of e?.params || []) {
     const v = S.params[p.id] ?? p.default;
-    const inp = p.type === 'bool' ? h('input', { type: 'checkbox', checked: !!v, onchange: ev => S.params[p.id] = ev.target.checked })
-      : h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value });
-    box.append(h('div', { class: 'row', title: p.hint || null }, h('label', {}, p.label), inp));
+    let inp;
+    if (p.type === 'bool') inp = h('input', { type: 'checkbox', checked: !!v, onchange: ev => S.params[p.id] = ev.target.checked });
+    else if (p.choices) {
+      inp = h('select', { class: 'f', onchange: ev => { if (ev.target.value === '__other') { samPromptDialog(); ev.target.value = v; } else { S.params[p.id] = ev.target.value; renderSide(); } } },
+        p.choices.map(c => h('option', { value: c.text, selected: c.text === v, title: c.note }, c.text)),
+        p.choices.some(c => c.text === v) ? null : h('option', { value: v, selected: true }, v),
+        h('option', { value: '__other' }, 'Other…'));
+    } else inp = h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value });
+    box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp, p.hint ? info(p.hint) : null));
+    const ch = p.choices?.find(c => c.text === v);
+    if (ch) box.append(h('div', { class: 'small muted', style: { margin: '-2px 0 4px 76px' } }, ch.note));
   }
   return box;
 }
@@ -355,7 +395,8 @@ function samParams() {
   for (const p of e?.params || []) o[p.id] = S.params[p.id] ?? p.default;
   return o;
 }
-const SAM_PROMPTS = ['sheet of paper', 'drawing', 'sketchbook page', 'photograph', 'card', 'paper with a drawing'];
+const samChoices = () => (S.engines.find(e => e.id === 'sam3')?.params || []).find(p => p.id === 'prompt')?.choices || [];
+const samHint = id => (S.engines.find(e => e.id === 'sam3')?.params || []).find(p => p.id === id)?.hint;
 function samPromptDialog() {
   const p = samParams();
   const f = {
@@ -364,13 +405,15 @@ function samPromptDialog() {
     hires: h('input', { type: 'checkbox', checked: p.hires }),
     refine: h('input', { type: 'checkbox', checked: p.refine }),
   };
-  const row = (l, el, hint) => h('div', { class: 'row', style: { alignItems: 'flex-start' } }, h('label', { style: { width: '130px', paddingTop: '3px' } }, l), h('div', { class: 'f' }, el, hint ? h('div', { class: 'small muted' }, hint) : null));
+  const row = (l, el, hint, tip) => h('div', { class: 'row', style: { alignItems: 'flex-start' } }, h('label', { style: { width: '130px', paddingTop: '3px' } }, l), h('div', { class: 'f' }, el, hint ? h('div', { class: 'small muted' }, hint) : null), tip ? info(tip) : null);
   dialog('SAM 3', 'What should SAM 3 look for?', h('div', { style: { width: '520px' } },
-    h('datalist', { id: 'samlist' }, SAM_PROMPTS.map(x => h('option', { value: x }))),
-    row('Prompt', f.prompt, 'A short English phrase naming the objects: "sheet of paper", "drawing", "sketchbook page", "photograph".'),
-    row('Score', f.threshold, 'How sure SAM must be (0.05–0.95). Lower finds more, including wrong things.'),
-    row('Second pass', f.hires, 'Runs SAM again on a crop around each object: SAM works at ~1008 px, the crop shows the edge much closer.'),
-    row('Edge from real pixels', f.refine, 'The final edge comes from your scan (wand against the lid next to it, within 2 mm), not from SAM\'s mask.')),
+    h('datalist', { id: 'samlist' }, samChoices().map(c => h('option', { value: c.text }, c.note))),
+    h('div', { class: 'small muted', style: { margin: '0 0 8px' } }, 'Tested on your kind of scans:'),
+    h('div', { class: 'chips' }, samChoices().map(c => h('span', { class: 'chip', title: c.note, onclick: () => { f.prompt.value = c.text; } }, c.text))),
+    row('Prompt', f.prompt, null, samHint('prompt')),
+    row('Score', f.threshold, null, samHint('threshold')),
+    row('Second pass', f.hires, null, samHint('hires')),
+    row('Edge from real pixels', f.refine, null, samHint('refine'))),
     [['OK', () => { S.params.prompt = f.prompt.value.trim() || 'sheet of paper'; S.params.threshold = +f.threshold.value || 0.4; S.params.hires = f.hires.checked; S.params.refine = f.refine.checked; renderSide(); renderCmdbar(); }, true], ['Cancel', () => true]]);
 }
 const engParams = () => { const e = S.engines.find(x => x.id === S.engine); const o = {}; for (const p of e?.params || []) o[p.id] = S.params[p.id] ?? p.default; return o; };
@@ -466,13 +509,13 @@ function sideEditor(side) {
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete'))) : null));
   side.append(group('Save',
-    h('div', { class: 'small muted' }, 'Names follow the template in Settings: ', h('code', {}, S.settings.template)),
+    h('div', { class: 'small muted' }, 'Names follow the template in Settings: ', h('code', {}, S.settings.template), ' ', info(TIPS.template)),
     h('div', { class: 'btns' },
       h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: doExport }, 'Export'),
       h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder')),
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
-  side.append(group('Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
+  side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
   loadHist(hc, sel);
   side.append(group('Scan', h('div', { class: 'small muted' }, `${S.info.w} × ${S.info.h} px · ${S.info.dpi} dpi · ${S.info.mm[0]} × ${S.info.mm[1]} mm`)));
 }
@@ -523,14 +566,14 @@ async function openScan(rel) {
     h('div', { class: 'modes', title: 'What lasso, rectangle, wand and brush do. X swaps, hold ⌥ for the other one.' },
       h('div', { class: 'mode' + (S.mode === 'add' ? ' on' : ''), 'data-mode': 'add', onclick: () => setMode('add') }, '＋'),
       h('div', { class: 'mode' + (S.mode === 'sub' ? ' on' : ''), 'data-mode': 'sub', onclick: () => setMode('sub') }, '－')),
-    h('div', { class: 'opt', id: 'modename' }, S.mode === 'add' ? 'Add' : 'Cut'),
-    h('hr'), h('div', { class: 'opt' }, 'Brush'), h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: S.brushMM, title: 'Brush size in mm ([ and ])', oninput: e => { S.brushMM = +e.target.value; $('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'; } }),
+    h('div', { class: 'opt', id: 'modename' }, S.mode === 'add' ? 'Add' : 'Cut', ' ', info(TIPS.modes)),
+    h('hr'), h('div', { class: 'opt' }, 'Brush ', info(TIPS.brush)), h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: S.brushMM, title: 'Brush size in mm ([ and ])', oninput: e => { S.brushMM = +e.target.value; $('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'; } }),
     h('div', { class: 'opt', id: 'bsz' }, S.brushMM.toFixed(1) + ' mm'),
-    h('hr'), h('div', { class: 'opt' }, 'Wand'), h('input', { type: 'range', min: 1, max: 80, step: 1, value: S.wandTol, title: 'Tolerance, like Photoshop (the automatic cut uses about 13-15)', oninput: e => { S.wandTol = +e.target.value; $('#wtol').textContent = 'tol ' + S.wandTol; } }),
+    h('hr'), h('div', { class: 'opt' }, 'Wand ', info(TIPS.wand)), h('input', { type: 'range', min: 1, max: 80, step: 1, value: S.wandTol, title: 'Tolerance, like Photoshop (the automatic cut uses about 13-15)', oninput: e => { S.wandTol = +e.target.value; $('#wtol').textContent = 'tol ' + S.wandTol; } }),
     h('div', { class: 'opt', id: 'wtol' }, 'tol ' + S.wandTol),
-    h('label', { class: 'opt', title: 'Only touching pixels (off: the same colour anywhere)' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => S.wandContig = e.target.checked }), ' contig.'),
+    h('label', { class: 'opt', title: 'Only touching pixels (off: the same colour anywhere)' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => S.wandContig = e.target.checked }), ' contig. ', info(TIPS.contig)),
     h('hr'),
-    h('label', { class: 'opt', title: 'Darken what will be cut away (O)' }, h('input', { type: 'checkbox', id: 'cutview', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; requestTile(); draw(); } }), h('br'), 'Cut view'));
+    h('label', { class: 'opt', title: 'Darken what will be cut away (O)' }, h('input', { type: 'checkbox', id: 'cutview', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; requestTile(); draw(); } }), h('br'), 'Cut view ', info(TIPS.cutview)));
   const stage = h('div', { class: 'stage bg-' + S.bg });
   cv = h('canvas'); hud = h('div', { class: 'hud' }); busyEl = h('div', { class: 'busy' }, h('div', { style: { width: '220px', background: '#fff', padding: '12px', border: '1px solid #9bb', borderRadius: '4px', boxShadow: '0 3px 12px rgba(0,0,0,.25)' } }, h('div', { id: 'busymsg', style: { marginBottom: '6px' } }, 'Working…'), h('div', { class: 'progress marquee' }, h('i'))));
   const loupe = h('canvas', { class: 'loupe', id: 'loupe', width: 360, height: 360 });

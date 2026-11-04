@@ -212,7 +212,22 @@ def tile(rel, x, y, w, h, out_w):
 
 # tolleranza del taglio automatico: 1 = quella che sceglie da solo (ritagli identici all'agente)
 TOL_PARAM = {'id': 'tol', 'label': 'Tolerance ×', 'type': 'number', 'default': 1.0, 'step': 0.05,
-             'hint': 'Multiplies the background and wand tolerance the cut picks by itself. Higher takes more lid away.'}
+             'hint': 'How different from the lid a pixel must be to count as paper. 1 = what the automatic cut '
+                     'picks by itself (cutouts identical to the agent\'s). Higher (1.2-1.5) takes away more lid '
+                     'and shadow but can nibble pale paper edges; lower (0.7-0.9) keeps faint edges but may keep '
+                     'some lid.'}
+
+# frasi per SAM 3, scelte provandone 16 su scansioni vere e di prova (4 nov 2026):
+# quanto la sagoma trovata coincide con la carta vera, quanto SAM e' sicuro, quanti oggetti sbagliati
+SAM_PROMPTS = [
+    {'text': 'sheet of paper', 'note': 'Default. Loose sheets on the lid or on grey card; solid on every test (overlap 0.81-0.98), no wrong objects.'},
+    {'text': 'sketchbook page', 'note': 'The sharpest on loose sheets too (overlap 0.96-0.99) and very sure on sketchbooks; sometimes adds a strip of the spiral.'},
+    {'text': 'piece of paper', 'note': 'Like "sheet of paper"; more confident on a single sheet on the white lid.'},
+    {'text': 'page', 'note': 'A page of a bound book or sketchbook (0.90 on the spiral sketchbook). Finds nothing on loose sheets.'},
+    {'text': 'spiral bound notebook', 'note': 'Spiral sketchbooks and notebooks: the best fit on yours (overlap 0.97, 97% sure).'},
+    {'text': 'ring notebook', 'note': 'Ring-bound notebooks; almost as good as "spiral bound notebook" (0.95).'},
+    {'text': 'drawing', 'note': 'The artwork itself, not the paper: for cutting a drawing out of its page. May split it in parts.'},
+]
 
 
 def engines():
@@ -225,10 +240,21 @@ def engines():
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
          'note': 'Finds what the prompt names. Runs on the Apple GPU via Ultralytics.', 'params': [
-             {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper'},
-             {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05},
-             {'id': 'hires', 'label': 'Second pass on each sheet', 'type': 'bool', 'default': True},
-             {'id': 'refine', 'label': 'Edge from real pixels', 'type': 'bool', 'default': True}]},
+             {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper', 'choices': SAM_PROMPTS,
+              'hint': 'A short English noun phrase naming what to cut out. SAM 3 finds every object that matches. '
+                      'The list holds the phrases that worked best on your kind of scans; you can type any other.'},
+             {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05,
+              'hint': 'How sure SAM 3 must be (0 to 1) before it keeps an object. 0.4 is a good start. Lower '
+                      '(0.2-0.3) finds faint or unusual sheets but also wrong things; higher (0.6+) keeps only '
+                      'obvious ones. It never changes the edge, only which objects are kept.'},
+             {'id': 'hires', 'label': 'Second pass', 'type': 'bool', 'default': True,
+              'hint': 'SAM 3 looks at the scan at about 1008 px, so a 600 dpi edge is seen 7x too small. With this '
+                      'on, it runs again on a crop around each object and sees the edge much closer. Costs about '
+                      '1-2 s per sheet.'},
+             {'id': 'refine', 'label': 'Edge from real pixels', 'type': 'bool', 'default': True,
+              'hint': 'SAM decides what the object is; the final edge is then taken from your scan: a magic wand '
+                      'against the lid right next to each point (works with an open lid too), only within 2 mm of '
+                      'SAM\'s edge. Fibres and tears stay. Turn off only to see SAM\'s raw mask.'}]},
     ]
     for f in sorted(os.listdir(SCRIPTS)) if os.path.isdir(SCRIPTS) else []:
         if f.endswith('.py') and not f.startswith('_'):
