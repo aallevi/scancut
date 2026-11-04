@@ -965,12 +965,14 @@ function measure(pt, sx, sy) {
     if (lo) { loupeImg = lo; loupeDraw(); }
     const el = $('#dens'); if (!el || !px || px.x == null) return;
     const lid = px.is_bg ? '<b style="color:#8a5a00">lid</b>' : '<b style="color:#1e6b2c">paper / ink</b>';
-    el.innerHTML = `<div class="dh">Densitometer <span>${S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' average' : 'single pixel'}</span></div>`
+    el.innerHTML = `<div class="dh"><b>Densitometer</b><span>${S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' average' : 'single pixel'}</span></div>`
+      + `<div class="dc">`
       + `<div><span>RGB</span>${px.rgb.map(v => v.toFixed(0)).join(' · ')}</div>`
       + `<div><span>L*a*b*</span>${px.lab.join(' · ')}</div>`
       + `<div><span>vs lid</span>${px.bg_dist} <small>(lid if &lt; ${px.bg_tol})</small> ${lid}</div>`
       + (px.alpha != null ? `<div><span>alpha</span>${px.alpha}</div>` : '')
-      + `<div class="sw"><i style="background:rgb(${px.rgb.join(',')})"></i><i style="background:${labCss(px.bg_lab)}"></i><small>pixel · lid</small></div>`;
+      + `<div class="sw"><i style="background:rgb(${px.rgb.join(',')})"></i><i style="background:${labCss(px.bg_lab)}"></i><small>pixel · lid</small></div>`
+      + `</div>`;
     el.style.display = 'block';
   }, 70);
 }
