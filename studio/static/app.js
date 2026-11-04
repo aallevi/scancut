@@ -33,6 +33,8 @@ const api = {
   },
 };
 function store(k, v) { try { if (v === undefined) return localStorage.getItem('studio.' + k); localStorage.setItem('studio.' + k, v); } catch (e) { return null; } }
+const PREV_V = 2;      // alzare quando cambia il formato delle anteprime (2: PNG con trasparenza)
+const bgCss = () => ({ white: '#fff', grey: '#8a8d91', dark: '#262a30', checker: 'repeating-conic-gradient(#e6e6e6 0% 25%, #fbfbfb 0% 50%) 0 0 / 16px 16px' }[S.bg] || 'linear-gradient(#eef4fb, #d6e4f3)');
 const fmtSize = b => b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
 const COLORS = ['#3399ff', '#ff8c1a', '#2fb84f', '#c84ad0', '#e0b600', '#14b8c4', '#ff4d5e', '#7a6cff'];
 const CMP_COLORS = { auto: '#00a2ff', classic: '#ff7a00', vision: '#d100d1', sam3: '#00b050' };
@@ -349,7 +351,7 @@ function renderGallery() {
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
       onclick: e => clickItem(e, it, idx, items), ondblclick: () => openScan(it.rel) },
       h('div', { class: 'badges' }, badges),
-      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}`, loading: 'lazy', draggable: 'false', class: /\.png$/i.test(it.name) ? 'checker' : null })),
+      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
       h('div', { class: 'cap' }, it.name));
     grid.append(el);
   });
@@ -434,7 +436,7 @@ function sideGallery(side) {
   if (sel.length === 1) {
     const it = sel[0];
     side.append(group('Info',
-      h('div', { style: { textAlign: 'center', margin: '4px 0 8px' } }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}`, style: { maxWidth: '100%', maxHeight: '220px', boxShadow: '0 1px 4px rgba(0,0,0,.35)' } })),
+      h('div', { style: { textAlign: 'center', margin: '4px 0 8px' } }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}&v=${PREV_V}`, style: { maxWidth: '100%', maxHeight: '220px', boxShadow: '0 1px 4px rgba(0,0,0,.35)' } })),
       h('div', { class: 'row' }, h('label', {}, 'Name'), h('div', { class: 'f' }, it.name)),
       h('div', { class: 'row' }, h('label', {}, 'Size'), h('div', { class: 'f' }, fmtSize(it.size))),
       h('div', { class: 'row' }, h('label', {}, 'Date'), h('div', { class: 'f' }, new Date(it.mtime * 1000).toLocaleString())),
@@ -599,7 +601,7 @@ async function openScan(rel) {
     const [info, st] = await Promise.all([api.get('info', { rel }), api.get('state', { rel })]);
     if (S.rel !== rel) return;
     S.info = info; setState(st);
-    const im = new Image(); im.src = `/api/preview?${qs({ rel })}`; await im.decode();
+    const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}`; await im.decode();
     if (S.rel !== rel) return;
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); renderSide(); renderCmdbar();
@@ -618,7 +620,7 @@ async function openScan(rel) {
 function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
 function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
 function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.textContent = m === 'add' ? 'Add' : 'Cut'; }
-function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); }
+function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); if (S.view === 'gallery') renderGallery(); draw(); }
 function setTool(t) { S.tool = t; S.poly = null; S.sam = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
 const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none', sam: 'crosshair' })[t];
 
@@ -675,6 +677,9 @@ function polyPath(c, pts) { if (!pts?.length) return; const [x, y] = toScr(...pt
 function draw() {
   if (!ctx || !S.info) return;
   const c = ctx; c.setTransform(V.dpr, 0, 0, V.dpr, 0, 0); c.clearRect(0, 0, V.cw, V.ch);
+  // lo sfondo scelto si dipinge nel canvas: nella finestra trasparente dell'app i pixel
+  // trasparenti del canvas mostrerebbero il vetro scuro dietro la finestra, non lo sfondo
+  c.fillStyle = bgPaint(c); c.fillRect(0, 0, V.cw, V.ch);
   // la scansione con un'ombra, come una foto in Photo Gallery
   const [ix, iy] = toScr(0, 0), iw = S.info.w * V.s, ih = S.info.h * V.s;
   // una scansione su un foglio bianco con l'ombra; un ritaglio trasparente direttamente sullo sfondo scelto
@@ -747,6 +752,18 @@ function draw() {
   let info = S.selSet.size > 1 ? ` · ${S.selSet.size} sheets selected` : '';
   if (ss) { const b = bbox(ss.poly), w = b[2] - b[0], hh = b[3] - b[1]; info = ` · sheet ≈ ${(w / S.info.ppm).toFixed(0)} × ${(hh / S.info.ppm).toFixed(0)} mm · ${Math.round(w)} × ${Math.round(hh)} px · ${(w * hh * 4 / 1048576).toFixed(1)} MB RGBA`; }
   hud.textContent = `${Math.round(V.s * V.dpr * 100)}%` + (mouse ? ` · ${Math.round(mouse[0])}, ${Math.round(mouse[1])} px · ${(mouse[0] / S.info.ppm).toFixed(1)}, ${(mouse[1] / S.info.ppm).toFixed(1)} mm` : '') + info;
+}
+let checkerPat = null;
+function bgPaint(c) {
+  if (S.bg === 'white') return '#fff';
+  if (S.bg === 'grey') return '#8a8d91';
+  if (S.bg === 'dark') return '#262a30';
+  if (S.bg === 'checker') {
+    if (!checkerPat) { const t = document.createElement('canvas'); t.width = t.height = 16; const k = t.getContext('2d');
+      k.fillStyle = '#fbfbfb'; k.fillRect(0, 0, 16, 16); k.fillStyle = '#e6e6e6'; k.fillRect(0, 0, 8, 8); k.fillRect(8, 8, 8, 8); checkerPat = c.createPattern(t, 'repeat'); }
+    return checkerPat;
+  }
+  const g = c.createLinearGradient(0, 0, 0, V.ch); g.addColorStop(0, '#eef4fb'); g.addColorStop(1, '#d6e4f3'); return g;
 }
 const brushR = () => S.brushMM * S.info.ppm / 2;
 
@@ -1145,7 +1162,7 @@ async function refreshItems() { if (!S.dir) return; S.items = await api.get('lis
 function dialog(title, instr, body, buttons, opts = {}) {
   const back = h('div', { class: 'dlg-back', onmousedown: e => { if (e.target === back && !opts.modal) back.remove(); } });
   const d = h('div', { class: 'dlg', style: opts.style || {} },
-    h('div', { class: 'titlebar' }, h('div', { class: 'title' }, title), h('div', { class: 'caption' }, h('span', { class: 'close', onclick: () => back.remove() }, '✕'))),
+    h('div', { class: 'titlebar' }, h('div', { class: 'title' }, h('span', {}, title)), h('div', { class: 'caption' }, h('span', { class: 'close', onclick: () => back.remove() }, '✕'))),
     h('div', { class: 'content', style: { display: 'flex', flexDirection: 'column' } },
       instr ? h('div', { class: 'main-instr' }, instr) : null, h('div', { class: 'inner', style: { flex: 1, overflow: 'auto' } }, body),
       h('div', { class: 'foot' }, (buttons || [['OK', () => true, true]]).map(([l, fn, def]) => h('button', { class: 'btn' + (def ? ' default' : ''), onclick: async () => { if ((await fn()) !== false) back.remove(); } }, l)))));
@@ -1158,7 +1175,7 @@ function cutoutDialog(s) {
   let full = false;
   const img = h('img', { style: { display: 'block', margin: 'auto', maxWidth: '100%' } });
   const info = h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Rendering…');
-  const box = h('div', { class: 'checker', style: { overflow: 'auto', maxHeight: '68vh', minHeight: '200px', border: '1px solid #ccc', cursor: 'zoom-in' } }, img);
+  const box = h('div', { style: { background: bgCss(), overflow: 'auto', maxHeight: '68vh', minHeight: '200px', border: '1px solid #ccc', cursor: 'zoom-in' } }, img);
   const load = async () => {
     flushSave().then(() => {
       img.src = `/api/cutout?${qs({ rel: S.rel, id: s.id, max: full ? 100000 : 1400, v: S.st.version })}`;
@@ -1290,7 +1307,7 @@ function toggleChat() {
       tick();
     };
     const box = h('div', { class: 'dlg' },
-      h('div', { class: 'titlebar' }, h('svg', {}), h('div', { class: 'title' }, 'Ask Claude'), h('div', { class: 'caption' }, h('span', { class: 'close', onclick: toggleChat }, '✕'))),
+      h('div', { class: 'titlebar' }, h('svg', {}), h('div', { class: 'title' }, h('span', {}, 'Ask Claude')), h('div', { class: 'caption' }, h('span', { class: 'close', onclick: toggleChat }, '✕'))),
       h('div', { class: 'content', style: { display: 'flex', flexDirection: 'column' } }, log,
         h('div', { class: 'chatin' }, inp, h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } }, h('button', { class: 'btn default', onclick: send }, 'Send'), h('label', { class: 'small' }, cont, ' continue')))));
     d.append(box);
