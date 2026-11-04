@@ -249,6 +249,16 @@ def engines():
          'note': 'Classic cut; Apple Vision too when the paper is close to the lid colour.', 'params': [TOL_PARAM]},
         {'id': 'classic', 'name': 'Classic auto-cut (lid colour)', 'kind': 'builtin', 'available': True,
          'note': 'Finds the lid colour and removes it from the outside in, then the shadow. Keeps fibres and tears. Without the Apple Vision fallback.', 'params': [TOL_PARAM]},
+        {'id': 'otsu', 'name': 'Otsu threshold', 'kind': 'builtin', 'available': True,
+         'note': 'Splits light from dark at the best cut-off. Fast and solid when paper and lid differ in lightness, either way round (open lid, grey card).',
+         'params': [
+             {'id': 'polarity', 'label': 'Paper is', 'type': 'choice', 'default': 'auto',
+              'choices': [{'text': 'auto', 'note': 'Decided from the border of the scan (it is lid).'},
+                          {'text': 'lighter', 'note': 'Light paper on a dark lid or grey card.'},
+                          {'text': 'darker', 'note': 'Dark or coloured paper on the white lid.'}],
+              'hint': 'Whether the paper is lighter or darker than what is around it. Auto looks at the border of the scan, which is always lid or card.'},
+             {'id': 'refine', 'label': 'Edge from real pixels', 'type': 'bool', 'default': True,
+              'hint': 'Otsu puts the edge where the lightness crosses one value on a slightly blurred copy. With this on, the final edge is taken again from your scan: a magic wand against the lid right next to each point, within 2 mm. Sharper along soft shadows, keeps fibres.'}]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
@@ -333,6 +343,14 @@ def run_engine(rel, engine, params=None, box=None):
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sc.cut_scan_ai(sub, srgb, ppm)]
         elif engine == 'sam3':
             masks = sam3_masks(sub, ppm, params, whole=bool(box), off=off)
+        elif engine == 'otsu':
+            from . import otsu
+            srgb = np.asarray(Image.open(sub).convert('RGB')) if copy else rgb
+            masks = []
+            for m in otsu.segment(srgb, ppm, params):
+                if params.get('refine', True):
+                    m = refine_with_wand(srgb, m, ppm)
+                masks.extend(_crop_mask(m, np.zeros_like(m), ppm))
         elif engine.startswith('script:'):
             masks = script_masks(engine[7:], sub, ppm, params)
         else:
