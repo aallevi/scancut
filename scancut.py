@@ -485,9 +485,77 @@ def crop_rgba(rgb, alpha):
     return rgba
 
 
+# ---------------------------------------------------------------- coperchio aperto
+# Con il coperchio aperto (un quaderno spesso) il fondo non ha un colore solo: la luce cala
+# allontanandosi dal letto e il grigio va da chiaro a scuro. Per trovare i bordi si usa una
+# copia "spianata"; i pixel dei ritagli restano quelli della scansione.
+
+def bed_profiles(L, ppm):
+    # luminosita' del fondo lungo i quattro lati (striscia di 3 mm, saltati i 3 px estremi),
+    # lisciata su 30 mm di mediana: un foglio che tocca il bordo non sposta il profilo
+    b = max(4, int(3 * ppm))
+    k = odd(30 * ppm)
+    def prof(strip, axis):
+        v = np.median(strip, axis=axis).astype(np.float32)
+        w = min(k, len(v) - (1 - len(v) % 2))
+        if w < 3:
+            return v
+        pad = np.pad(v, w // 2, mode='edge')
+        return np.median(np.lib.stride_tricks.sliding_window_view(pad, w), axis=1).astype(np.float32)
+    top = prof(L[3:3 + b, :], 0); bot = prof(L[-3 - b:-3, :], 0)
+    left = prof(L[:, 3:3 + b], 1); right = prof(L[:, -3 - b:-3], 1)
+    return top, bot, left, right
+
+
+def flatten_bed(rgb, ppm):
+    # None se il fondo e' uniforme (coperchio chiuso, cartoncino): tutto come prima.
+    # Altrimenti la copia spianata. Il fondo si stima dall'immagine stessa: tolta la carta
+    # (soglia di Otsu, verso deciso dal bordo, allargata di 3 mm), la media dei pixel di fondo
+    # nei ~12 mm intorno a ogni punto ("normalized convolution"): segue la luce che cala e la
+    # zona scura vicino al quaderno. Le cose sottili e scure (gli anelli della spirale) non
+    # spostano la media e restano "non fondo", come la carta.
+    L = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)[..., 0]
+    top, bot, left, right = bed_profiles(L, ppm)
+    allp = np.concatenate([top, bot, left, right])
+    if allp.max() - allp.min() < 40:          # ~16 L*: sotto, e' il solito fondo uniforme
+        return None
+    H, W = L.shape
+    f = 1.0 / ppm                              # si lavora a ~1 px per mm
+    small = cv2.resize(L, (max(8, int(W * f)), max(8, int(H * f))), interpolation=cv2.INTER_AREA).astype(np.float32)
+    t, _ = cv2.threshold(small.astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    paper = small > t if np.median(allp) < t else small <= t
+    paper = cv2.dilate(paper.astype(np.uint8), disk(7)).astype(bool)
+    w = (~paper).astype(np.float32)
+    s = 12.0
+    num = cv2.GaussianBlur(small * w, (0, 0), s)
+    den = cv2.GaussianBlur(w, (0, 0), s)
+    B = np.where(den > 0.02, num / np.maximum(den, 1e-6), np.median(small[~paper]) if (~paper).any() else 128)
+    B = cv2.resize(B.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+    target = float(np.median(small[~paper])) if (~paper).any() else 128.0
+    gain = (target / np.maximum(B, 4.0))[..., None]
+    flat = np.clip(rgb.astype(np.float32) * gain, 0, 255).astype(np.uint8)
+    # le grandi zone scure (la copertina nera che spunta dietro la pagina, l'ombra del quaderno)
+    # sono fondo; le piccole attaccate alla pagina (gli anelli della spirale) restano
+    fl = cv2.resize(cv2.cvtColor(flat, cv2.COLOR_RGB2LAB)[..., 0], small.shape[::-1], interpolation=cv2.INTER_AREA)
+    dark = (fl < 0.55 * target).astype(np.uint8)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
+    big = np.zeros(dark.shape, bool)
+    for i in range(1, n):
+        if st[i, 4] > 300:                       # mm2 (si lavora a 1 px per mm)
+            big |= lab == i
+    if big.any():
+        big = cv2.resize(big.astype(np.uint8), (W, H), interpolation=cv2.INTER_NEAREST) > 0
+        flat[big] = int(round(target))
+    return flat
+
+
 def cut_scan(path, ai=True, ppm=None, tol=None):
     # tol: fattore sulle tolleranze del fondo e della bacchetta (lo studio lo regola a mano)
     rgb, icc, dpi, ppm = load(path, ppm)
+    orig = rgb
+    flat = flatten_bed(rgb, ppm)
+    if flat is not None:
+        rgb = flat
     blur = cv2.GaussianBlur(rgb, (odd(0.5 * ppm), odd(0.5 * ppm)), 0)
     lab = cv2.cvtColor(blur, cv2.COLOR_RGB2LAB).astype(np.float32)
     col, T = background(lab)
@@ -580,8 +648,13 @@ def cut_scan(path, ai=True, ppm=None, tol=None):
     sheets.sort(key=lambda s: (int(s[0] // band), s[1]))
     # carta quasi del colore del fondo, o niente trovato: si prova anche Apple Vision
     # e si tiene il risultato che somiglia di piu' a dei fogli
+    if flat is not None:
+        # coperchio aperto: le sagome vengono dalla copia spianata, i pixel dalla scansione.
+        # Una striscia sottile lungo il bordo del letto (il fondo che sfuma) non e' un foglio
+        sheets = [(y, x, *cutout(orig[y:y + m.shape[0], x:x + m.shape[1]], m, h, ppm, exact=e), (m, h, e))
+                  for y, x, _, _, _, (m, h, e) in sheets if rectangularity(m)[1] >= 20 * ppm]
     if ai and (flags or not sheets):
-        ai = cut_scan_ai(path, rgb, ppm)
+        ai = cut_scan_ai(path, orig, ppm)
         if score(ai) > score(sheets):
             return ai, icc, dpi, (col, T), True
     return sheets, icc, dpi, (col, T), False
@@ -895,7 +968,8 @@ def main():
                 notify(f'{os.path.basename(p)} could not be moved, it is still in the inbox')
             seen.pop(p, None)
             progressed = True
-        for keep, rel in uncut(read_done()):
+        # ritaglio automatico spento (dallo studio): le scansioni si sistemano e basta
+        for keep, rel in ([] if os.path.exists(os.path.join(ROOT, '.scancut', 'autocut-off')) else uncut(read_done())):
             try:
                 batch, n = process(keep)
             except Exception:

@@ -58,6 +58,21 @@ Export: a changed cutout with the same name is moved to
 scan is added to `done.tsv` as `studio` so the agent doesn't redo it. It takes the
 agent's lock. Optional: also import into Eagle (local API, Settings).
 
+## Export, rotation, history, automatic cutting
+
+- Settings > Export: PNG or JPEG XL lossless (`cjxl -d 0`, alpha kept; each file is decoded
+  back and compared pixel by pixel, else PNG is written). A different cutout whose name is
+  taken gets " (2)" and the old one stays (or, if chosen, the old one goes to replaced/).
+  "To extra/" exports the same cutouts into a subfolder.
+- ⟲/⟳ 90°: lossless rotation of the cutout at export (pixels moved, never resampled).
+- Detect never throws away sheets made by hand, and keeps the previous sheets in
+  "Earlier" (last 15) to restore. Detection runs only when you press Detect.
+- "Format from a corner": no detection, an exact A3–A7, Letter or photo rectangle from the
+  chosen corner of the scan (default bottom-left). Works in Batch.
+- Settings > Scan agent > Cut automatically: off writes `.scancut/autocut-off`; the agent then
+  only files new scans into originals/ (never loses one) and does not cut.
+- Two-finger scrolling always pans; zoom by pinching or ⌘ + scroll.
+
 ## Recutting a cutout
 
 Open a cutout (in `cut/` or a per-batch folder) and cut it again: the new pieces go in

@@ -499,7 +499,7 @@ function sideEditor(side) {
     } },
       h('input', { type: 'checkbox', checked: s.on !== false, title: 'Export this sheet', onclick: e => e.stopPropagation(), onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
-      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}`)),
+      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
@@ -508,6 +508,8 @@ function sideEditor(side) {
   if (many.length > 1) list.append(h('div', { class: 'multi' },
     h('div', { class: 'mh' }, `${many.length} sheets selected`),
     h('div', { class: 'btns' },
+      h('button', { class: 'btn small', title: 'Rotate 90° left, lossless', onclick: () => rotateSheets(many, -90) }, '⟲ 90°'),
+      h('button', { class: 'btn small', title: 'Rotate 90° right, lossless', onclick: () => rotateSheets(many, 90) }, '⟳ 90°'),
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Export on'),
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Export off'),
       h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
@@ -519,12 +521,22 @@ function sideEditor(side) {
     h('div', { class: 'row' }, h('label', {}, 'Label'), h('input', { type: 'text', class: 'f', value: sel.label || '', placeholder: 'used by {label} in names',
       onchange: e => commit(() => { sel.label = e.target.value; }) })),
     h('div', { class: 'btns' },
+      h('button', { class: 'btn small', title: 'Rotate 90° left, lossless', onclick: () => rotateSheets([sel], -90) }, '⟲ 90°'),
+      h('button', { class: 'btn small', title: 'Rotate 90° right, lossless', onclick: () => rotateSheets([sel], 90) }, '⟳ 90°'),
+      info('Turns the cutout by 90° at export: pixels are moved, never resampled, so nothing is lost.'),
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
-      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete'))) : null));
+      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete'))) : null,
+    (st?.history || []).length ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'Earlier'),
+      h('select', { class: 'f', onchange: e => { if (e.target.value !== '') restoreVersion(+e.target.value); } },
+        h('option', { value: '' }, `${st.history.length} earlier version(s)…`),
+        st.history.map((v, i) => h('option', { value: i }, `${new Date(v.time * 1000).toLocaleString()} · ${v.engine || 'manual'} · ${v.sheets.length} sheet(s)`))),
+      info('Every time Detect replaces the sheets, the previous ones are kept here (the last 15). Sheets you made by hand are never replaced by Detect.')) : null));
   side.append(group('Save',
     h('div', { class: 'small muted' }, 'Names follow the template in Settings: ', h('code', {}, S.settings.template), ' ', info(TIPS.template)),
+    h('div', { class: 'small muted' }, `Format: ${S.settings.export_format === 'jxl' ? 'JPEG XL lossless' : 'PNG'} · a different cutout with a name already taken ${S.settings.export_existing === 'replace' ? 'replaces it (old one kept in studio-data/replaced)' : 'gets a new number, the old one stays'}. Change in Settings.`),
     h('div', { class: 'btns' },
-      h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: doExport }, 'Export'),
+      h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: () => doExport() }, 'Export'),
+      h('button', { class: 'btn', disabled: !st?.sheets.some(s => s.on !== false), title: 'The same cutouts in a subfolder, e.g. to keep an odd but interesting cut next to the normal one', onclick: () => doExport(S.settings.export_subfolder || 'extra') }, `To ${S.settings.export_subfolder || 'extra'}/`),
       h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder')),
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
@@ -598,7 +610,7 @@ async function openScan(rel) {
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); renderSide(); renderCmdbar();
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
-    if (!st.sheets.length && !st.engine) detect(null, 'auto');
+    if (!st.sheets.length) status('No sheets yet: choose an engine and press Detect (or draw one).');
   } catch (e) {
     // il file non c'e' piu' (spostato dall'agente o cancellato): si torna alla cartella
     if (S.rel !== rel) return;
@@ -943,8 +955,8 @@ function bindCanvas(stage) {
   cv.addEventListener('wheel', e => {
     e.preventDefault();
     const r = cv.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
-    const mouseWheel = e.deltaMode === 1 || (e.deltaX === 0 && Math.abs(e.deltaY) >= 50 && Number.isInteger(e.deltaY));
-    if (e.ctrlKey || e.metaKey || mouseWheel) zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)), sx, sy);
+    // pizzico (arriva come ctrl+rotella) o ⌘+rotella: zoom. Tutto il resto (due dita, anche veloci) sposta
+    if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)), sx, sy);
     else { V.ox -= e.deltaX; V.oy -= e.deltaY; viewChanged(); }
   }, { passive: false });
 }
@@ -1194,16 +1206,30 @@ async function toggleCompare() {
   try { S.compare = await api.post('compare', { rel: S.rel, engines: S.settings.compare_engines }); } catch (e) { status(e.message); }
   busy(false); renderSide(); renderCmdbar(); draw();
 }
-async function doExport() {
+function rotateSheets(list, deg) {
+  commit(() => list.forEach(x => { x.rot = (((x.rot || 0) + deg) % 360 + 360) % 360; }));
+  status(`Rotated ${deg > 0 ? 'right' : 'left'} 90° (lossless, applied at export)`);
+}
+function restoreVersion(i) {
+  const v = S.st.history[i]; if (!v) return;
+  commit(() => {
+    // lo stato di adesso va a sua volta nella storia: tornare indietro non perde niente
+    S.st.history.splice(i, 1);
+    S.st.history.unshift({ time: Date.now() / 1000, engine: S.st.engine, sheets: S.st.sheets });
+    S.st.sheets = v.sheets; S.st.engine = v.engine; S.selSheet = null;
+  });
+  status('Earlier version restored (the current one is kept in the list)');
+}
+async function doExport(sub) {
   if (S.view !== 'editor' || !S.st?.sheets.length) return;
   await flushSave();
   busy(true, 'Saving the cutouts…');
   try {
-    const r = await api.post('export', { rel: S.rel });
+    const r = await api.post('export', { rel: S.rel, subfolder: typeof sub === 'string' ? sub : null });
     const moved = r.written.find(w => w.status === 'moved');
     if (moved) { S.rel = moved.rel; S.dir = moved.rel.split('/').slice(0, -1).join('/'); }
     const st = await api.get('state', { rel: S.rel }); setState(st);
-    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cutout you started from, kept)' : ''}`).join('\n');
+    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.status === 'identical' ? '   (already there, identical)' : ''}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cutout you started from, kept)' : ''}`).join('\n');
     status(`Exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`);
     alertDialog('Cutouts saved', h('pre', { class: 'log' }, list || 'Nothing to save.'));
   } catch (e) { alertDialog('Export failed', e.message); }
@@ -1268,13 +1294,20 @@ async function settingsDialog() {
     field('eagle', 'Add to Eagle', h('input', { type: 'checkbox', checked: s.eagle }), 'Also import each new cutout into Eagle (Eagle must be open).'),
     field('eagle_folder', 'Eagle folder id', h('input', { type: 'text', value: s.eagle_folder }), 'Optional.'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Engines and Claude'),
+    h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Export'),
+    field('export_format', 'Format', h('select', {}, [['png', 'PNG'], ['jxl', 'JPEG XL, lossless (smaller, keeps transparency)']].map(([v, l]) => h('option', { value: v, selected: s.export_format === v }, l))), 'JPEG XL is checked after writing: decoded back and compared pixel by pixel, else PNG is kept.'),
+    field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
+    field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by the second export button (“To …/”).'),
+    h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Scan agent'),
+    field('autocut', 'Cut automatically', h('input', { type: 'checkbox', checked: s.autocut }), 'On: new scans in the inbox are filed into originals/ and cut. Off: only filed; you cut them here when you want.'),
     field('compare_engines', 'Compare', h('input', { type: 'text', value: (s.compare_engines || []).join(', ') }), 'Engines shown by Compare, e.g. classic, vision, sam3'),
     field('claude_tools', 'Claude may use', h('input', { type: 'text', value: s.claude_tools }), 'Passed to claude --allowedTools.'),
   );
   dialog('Settings', 'Scan Studio settings', body, [['OK', async () => {
     const bf = {}; f.batch_folders.value.split('\n').forEach(l => { const m = l.split('='); if (m.length >= 2 && m[0].trim()) bf[m[0].trim()] = m.slice(1).join('=').trim(); });
     S.settings = await api.post('settings', { out_root: f.out_root.value.trim() || 'cut', template: f.template.value.trim() || '{batch}/{stem}{sheet}', batch_folders: bf,
-      eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
+      eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), export_format: f.export_format.value, export_existing: f.export_existing.value,
+      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
     if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); S.names = st.names || {}; renderSide(); }
   }, true], ['Cancel', () => true]]);
 }
@@ -1323,7 +1356,13 @@ async function renderScanners() {
   if (!SC.devs) {
     const r = await api.get('scanners').catch(e => ({ error: e.message }));
     if (S.view !== 'scanners') return;
-    if (!r.available) { side.innerHTML = ''; side.append(group('Scanner', h('div', {}, 'SANE is not installed. In Terminal: ', h('code', {}, 'brew install sane-backends')))); return; }
+    if (!r.available) {
+      side.innerHTML = '';
+      side.append(group('Scanner driver', h('div', {}, 'Scanning needs SANE, the open-source scanner driver (the only one that gives the LiDE 400 its 48-bit mode on the Mac).'),
+        h('div', { class: 'btns' }, h('button', { class: 'btn default', onclick: async () => { const j = await api.post('jobs', { kind: 'install', what: 'sane' }); status('Installing SANE…'); const t = async () => { const x = await api.get('job', { id: j.id }); if (['queued', 'running'].includes(x.status)) return setTimeout(t, 1000); status(x.status === 'done' ? 'SANE installed' : 'SANE install failed: see Jobs'); SC.devs = null; renderScanners(); }; t(); } }, 'Install the scanner driver'),
+          info('Runs “brew install sane-backends” (Homebrew must be installed). Takes a minute.'))));
+      return;
+    }
     SC.devs = r.devices || [];
     SC.dev = SC.devs.find(d => d.id === S.settings.scan_device) || SC.devs[0] || null;
     SC.res = S.settings.scan_res || 600; SC.mode = S.settings.scan_mode || 'Color'; SC.batch = S.settings.scan_batch || 'scan';

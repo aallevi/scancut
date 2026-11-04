@@ -243,6 +243,24 @@ SAM_PROMPTS = [
 ]
 
 
+ISO = {'A3': (297, 420), 'A4': (210, 297), 'A5': (148, 210), 'A6': (105, 148), 'A7': (74, 105),
+       'Letter': (215.9, 279.4), '10 x 15 cm': (100, 150), '13 x 18 cm': (130, 180)}
+
+
+def corner_masks(shape, ppm, params):
+    # il foglio messo nell'angolo del letto: un rettangolo del formato scelto, da quell'angolo
+    H, W = shape
+    w_mm, h_mm = ISO.get(params.get('format', 'A5'), ISO['A5'])
+    if params.get('orientation', 'portrait') == 'landscape':
+        w_mm, h_mm = h_mm, w_mm
+    w, h = min(W, int(round(w_mm * ppm))), min(H, int(round(h_mm * ppm)))
+    c = params.get('corner', 'bottom-left')
+    x0 = 0 if 'left' in c else W - w
+    y0 = H - h if 'bottom' in c else 0
+    m = np.zeros((h, w), bool); m[:] = True
+    return [(y0, x0, m, np.zeros_like(m), True)]
+
+
 def engines():
     out = [
         {'id': 'auto', 'name': 'Automatic (as the agent)', 'kind': 'builtin', 'available': True,
@@ -259,6 +277,18 @@ def engines():
               'hint': 'Whether the paper is lighter or darker than what is around it. Auto looks at the border of the scan, which is always lid or card.'},
              {'id': 'refine', 'label': 'Edge from real pixels', 'type': 'bool', 'default': True,
               'hint': 'Otsu puts the edge where the lightness crosses one value on a slightly blurred copy. With this on, the final edge is taken again from your scan: a magic wand against the lid right next to each point, within 2 mm. Sharper along soft shadows, keeps fibres.'}]},
+        {'id': 'corner', 'name': 'Format from a corner', 'kind': 'builtin', 'available': True,
+         'note': 'No detection: an exact A4, A5, A6 or A7 rectangle from the corner where you put the sheet. Instant, works in batch.',
+         'params': [
+             {'id': 'format', 'label': 'Format', 'type': 'choice', 'default': 'A5',
+              'choices': [{'text': k, 'note': f'{v[0]:g} × {v[1]:g} mm'} for k, v in ISO.items()],
+              'hint': 'The paper size. The cut is exactly this size, measured from the corner, using the scan resolution.'},
+             {'id': 'orientation', 'label': 'Orientation', 'type': 'choice', 'default': 'portrait',
+              'choices': [{'text': 'portrait', 'note': 'Taller than wide.'}, {'text': 'landscape', 'note': 'Wider than tall.'}],
+              'hint': 'How the sheet lies on the scanner bed.'},
+             {'id': 'corner', 'label': 'Corner', 'type': 'choice', 'default': 'bottom-left',
+              'choices': [{'text': c, 'note': f'The sheet is pushed into the {c} corner of the scan.'} for c in ('bottom-left', 'top-left', 'bottom-right', 'top-right')],
+              'hint': 'The corner of the scan (as you see it on screen) where the sheet sits.'}]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
@@ -343,6 +373,9 @@ def run_engine(rel, engine, params=None, box=None):
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sc.cut_scan_ai(sub, srgb, ppm)]
         elif engine == 'sam3':
             masks = sam3_masks(sub, ppm, params, whole=bool(box), off=off)
+        elif engine == 'corner':
+            masks = corner_masks(rgb.shape[:2], ppm, params)
+            off = (0, 0)
         elif engine == 'otsu':
             from . import otsu
             srgb = np.asarray(Image.open(sub).convert('RGB')) if copy else rgb
@@ -658,7 +691,13 @@ def detect(rel, engine, params=None, box=None, replace=True):
     ppm = image(rel)[3]
     st = load_state(rel)
     if replace:
-        st['sheets'] = []
+        # niente si butta: lo stato di prima va nella storia (le ultime 15), e i fogli fatti a
+        # mano (poligono, lazo, bacchetta, uniti) restano anche dopo un nuovo rilevamento
+        if st['sheets']:
+            hist = st.setdefault('history', [])
+            hist.insert(0, {'time': time.time(), 'engine': st.get('engine'), 'sheets': st['sheets']})
+            del hist[15:]
+        st['sheets'] = [x for x in st['sheets'] if not x.get('src')]
     st['engine'] = engine
     st['params'] = params or {}
     st['exported'] = False
@@ -909,6 +948,9 @@ def cut_sheet(rel, sheet):
         old = sc.cutout(ac, M, Hh, ppm, exact=exact)[0][..., 0]
         rgba[..., 3] = np.minimum(rgba[..., 3], old)
         rgba[rgba[..., 3] == 0, :3] = 0
+    q = (int(sheet.get('rot', 0)) // 90) % 4          # gradi in senso orario, a passi di 90: senza perdita
+    if q:
+        rgba = np.ascontiguousarray(np.rot90(rgba, k=-q))
     return rgba, ang, rect
 
 
@@ -923,13 +965,29 @@ DEFAULT_SETTINGS = {
     'claude_tools': 'Read,Bash(curl -s http://127.0.0.1:*),Bash(/opt/miniconda3/bin/python3 -I studio.py:*)',
     'compare_engines': ['classic', 'vision'],
     'scan_device': '', 'scan_res': 600, 'scan_mode': 'Color', 'scan_batch': 'scan',
+    'export_format': 'png',            # png | jxl (JPEG XL senza perdita, con la trasparenza)
+    'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
+    'export_subfolder': 'extra',       # "Export to subfolder": i ritagli in <cartella>/<questo>/
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
+
+
+def autocut():
+    return not os.path.exists(os.path.join(ROOT, '.scancut', 'autocut-off'))
+
+
+def set_autocut(on):
+    f = os.path.join(ROOT, '.scancut', 'autocut-off')
+    if on and os.path.exists(f):
+        os.remove(f)
+    elif not on:
+        open(f, 'w').write('the agent files new scans into originals/ but does not cut them (Scan Studio > Settings)\n')
 
 
 def settings():
     p = os.path.join(DATA, 'settings.json')
     s = dict(DEFAULT_SETTINGS)
+    s['autocut'] = autocut()
     if os.path.exists(p):
         try:
             s.update(json.load(open(p)))
@@ -940,6 +998,8 @@ def settings():
 
 def save_settings(new):
     s = settings()
+    if 'autocut' in new:
+        set_autocut(bool(new['autocut']))
     s.update({k: v for k, v in new.items() if k in DEFAULT_SETTINGS})
     p = os.path.join(DATA, 'settings.json')
     with open(p + '.part', 'w') as f:
@@ -970,8 +1030,9 @@ def out_names(rel, st=None):
     if is_recut(rel):
         # "sketchbook 3 a.png" -> sketchbook 3 a/sketchbook 3 a.png (com'era) + sketchbook 3 a a.png, b.png ...
         d = recut_folder(rel)
+        ext = '.jxl' if s.get('export_format') == 'jxl' else '.png'
         return [(x['id'], os.path.join(d, f'{stem} {"abcdefghijklmnopqrstuvwxyz"[j % 26]}'
-                                          + (f' {sc.clean_stem(x["label"])}' if x.get('label') else '') + '.png'))
+                                          + (f' {sc.clean_stem(x["label"])}' if x.get('label') else '') + ext))
                 for j, x in enumerate(on)]
     batch = batch_of(rel)
     root = s['batch_folders'].get(batch) or s['out_root']
@@ -985,7 +1046,7 @@ def out_names(rel, st=None):
         name = s['template'].format(**tok).strip().strip('/')
         name = '/'.join(sc.clean_stem(p) for p in name.split('/') if p and p not in ('.', '..'))
         names.append((x['id'], os.path.join(os.path.expanduser(root), name + '.png')))
-    return names
+    return [(i, os.path.splitext(n)[0] + '.jxl') for i, n in names] if s.get('export_format') == 'jxl' else names
 
 
 # ---------------------------------------------------------------- esportazione
@@ -1009,10 +1070,62 @@ def agent_lock(timeout=30):
             time.sleep(0.5)
 
 
-def export(rel, replace=True, log=print):
-    # scrive i ritagli; un ritaglio vecchio con lo stesso nome non si sovrascrive:
-    # se identico resta, se diverso va in studio-data/replaced/<data>/ (o, senza
-    # replace, il nuovo prende " (2)")
+def write_cutout(rgba, out, fmt, dpi, icc):
+    # PNG, o JPEG XL senza perdita (cjxl -d 0, con la trasparenza). Il JXL si rilegge e si
+    # confronta pixel per pixel: se non e' identico, si tiene il PNG
+    kw = {'dpi': (dpi, dpi)}
+    if icc:
+        kw['icc_profile'] = icc
+    if fmt == 'jxl' and shutil.which('cjxl'):
+        png = out + '.src.png'
+        Image.fromarray(rgba, 'RGBA').save(png, 'PNG', compress_level=1, **kw)
+        try:
+            subprocess.run(['cjxl', png, out + '.part', '-d', '0', '-e', '7', '--quiet'], check=True, capture_output=True, timeout=600)
+            back = out + '.check.png'
+            subprocess.run(['djxl', out + '.part', back, '--quiet'], check=True, capture_output=True, timeout=600)
+            same = np.array_equal(np.asarray(Image.open(back).convert('RGBA')), rgba)
+            os.remove(back)
+            if not same:
+                raise RuntimeError('JPEG XL round trip differs')
+            os.replace(out + '.part', out)
+            return out
+        except Exception:
+            for f in (out + '.part',):
+                if os.path.exists(f):
+                    os.remove(f)
+            out = os.path.splitext(out)[0] + '.png'
+        finally:
+            if os.path.exists(png):
+                os.remove(png)
+    Image.fromarray(rgba, 'RGBA').save(out + '.part', 'PNG', compress_level=4, **kw)
+    os.replace(out + '.part', out)
+    return out
+
+
+def same_cutout(path, rgba):
+    if not os.path.exists(path):
+        return False
+    if path.endswith('.jxl'):
+        back = path + '.cmp.png'
+        try:
+            subprocess.run(['djxl', path, back, '--quiet'], check=True, capture_output=True, timeout=600)
+            return np.array_equal(np.asarray(Image.open(back).convert('RGBA')), rgba)
+        except Exception:
+            return False
+        finally:
+            if os.path.exists(back):
+                os.remove(back)
+    return sc.same_png(path, rgba)
+
+
+def export(rel, replace=None, log=print, subfolder=None):
+    # scrive i ritagli. Un ritaglio con lo stesso nome non si sovrascrive mai: se identico
+    # resta; se diverso, il nuovo prende " (2)" (o, con export_existing=replace, il vecchio
+    # va in studio-data/replaced/). subfolder: i ritagli in una sottocartella della loro.
+    s_ = settings()
+    if replace is None:
+        replace = s_.get('export_existing') == 'replace'
+    fmt = s_.get('export_format', 'png')
     st = load_state(rel)
     rgb, icc, dpi, ppm = image(rel)
     sheets = {x['id']: x for x in st['sheets']}
@@ -1027,8 +1140,12 @@ def export(rel, replace=True, log=print):
             if res is None:
                 continue
             rgba, ang, rect = res
+            if subfolder:
+                out = os.path.join(os.path.dirname(out), sc.clean_stem(subfolder), os.path.basename(out))
+            if fmt == 'jxl':
+                out = os.path.splitext(out)[0] + '.jxl'
             os.makedirs(os.path.dirname(out), exist_ok=True)
-            if sc.same_png(out, rgba):
+            if same_cutout(out, rgba):
                 written.append({'id': sid, 'path': out, 'status': 'identical'}); continue
             moved = None
             if os.path.exists(out) and replace:
@@ -1036,11 +1153,7 @@ def export(rel, replace=True, log=print):
                 os.makedirs(os.path.dirname(moved), exist_ok=True)
                 moved = sc.unique(moved)
                 os.rename(out, moved)
-            out = sc.unique(out)
-            kw = {'dpi': (dpi, dpi)}
-            if icc: kw['icc_profile'] = icc
-            Image.fromarray(rgba, 'RGBA').save(out + '.part', 'PNG', compress_level=4, **kw)
-            os.replace(out + '.part', out)
+            out = write_cutout(rgba, sc.unique(out), fmt, dpi, icc)
             written.append({'id': sid, 'path': out, 'status': 'written', 'size': list(rgba.shape[1::-1]),
                             'tilt': round(ang, 2), 'rect': round(rect, 3), 'moved_old': moved})
             sc.log(f'studio: {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'

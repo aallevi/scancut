@@ -1,7 +1,7 @@
 # server locale dello studio: l'interfaccia (static/) e un'API JSON che usano
 # anche i lavori senza finestra e Claude. Solo 127.0.0.1.
 
-import os, io, json, time, threading, traceback, subprocess, uuid, queue, urllib.parse
+import os, io, json, time, threading, traceback, subprocess, uuid, queue, urllib.parse, shutil
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
@@ -91,6 +91,17 @@ class Jobs:
             say(f'  -> inbox/{os.path.basename(out)}')
             j['done'] += 1
         core.save_settings({'scan_device': a['dev'], 'scan_res': int(a['res']), 'scan_mode': a['mode'], 'scan_batch': batch})
+
+    def do_install(self, j, say):
+        # i driver: SANE con Homebrew (niente sudo)
+        brew = shutil.which('brew') or '/opt/homebrew/bin/brew'
+        what = {'sane': 'sane-backends', 'jxl': 'jpeg-xl'}[j['args'].get('what', 'sane')]
+        p = subprocess.Popen([brew, 'install', what], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in p.stdout:
+            say(line.rstrip())
+        if p.wait() != 0:
+            raise RuntimeError(f'brew install {what} failed')
+        j['done'] = 1
 
     def do_export(self, j, say):
         for rel in j['args']['rels']:
@@ -345,12 +356,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'compare':
             return self.send(core.compare(rel, b.get('engines') or core.settings()['compare_engines']))
         if path == 'export':
-            return self.send({'written': core.export(rel, replace=b.get('replace', True))})
+            return self.send({'written': core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'))})
         if path == 'settings':
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('batch', 'export', 'claude', 'preview', 'scan'):
+            if kind not in ('batch', 'export', 'claude', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'cancel':
