@@ -84,7 +84,8 @@ distance from the lid colour the cut uses and its tolerance; single pixel, 3x3 o
 loupe (G; 4/8/16:1, nearest-neighbour, real pixels), histogram (whole scan or the
 selected sheet, lid marker, linear/log), info bar (selected sheet mm, px, MB).
 Automatic/Classic take "Tolerance ×": 1 is the agent's own choice (identical cutouts).
-SAM 3 tool (S): click the object the prompt names, ⌥-click excludes, drag a box to
+SAM 3 menu (top bar): prompt and its options, quick prompts, find every object (replace or
+add), click and box tools, unload. SAM 3 tool (S): click the object the prompt names, ⌥-click excludes, drag a box to
 search inside it, Enter starts a new object. SAM 3's interactive (click/box) mode in
 Ultralytics spreads over the whole bed on these scans, so clicks pick among the text
 prompt's results instead. Every SAM result gets a second pass on a crop around it and
@@ -104,6 +105,8 @@ K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the o
 R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
 ⇧/⌘-click or drag on empty space selects several sheets · ⌘A all · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
 Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
+Address bar: every folder is clickable, ▸ lists its subfolders; back/forward with the round
+buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
 
 ## Milestone 2 (next)
 

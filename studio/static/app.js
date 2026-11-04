@@ -150,6 +150,21 @@ function renderCmdbar() {
       '-', { label: 'Fit', disabled: !ed, kbd: '⌘0', do: fit }, { label: 'Actual pixels', disabled: !ed, kbd: '⌘1', do: actual },
       '-', { label: 'Reset pane sizes', do: () => { store('navw', ''); store('sidew', ''); applyPaneSizes(); } },
     ] }),
+    cmd('SAM 3', null, { icon: I.t_sam, title: 'Meta Segment Anything 3: find objects by name', menu: () => {
+      const sam = S.engines.find(e => e.id === 'sam3'), ok = sam?.available, p = samParams().prompt;
+      if (!ok) return [{ label: 'SAM 3 needs ~/sam3.pt', disabled: true }];
+      return [
+        { label: `Prompt: “${p}”…`, do: samPromptDialog },
+        ...SAM_PROMPTS.map(x => ({ label: '   ' + x, check: p === x, do: () => { S.params.prompt = x; renderSide(); } })),
+        '-',
+        { label: `Find every “${p}” (replace sheets)`, disabled: !ed, do: () => detect(null, 'sam3') },
+        { label: `Find every “${p}” (add to sheets)`, disabled: !ed, do: () => detect(null, 'sam3', true) },
+        { label: 'Click tool: pick objects', kbd: 'S', disabled: !ed, do: () => setTool('sam') },
+        { label: 'Box tool: search inside a box', kbd: 'S + drag', disabled: !ed, do: () => setTool('sam') },
+        '-',
+        { label: S.samLoaded ? 'Unload SAM 3 (free 3.4 GB)' : 'SAM 3 not loaded (loads on first use)', disabled: !S.samLoaded, do: () => api.post('sam_unload').then(() => { S.samLoaded = false; status('SAM 3 unloaded'); }) },
+      ];
+    } }),
     cmd('Export', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Save the cutouts (⌘S)' }),
     cmd('Batch', null, { menu: () => [
       { label: `Detect selected (${S.sel.size}) with ${engName(S.engine)}`, disabled: !S.sel.size, do: () => batch(false) },
@@ -207,6 +222,7 @@ function renderNav() {
 
 // ------------------------------------------------------------ viste
 async function go(view) {
+  if (['jobs', 'scanners', 'scripts'].includes(view)) remember('view:' + view);
   if (S.view === 'editor' && view !== 'editor') leaveEditor();
   S.view = view;
   renderCmdbar(); renderNav(); renderNavbar();
@@ -217,12 +233,60 @@ async function go(view) {
   renderSide();
 }
 async function openDir(rel) {
+  remember('dir:' + rel);
   S.dir = rel; S.sel.clear(); S.anchor = null;
   S.open.add(rel.split('/')[0]);
   S.items = await api.get('list', { dir: rel }).catch(e => (status(e.message), []));
   go('gallery');
 }
 const crumbs = (...parts) => h('div', { class: 'crumbs' }, ...parts);
+const TOP_NAMES = { originals: 'Originals', cut: 'Cutouts', failed: 'To check', inbox: 'Inbox' };
+S.navBack = []; S.navFwd = []; S._here = null; S._navigating = false;
+function remember(target) {
+  if (!S._navigating && S._here && S._here !== target) { S.navBack.push(S._here); if (S.navBack.length > 100) S.navBack.shift(); S.navFwd = []; }
+  S._here = target;
+}
+async function goLoc(loc) {
+  const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
+  S._navigating = true;
+  try { if (kind === 'dir') await openDir(arg); else if (kind === 'scan') await openScan(arg); else await go(arg); }
+  finally { S._navigating = false; }
+}
+async function navBack() { if (!S.navBack.length) return; S.navFwd.push(S._here); await goLoc(S.navBack.pop()); }
+async function navFwd() { if (!S.navFwd.length) return; S.navBack.push(S._here); await goLoc(S.navFwd.pop()); }
+function addressBar(dir, file, right) {
+  // dir: 'originals/sketchbook' (o null per le pagine dello studio), file: nome della scansione aperta
+  const box = h('div', { class: 'addr-field' });
+  const chev = (prefix) => {
+    const c = h('span', { class: 'addr-chev', title: 'Subfolders' }, '▸');
+    c.addEventListener('click', async e => {
+      e.stopPropagation();
+      let items;
+      if (prefix === '') items = S.tree.map(t => ({ label: TOP_NAMES[t.name] || t.name, rel: t.rel }));
+      else items = (await api.get('list', { dir: prefix }).catch(() => [])).filter(i => i.dir).map(i => ({ label: `${i.name}  (${i.count})`, rel: i.rel }));
+      menu(c, items.length ? items.map(i => ({ label: i.label, do: () => openDir(i.rel) })) : [{ label: 'No subfolders', disabled: true }]);
+    });
+    return c;
+  };
+  const seg = (label, onclick, cls) => h('span', { class: 'addr-seg' + (cls ? ' ' + cls : ''), onclick }, label);
+  box.append(h('span', { class: 'addr-ico', html: I.pics }));
+  if (dir == null) {
+    box.append(seg('Studio', null, 'last'));
+    if (right) box.append(h('span', { class: 'addr-chev dim' }, '▸'), seg(right, null, 'last'));
+  } else {
+    box.append(seg('Scans', () => openDir('originals')), chev(''));
+    const parts = dir.split('/').filter(Boolean);
+    parts.forEach((p, i) => {
+      const prefix = parts.slice(0, i + 1).join('/'), last = i === parts.length - 1 && !file;
+      box.append(seg(i === 0 ? (TOP_NAMES[p] || p) : p, last ? null : () => openDir(prefix), last ? 'last' : ''), chev(prefix));
+    });
+    if (file) box.append(seg(file, null, 'last'));
+  }
+  const nb = (dirn, en, fn, tip) => h('div', { class: 'addr-nav' + (en ? '' : ' off'), title: tip, onclick: fn }, svg(dirn < 0 ? I.prev : I.next));
+  return h('div', { class: 'addr' },
+    h('div', { class: 'addr-navs' }, nb(-1, S.navBack.length, navBack, 'Back (⌘[)'), nb(1, S.navFwd.length, navFwd, 'Forward (⌘])')),
+    box, right && dir != null ? h('span', { class: 'sub' }, right) : null);
+}
 const visibleItems = () => S.items.filter(i => !i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
 function selectAll() { visibleItems().forEach(i => S.sel.add(i.rel)); }
 
@@ -248,7 +312,7 @@ function renderGallery() {
     grid.append(el);
   });
   const t = S.tree.flatMap(n => [n, ...n.children]).find(n => n.rel === S.dir);
-  main.append(crumbs(h('b', {}, S.dir.split('/').join(' ▸ ')), h('span', { class: 'sub' }, `${items.length} item${items.length !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`)), grid);
+  main.append(addressBar(S.dir, null, `${items.length} item${items.length !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`), grid);
 }
 function clickItem(e, it, idx, items) {
   if (e.shiftKey && S.anchor != null) {
@@ -285,6 +349,29 @@ function engineChooser() {
     box.append(h('div', { class: 'row', title: p.hint || null }, h('label', {}, p.label), inp));
   }
   return box;
+}
+function samParams() {
+  const e = S.engines.find(x => x.id === 'sam3'); const o = {};
+  for (const p of e?.params || []) o[p.id] = S.params[p.id] ?? p.default;
+  return o;
+}
+const SAM_PROMPTS = ['sheet of paper', 'drawing', 'sketchbook page', 'photograph', 'card', 'paper with a drawing'];
+function samPromptDialog() {
+  const p = samParams();
+  const f = {
+    prompt: h('input', { type: 'text', value: p.prompt, list: 'samlist' }),
+    threshold: h('input', { type: 'number', step: 0.05, min: 0.05, max: 0.95, value: p.threshold }),
+    hires: h('input', { type: 'checkbox', checked: p.hires }),
+    refine: h('input', { type: 'checkbox', checked: p.refine }),
+  };
+  const row = (l, el, hint) => h('div', { class: 'row', style: { alignItems: 'flex-start' } }, h('label', { style: { width: '130px', paddingTop: '3px' } }, l), h('div', { class: 'f' }, el, hint ? h('div', { class: 'small muted' }, hint) : null));
+  dialog('SAM 3', 'What should SAM 3 look for?', h('div', { style: { width: '520px' } },
+    h('datalist', { id: 'samlist' }, SAM_PROMPTS.map(x => h('option', { value: x }))),
+    row('Prompt', f.prompt, 'A short English phrase naming the objects: "sheet of paper", "drawing", "sketchbook page", "photograph".'),
+    row('Score', f.threshold, 'How sure SAM must be (0.05–0.95). Lower finds more, including wrong things.'),
+    row('Second pass', f.hires, 'Runs SAM again on a crop around each object: SAM works at ~1008 px, the crop shows the edge much closer.'),
+    row('Edge from real pixels', f.refine, 'The final edge comes from your scan (wand against the lid next to it, within 2 mm), not from SAM\'s mask.')),
+    [['OK', () => { S.params.prompt = f.prompt.value.trim() || 'sheet of paper'; S.params.threshold = +f.threshold.value || 0.4; S.params.hires = f.hires.checked; S.params.refine = f.refine.checked; renderSide(); renderCmdbar(); }, true], ['Cancel', () => true]]);
 }
 const engParams = () => { const e = S.engines.find(x => x.id === S.engine); const o = {}; for (const p of e?.params || []) o[p.id] = S.params[p.id] ?? p.default; return o; };
 
@@ -421,8 +508,9 @@ let cv, ctx, hud, busyEl;
 
 async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
+  remember('scan:' + rel);
   S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; V.tile = V.mtile = null;
-  const parts = rel.split('/'); if (parts.length >= 3) S.dir = parts.slice(0, -1).join('/');
+  const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
   const main = $('#main'); main.innerHTML = '';
@@ -448,7 +536,7 @@ async function openScan(rel) {
   const loupe = h('canvas', { class: 'loupe', id: 'loupe', width: 360, height: 360 });
   const dens = h('div', { class: 'dens', id: 'dens' });
   stage.append(cv, hud, dens, loupe, busyEl);
-  main.append(crumbs(h('b', {}, parts.slice(0, -1).join(' ▸ ')), ' ▸ ', parts.at(-1), h('span', { class: 'sub', id: 'edsub' }, '')), h('div', { class: 'editor' }, tb, stage));
+  main.append(addressBar(parts.slice(0, -1).join('/'), parts.at(-1)), h('div', { class: 'editor' }, tb, stage));
   ctx = cv.getContext('2d');
   bindCanvas(stage);
   new ResizeObserver(() => { resize(); draw(); }).observe(stage);
@@ -825,7 +913,7 @@ async function samClick(pt, add) {
   // i clic si sommano finche' non si preme Invio (o si cambia strumento): stesso oggetto
   if (!S.sam) S.sam = { points: [], labels: [], sheet: null };
   S.sam.points.push(pt); S.sam.labels.push(add ? 1 : 0); draw();
-  const prm = Object.assign({}, S.engine === 'sam3' ? engParams() : {}, { points: S.sam.points, labels: S.sam.labels });
+  const prm = Object.assign(samParams(), { points: S.sam.points, labels: S.sam.labels });
   if (!prm.prompt) prm.prompt = (S.engines.find(e => e.id === 'sam3').params.find(p => p.id === 'prompt') || {}).default;
   busy(true, 'SAM 3: “' + prm.prompt + '”' + (S.samLoaded ? '' : ' (loading the model, ~10 s)'));
   try {
@@ -883,6 +971,8 @@ document.addEventListener('keydown', e => {
   if (e.target.closest('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
+  if ((mod && k === '[') || (e.altKey && k === 'ArrowLeft')) { e.preventDefault(); return navBack(); }
+  if ((mod && k === ']') || (e.altKey && k === 'ArrowRight')) { e.preventDefault(); return navFwd(); }
   if (S.view === 'gallery') {
     if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
     if (k === 'Enter' && S.sel.size) openScan([...S.sel][0]);
@@ -915,6 +1005,7 @@ document.addEventListener('keydown', e => {
   if (k === 'ArrowRight') return step(1);
   if (k === 'ArrowLeft') return step(-1);
 });
+document.addEventListener('mouseup', e => { if (e.button === 3) navBack(); if (e.button === 4) navFwd(); });
 document.addEventListener('keyup', e => { if (e.key === ' ') { spaceDown = false; cv && (cv.style.cursor = cursorFor(S.tool)); } });
 
 // ------------------------------------------------------------ storia e salvataggio
@@ -945,18 +1036,18 @@ async function flushSave() { if (saveTimer) { clearTimeout(saveTimer); save(); }
 
 // ------------------------------------------------------------ azioni
 function busy(on, msg) { busyEl?.classList.toggle('on', on); const m = $('#busymsg'); if (m && msg) m.textContent = msg; }
-async function detect(box, engine) {
+async function detect(box, engine, add) {
   if (!S.rel) return;
   await flushSave();
   engine = engine || S.engine;
   const eng = S.engines.find(e => e.id === engine);
   if (!eng?.available) return status(`${eng?.name || engine} is not available`);
-  const many = Array.isArray(box);
+  const many = Array.isArray(box) || !!add;
   if (!many && S.st.sheets.some(sheetEdited) && !confirm('Detecting again replaces the sheets and your edits on them. Continue?')) return;
   busy(true, `${eng.name}${many ? ' (inside the box)' : ''}…` + (engine === 'sam3' && !S.samLoaded ? ' loading the model the first time (~10 s)' : ''));
   try {
     if (!many) pushHist();
-    const r = await api.post('detect', { rel: S.rel, engine, params: engine === S.engine ? engParams() : {}, box: many ? box : null, replace: !many });
+    const r = await api.post('detect', { rel: S.rel, engine, params: engine === 'sam3' ? samParams() : engine === S.engine ? engParams() : {}, box: Array.isArray(box) ? box : null, replace: !many });
     if (engine === 'sam3') S.samLoaded = true;
     setState(r.state); const fresh = await api.get('state', { rel: S.rel }); S.names = fresh.names || {};
     status(`${eng.name}: ${r.state.sheets.length} sheet(s) in ${r.meta.seconds ?? 0}s`);
@@ -1077,7 +1168,7 @@ function renderJobs() {
       h('td', {}, h('div', { class: 'log', style: { maxHeight: '160px', overflow: 'auto' } }, j.log.slice(-60).join('\n'))),
       h('td', {}, ['running', 'queued'].includes(j.status) ? h('button', { class: 'btn small', onclick: () => api.post('cancel', { id: j.id }).then(pollJobs) }, 'Cancel') : null)));
   }
-  main.append(crumbs(h('b', {}, 'Jobs'), h('span', { class: 'sub' }, 'Batches, exports and Claude requests run here, one after another.')),
+  main.append(addressBar(null, null, 'Jobs'),
     h('div', { style: { flex: 1, overflow: 'auto' } }, S.jobs.length ? t : h('div', { class: 'empty' }, 'No jobs yet. Select scans in a folder and use Batch.')));
 }
 
@@ -1089,7 +1180,7 @@ async function renderScanners() {
     h('div', { html: I.scanner.replace('class="ico"', 'width="48" height="48"') }),
     h('div', { style: { flex: 1 } }, h('div', { style: { fontSize: '14px', color: '#1e3287' } }, s.name), h('div', { class: 'small muted' }, s.uri), h('div', { class: 'small muted' }, 'Driverless (eSCL over USB).')),
     h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => api.post('open', { what: 'canon' }) }, 'IJ Scan Utility'), h('button', { class: 'btn', onclick: () => api.post('open', { what: 'imagecapture' }) }, 'Image Capture')));
-  main.append(crumbs(h('b', {}, 'Scanners')), h('div', { style: { padding: '14px', overflow: 'auto' } },
+  main.append(addressBar(null, null, 'Scanners'), h('div', { style: { padding: '14px', overflow: 'auto' } },
     list.length ? list.map(card) : h('div', { class: 'muted' }, 'No scanner known to macOS right now. Plug in the Canon LiDE 400 and switch it on.'),
     h('div', { class: 'group', style: { margin: '16px 0 0', maxWidth: '640px' } }, h('div', { class: 'gh' }, 'How scans get here'),
       h('div', {}, 'Scan with Image Capture or IJ Scan Utility into ', h('b', {}, '~/Scans/inbox'), '. The agent moves each scan to originals/ and cuts it; open it here to check or fix the edges.'),
@@ -1100,7 +1191,7 @@ async function renderScanners() {
 function renderScripts() {
   const main = $('#main'); main.innerHTML = '';
   const scripts = S.engines.filter(e => e.kind === 'script');
-  main.append(crumbs(h('b', {}, 'Scripts'), h('span', { class: 'sub' }, '.scancut/scripts/')), h('div', { style: { padding: '14px', overflow: 'auto', maxWidth: '760px' } },
+  main.append(addressBar(null, null, 'Scripts'), h('div', { style: { padding: '14px', overflow: 'auto', maxWidth: '760px' } },
     h('div', { class: 'group', style: { margin: 0 } }, h('div', { class: 'gh' }, 'Your engines'),
       scripts.length ? scripts.map(e => h('div', { class: 'row' }, svg(I.script), h('b', {}, e.name), h('span', { class: 'muted' }, e.note))) : h('div', { class: 'muted' }, 'None yet.'),
       h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => api.post('open', { what: 'scripts' }) }, 'Open scripts folder'), h('button', { class: 'btn', onclick: async () => { S.engines = await api.get('engines'); renderScripts(); } }, 'Refresh'))),
