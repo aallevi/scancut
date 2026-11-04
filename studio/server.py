@@ -114,7 +114,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def guard(self):
-        LAST_SEEN[0] = time.time()
+        if not self.path.startswith('/api/ping'):     # il Dock chiede se c'e' una finestra: non conta
+            LAST_SEEN[0] = time.time()
         # niente richieste da altri siti: host locale, e per le POST un'intestazione propria
         host = (self.headers.get('Host') or '').split(':')[0]
         if host not in ('127.0.0.1', 'localhost'):
@@ -175,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
         rel = q.get('rel')
         if rel:
             core.abspath(rel)          # fuori dalla radice: errore
+        if path == 'ping':
+            return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999})
         if path == 'tree':
             return self.send({'root': core.ROOT, 'tree': core.tree()})
         if path == 'list':
@@ -311,9 +314,11 @@ class Handler(BaseHTTPRequestHandler):
             elif what == 'eagle':
                 subprocess.run(['open', '-a', 'Eagle'])
             elif what == 'hide':
-                # "riduci a icona" della cornice Vista: nasconde la finestra di Chrome in primo piano
-                subprocess.run(['osascript', '-e', 'tell application "System Events" to set visible of '
-                                '(first process whose frontmost is true) to false'], timeout=10)
+                # "riduci a icona" della cornice Vista: nasconde il Chrome dello studio (il clic nel
+                # Dock lo riporta davanti, scan-studio.sh)
+                pid = studio_chrome_pid()
+                if pid:
+                    subprocess.run([os.path.join(os.path.dirname(__file__), 'appctl'), 'hide', str(pid)], timeout=10)
             elif what == 'scripts':
                 os.makedirs(core.SCRIPTS, exist_ok=True)
                 subprocess.run(['open', core.SCRIPTS])
@@ -321,6 +326,12 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/com.antonioallevi.scancut'])
             return self.send({'ok': True})
         self.send_error(404)
+
+
+def studio_chrome_pid():
+    # il Chrome che mostra lo studio: quello con il profilo studio-data/window
+    r = subprocess.run(['pgrep', '-o', '-f', 'user-data-dir=.*studio-data/window'], capture_output=True, text=True)
+    return r.stdout.strip().split('\n')[0] if r.stdout.strip() else None
 
 
 def scanners():
