@@ -1299,6 +1299,8 @@ function toggleChat() {
 }
 
 // ------------------------------------------------------------ finestra (pywebview senza cornice)
+// nell'app del Dock la finestra e' trasparente: fuori dalla cornice Vista non si disegna niente
+if (window.webkit?.messageHandlers?.studio) document.documentElement.classList.add('native');
 $$('.caption [data-win]').forEach(el => el.addEventListener('click', () => {
   const a = window.pywebview?.api; const w = el.dataset.win;
   // nell'app del Dock (WebKit nativo): riduci nel Dock, ingrandisci, chiudi davvero

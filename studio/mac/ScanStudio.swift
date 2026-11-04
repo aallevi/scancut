@@ -16,8 +16,75 @@ let base = URL(string: "http://127.0.0.1:\(port)/")!
 final class DragStrip: NSView {
     override var mouseDownCanMoveWindow: Bool { true }
     override func mouseDown(with e: NSEvent) {
-        if e.clickCount == 2 { window?.zoom(nil); return }
+        if e.clickCount == 2 { (window as? StudioWindow)?.toggleMax(); return }
         window?.performDrag(with: e)
+    }
+}
+
+// la finestra ha la forma della cornice Vista: niente bordo di macOS (che arrotonda tutti e
+// quattro gli angoli), angoli tondi solo in alto, il vetro sfoca davvero cio' che c'e' dietro
+final class StudioWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+    var restore: NSRect?
+    // ingrandisci come in Vista: tutto lo schermo utile, e di nuovo com'era
+    func toggleMax() {
+        guard let vis = screen?.visibleFrame else { return }
+        if let r = restore, frame.equalTo(vis) { setFrame(r, display: true, animate: true); restore = nil }
+        else { restore = frame; setFrame(vis, display: true, animate: true) }
+    }
+}
+
+let RADIUS: CGFloat = 8        // come la cornice disegnata dalla pagina (vista.css .window)
+
+func frameMask(_ size: NSSize) -> NSImage {
+    // rettangolo con gli angoli in alto arrotondati (coordinate di AppKit: l'alto e' maxY)
+    let img = NSImage(size: size, flipped: false) { r in
+        let p = NSBezierPath()
+        p.move(to: NSPoint(x: r.minX, y: r.minY))
+        p.line(to: NSPoint(x: r.maxX, y: r.minY))
+        p.line(to: NSPoint(x: r.maxX, y: r.maxY - RADIUS))
+        p.appendArc(withCenter: NSPoint(x: r.maxX - RADIUS, y: r.maxY - RADIUS), radius: RADIUS, startAngle: 0, endAngle: 90)
+        p.line(to: NSPoint(x: r.minX + RADIUS, y: r.maxY))
+        p.appendArc(withCenter: NSPoint(x: r.minX + RADIUS, y: r.maxY - RADIUS), radius: RADIUS, startAngle: 90, endAngle: 180)
+        p.close(); NSColor.black.setFill(); p.fill(); return true
+    }
+    img.capInsets = NSEdgeInsets(top: RADIUS + 1, left: RADIUS + 1, bottom: 1, right: RADIUS + 1)
+    img.resizingMode = .stretch
+    return img
+}
+
+// bordi per ridimensionare (una finestra senza bordo di macOS non li ha da sola)
+final class ResizeEdge: NSView {
+    enum Side { case left, right, bottom, bottomLeft, bottomRight }
+    let side: Side
+    var start = NSRect.zero, startMouse = NSPoint.zero
+    init(_ side: Side) { self.side = side; super.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError() }
+    override func resetCursorRects() {
+        let c: NSCursor
+        switch side {
+        case .left, .right: c = .resizeLeftRight
+        case .bottom: c = .resizeUpDown
+        case .bottomLeft, .bottomRight:
+            if #available(macOS 15.0, *) { c = NSCursor.frameResize(position: side == .bottomLeft ? .bottomLeft : .bottomRight, directions: .all) }
+            else { c = .crosshair }
+        }
+        addCursorRect(bounds, cursor: c)
+    }
+    override func mouseDown(with e: NSEvent) { start = window!.frame; startMouse = NSEvent.mouseLocation }
+    override func mouseDragged(with e: NSEvent) {
+        guard let w = window else { return }
+        let m = NSEvent.mouseLocation, dx = m.x - startMouse.x, dy = m.y - startMouse.y
+        var f = start
+        if side == .right || side == .bottomRight { f.size.width = max(w.minSize.width, start.width + dx) }
+        if side == .left || side == .bottomLeft {
+            let nw = max(w.minSize.width, start.width - dx); f.origin.x = start.maxX - nw; f.size.width = nw
+        }
+        if side == .bottom || side == .bottomLeft || side == .bottomRight {
+            let nh = max(w.minSize.height, start.height - dy); f.origin.y = start.maxY - nh; f.size.height = nh
+        }
+        w.setFrame(f, display: true)
     }
 }
 
@@ -84,19 +151,25 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         if #available(macOS 13.3, *) { web.isInspectable = true }
         web.setValue(false, forKey: "drawsBackground")       // niente lampo bianco all'avvio
 
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900),
-                          styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-                          backing: .buffered, defer: false)
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] { window.standardWindowButton(b)?.isHidden = true }
+        window = StudioWindow(contentRect: NSRect(x: 0, y: 0, width: 1400, height: 900),
+                              styleMask: [.borderless, .resizable, .miniaturizable],
+                              backing: .buffered, defer: false)
         window.title = "Scan Studio"
         window.minSize = NSSize(width: 900, height: 600)
-        window.backgroundColor = NSColor(red: 0.04, green: 0.2, blue: 0.29, alpha: 1)
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
+        window.collectionBehavior = [.fullScreenPrimary, .managed]
         window.delegate = self
         window.isReleasedWhenClosed = false
 
-        let content = NSView()
+        // il vetro: la sfocatura vera di macOS dietro la pagina, ritagliata con la forma Vista;
+        // la pagina ci disegna sopra la sua cornice semitrasparente
+        let content = NSVisualEffectView()
+        content.material = .hudWindow
+        content.blendingMode = .behindWindow
+        content.state = .active
+        content.maskImage = frameMask(NSSize(width: 64, height: 64))
         web.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(web)
         let strip = DragStrip()
@@ -109,6 +182,21 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             strip.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -110), // pulsanti Vista liberi
             strip.topAnchor.constraint(equalTo: content.topAnchor), strip.heightAnchor.constraint(equalToConstant: 28),
         ])
+        let edge: CGFloat = 6, corner: CGFloat = 14
+        for (side, l, r, b, wdt, hgt) in [
+            (ResizeEdge.Side.left, true, false, false, edge, CGFloat(-1)), (.right, false, true, false, edge, -1),
+            (.bottom, false, false, true, -1, edge), (.bottomLeft, true, false, true, corner, corner), (.bottomRight, false, true, true, corner, corner)] {
+            let v = ResizeEdge(side); v.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(v)
+            var cs: [NSLayoutConstraint] = []
+            if l { cs.append(v.leadingAnchor.constraint(equalTo: content.leadingAnchor)) }
+            if r { cs.append(v.trailingAnchor.constraint(equalTo: content.trailingAnchor)) }
+            if b { cs.append(v.bottomAnchor.constraint(equalTo: content.bottomAnchor)) }
+            if wdt > 0 { cs.append(v.widthAnchor.constraint(equalToConstant: wdt)) }
+            else { cs += [v.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: corner), v.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -corner)] }
+            if hgt > 0 { cs.append(v.heightAnchor.constraint(equalToConstant: hgt)) }
+            else { cs += [v.topAnchor.constraint(equalTo: content.topAnchor, constant: 30), v.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -corner)] }
+            NSLayoutConstraint.activate(cs)
+        }
         window.contentView = content
         window.setFrameAutosaveName("ScanStudioMain")
         if !window.setFrameUsingName("ScanStudioMain") { window.center() }
@@ -121,7 +209,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         guard let cmd = (m.body as? [String: Any])?["cmd"] as? String else { return }
         switch cmd {
         case "min": window.miniaturize(nil)
-        case "max": window.zoom(nil)
+        case "max": (window as? StudioWindow)?.toggleMax()
         case "full": window.toggleFullScreen(nil)
         case "close": window.performClose(nil)
         default: break
@@ -216,6 +304,11 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     }
 
     @objc func reload() { web.reload() }
+
+    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.window.invalidateShadow() }
+    }
+    func windowDidResize(_ n: Notification) { window.invalidateShadow() }
 
     static let loadingPage = """
     <html><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0b3a52;
