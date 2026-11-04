@@ -28,13 +28,10 @@ studio.py export "originals/notes/notes 4.png"          # saves the edited state
 
 - `auto`: exactly what the agent does. `classic`: same without the Vision fallback.
 - `vision`: Apple Vision (`vision_mask`).
-- `sam3`: Meta SAM 3 via transformers, in its own process (`studio/sam3_worker.py`),
-  on the Apple GPU. Needs the weights converted once into `~/sam3-hf`:
-  ```
-  curl -L -o /tmp/convert_sam3_to_hf.py https://raw.githubusercontent.com/huggingface/transformers/main/src/transformers/models/sam3/convert_sam3_to_hf.py
-  cd ~ && /opt/miniconda3/bin/python3 -I /tmp/convert_sam3_to_hf.py --checkpoint_path ~/sam3.pt --output_path ~/sam3-hf
-  ```
-  (~3.3 GB; after that `~/sam3.pt` is no longer needed by the studio.)
+- `sam3`: Meta SAM 3, read straight from `~/sam3.pt` by Ultralytics (the same way
+  DigitalSreeni Image Annotator does it), in its own process (`studio/sam3_worker.py`)
+  on the Apple GPU. First run loads ~3.4 GB (~10 s). Text prompt now; the worker also
+  takes clicks (+/-) and boxes (`mode: 'prompt'`) for the coming SAM tool.
   "Refine edge with wand" keeps SAM's region but takes the real edge from the
   classic wand within 2 mm.
 - `script:<name>`: any `scripts/<name>.py` with `segment(rgb, ppm, params)` returning
@@ -54,6 +51,15 @@ Export: a changed cutout with the same name is moved to
 scan is added to `done.tsv` as `studio` so the agent doesn't redo it. It takes the
 agent's lock. Optional: also import into Eagle (local API, Settings).
 
+## Recutting a cutout
+
+Open a cutout (in `cut/` or a per-batch folder) and cut it again: the new pieces go in
+a folder named after it, next to it, and the cutout itself moves in there untouched:
+`cut/sketchbook/sketchbook 3 a.png` -> `cut/sketchbook/sketchbook 3 a/sketchbook 3 a.png` + `sketchbook 3 a a.png` ...
+Its transparency stays (the new alpha is never more opaque than the old). For the
+engines, transparent areas and a 10 mm margin are filled with grey card (light paper)
+or white lid (dark paper); those fill pixels are never saved.
+
 ## Data (`<root>/.scancut/studio-data/`, not in git)
 
 `state/` edit state per scan (JSON), `cache/` engine masks, `previews/`,
@@ -71,11 +77,20 @@ POST `detect {rel, engine, params, box?, replace?}`, `state {state}` (version-ch
 
 `rel` is a path inside the root, e.g. `originals/sketchbook/sketchbook 3.png`.
 
+## Tools
+
+Magic wand: like Photoshop's, on the 3x3-blurred scan, per-channel tolerance (the
+automatic cut uses ~13-15), contiguous or not. Stored as seed + tolerance, so export
+recomputes it at full resolution. Clicking paper with no sheet there makes a new sheet.
+View menu: background (light blue, white, grey, dark, checker). Pane edges drag;
+double-click resets.
+
 ## Shortcuts (editor)
 
 V select · H pan (or hold Space) · A edit points (double-click edge adds, ⌥-click
-removes) · P polygon (Enter closes) · L lasso add · K lasso cut · B brush · E eraser ·
-R box detect · [ ] brush size · C compare · X cut view · Tab next sheet ·
+removes) · P polygon (Enter closes) · M rectangle · L lasso · W magic wand · B brush ·
+K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the other) ·
+R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
 Delete hide/remove sheet · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
 Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
 

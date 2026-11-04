@@ -14,7 +14,7 @@ import scancut as sc  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 SCRIPTS = os.path.join(REPO, 'scripts')
-SAM3_DIR = os.path.expanduser('~/sam3-hf')
+SAM3_WEIGHTS = os.path.expanduser('~/sam3.pt')   # letto da Ultralytics cosi' com'e'
 
 ROOT = DATA = None
 _lock = threading.RLock()
@@ -77,6 +77,10 @@ def listing(rel):
     out = []
     for f in sorted(os.listdir(d), key=str.lower):
         p = os.path.join(d, f)
+        if os.path.isdir(p) and not f.startswith('.'):
+            out.append({'rel': relpath(p), 'name': f, 'dir': True,
+                        'count': sum(1 for g in os.listdir(p) if is_image(g))})
+            continue
         if not is_image(f) or not os.path.exists(p):
             continue
         r = relpath(p) if not os.path.islink(p) else os.path.join(rel, f)
@@ -112,11 +116,61 @@ def image(rel):
         k = file_key(rel)
         if k in _img_cache:
             return _img_cache[k]
-        rgb, icc, dpi, ppm = sc.load(abspath(rel))
+        p = abspath(rel)
+        im = Image.open(p)
+        a = None
+        if im.mode in ('RGBA', 'LA', 'PA') or 'transparency' in im.info:
+            a = np.asarray(im.convert('RGBA'))[..., 3].copy()
+            if a.min() == 255:
+                a = None
+        # un ritaglio non e' largo come il letto dello scanner: la misura viene dal suo dpi
+        d = (im.info.get('dpi') or (0, 0))[0] or 0
+        known = d / 25.4 if d and (a is not None or is_recut(rel)) else None
+        rgb, icc, dpi, ppm = sc.load(p, known)
         if len(_img_cache) >= 2:
-            _img_cache.pop(next(iter(_img_cache)))
+            k0 = next(iter(_img_cache))
+            _img_cache.pop(k0); _alpha.pop(k0, None)
         _img_cache[k] = (rgb, icc, dpi, ppm)
+        _alpha[k] = a
         return _img_cache[k]
+
+
+_alpha = {}
+
+
+def alpha(rel):
+    # la trasparenza che il file ha gia' (None per una scansione)
+    image(rel)
+    return _alpha.get(file_key(rel))
+
+
+def is_recut(rel):
+    # si ritaglia un ritaglio (cut/ o la cartella d'uscita): i pezzi nuovi gli vanno accanto
+    out = settings()['out_root']
+    out = out if os.path.isabs(os.path.expanduser(out)) else os.path.join(ROOT, out)
+    p = abspath(rel)
+    roots = [os.path.realpath(os.path.expanduser(out))] + [os.path.realpath(os.path.expanduser(v)) for v in settings()['batch_folders'].values()]
+    return rel.startswith('cut/') or any(p.startswith(r + os.sep) for r in roots)
+
+
+def fill_colour(rel):
+    # il fondo finto per i motori, ben diverso dalla carta: cartoncino grigio dietro la
+    # carta chiara (come consiglia scancut), coperchio bianco dietro quella scura
+    rgb = image(rel)[0]
+    a = alpha(rel)
+    px = rgb[a > 128] if a is not None else rgb[rgb.shape[0] // 4: -rgb.shape[0] // 4, rgb.shape[1] // 4: -rgb.shape[1] // 4].reshape(-1, 3)
+    L = np.median(px[::97].mean(1)) if len(px) else 255
+    return (128, 128, 126) if L > 160 else (247, 247, 246)
+
+
+def detect_rgb(rel):
+    # per i motori: le zone gia' trasparenti diventano fondo (solo per cercare i bordi)
+    rgb = image(rel)[0]
+    a = alpha(rel)
+    if a is None:
+        return rgb
+    f = a[..., None].astype(np.float32) / 255
+    return (rgb * f + np.array(fill_colour(rel), np.float32) * (1 - f)).round().astype(np.uint8)
 
 
 def preview_path(rel, size):
@@ -164,8 +218,8 @@ def engines():
          'note': 'Background colour, wand from outside, shadow pass. Keeps fibres and tears.'},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
-        {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(os.path.join(SAM3_DIR, 'config.json')),
-         'note': f'Text prompt or box. Weights in {SAM3_DIR}.', 'params': [
+        {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
+         'note': 'Finds what the prompt names. Runs on the Apple GPU via Ultralytics.', 'params': [
              {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper'},
              {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05},
              {'id': 'refine', 'label': 'Refine edge with wand', 'type': 'bool', 'default': True}]},
@@ -201,21 +255,29 @@ def run_engine(rel, engine, params=None, box=None):
         return key
     t0 = time.time()
     sub, off = path, (0, 0)
-    if box:
-        # solo dentro il riquadro: si ritaglia una copia e si lavora su quella
-        x0, y0, x1, y1 = [int(v) for v in box]
+    work = detect_rgb(rel)
+    copy = bool(box) or alpha(rel) is not None or is_recut(rel)
+    if copy:
+        # una copia su cui lavorare: solo il riquadro, e/o con il trasparente fatto bianco
+        x0, y0, x1, y1 = [int(v) for v in box] if box else (0, 0, rgb.shape[1], rgb.shape[0])
         x0, y0 = max(0, x0), max(0, y0)
         x1, y1 = min(rgb.shape[1], x1), min(rgb.shape[0], y1)
         sub = os.path.join(DATA, 'cache', f'.box-{os.getpid()}-{key}.png')
-        Image.fromarray(rgb[y0:y1, x0:x1]).save(sub, dpi=(dpi, dpi))
-        off = (y0, x0)
+        piece = work[y0:y1, x0:x1]
+        # un ritaglio arriva fino al bordo: intorno si mette 10 mm di fondo (fill_colour),
+        # cosi' i motori vedono di nuovo un foglio sul fondo
+        pad = int(10 * ppm) if is_recut(rel) else 0
+        if pad:
+            piece = cv2.copyMakeBorder(piece, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=fill_colour(rel))
+        Image.fromarray(piece).save(sub, dpi=(dpi, dpi))
+        off = (y0 - pad, x0 - pad)
     _engine_lock.acquire()
     try:
         if engine in ('auto', 'classic'):
-            sheets, *_ = sc.cut_scan(sub, ai=(engine == 'auto'), ppm=ppm if box else None)
+            sheets, *_ = sc.cut_scan(sub, ai=(engine == 'auto'), ppm=ppm if copy else None)
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sheets]
         elif engine == 'vision':
-            srgb = np.asarray(Image.open(sub).convert('RGB')) if box else rgb
+            srgb = np.asarray(Image.open(sub).convert('RGB')) if copy else rgb
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sc.cut_scan_ai(sub, srgb, ppm)]
         elif engine == 'sam3':
             masks = sam3_masks(sub, ppm, params, whole=bool(box))
@@ -225,12 +287,23 @@ def run_engine(rel, engine, params=None, box=None):
             raise ValueError(f'unknown engine {engine}')
     finally:
         _engine_lock.release()
-        if box and os.path.exists(sub):
+        if copy and os.path.exists(sub):
             os.remove(sub)
-    masks = [(y + off[0], x + off[1], m, h, e) for y, x, m, h, e in masks]
+    masks = [_clip(y + off[0], x + off[1], m, h, e, rgb.shape[:2]) for y, x, m, h, e in masks]
+    masks = [m for m in masks if m is not None]
     save_cache(key, _sheets_from_masks(masks, ppm), {'engine': engine, 'params': params, 'box': box,
                                                       'seconds': round(time.time() - t0, 1)})
     return key
+
+
+def _clip(y, x, m, h, e, shape):
+    # una sagoma che esce dall'immagine (il margine aggiunto) si taglia ai bordi
+    H, W = shape
+    a, b = max(0, -y), max(0, -x)
+    c, d = min(m.shape[0], H - y), min(m.shape[1], W - x)
+    if c <= a or d <= b:
+        return None
+    return (y + a, x + b, m[a:c, b:d], h[a:c, b:d], e)
 
 
 def save_cache(key, sheets, meta):
@@ -294,24 +367,52 @@ def _crop_mask(m, h, ppm, exact=True):
 # Gira in un processo a parte (torch pesa e si carica una volta sola).
 
 _sam = None
+_sam_used = 0.0
+SAM_IDLE_S = 600          # dopo 10 minuti senza richieste il modello si scarica (3.4 GB)
+
+
+def sam3_unload():
+    global _sam
+    with _lock:
+        if _sam is not None and _sam.poll() is None:
+            _sam.stdin.close()
+            try:
+                _sam.wait(10)
+            except subprocess.TimeoutExpired:
+                _sam.kill()
+        _sam = None
+
+
+def _sam_watch():
+    while True:
+        time.sleep(30)
+        if _sam is not None and _sam.poll() is None and time.time() - _sam_used > SAM_IDLE_S:
+            sam3_unload()
+
+
+threading.Thread(target=_sam_watch, daemon=True).start()
 
 
 def sam3_proc():
-    global _sam
+    # parte solo alla prima richiesta SAM, non all'avvio
+    global _sam, _sam_used
+    _sam_used = time.time()
     if _sam is None or _sam.poll() is not None:
-        _sam = subprocess.Popen([sys.executable, '-I', os.path.join(REPO, 'studio', 'sam3_worker.py'), SAM3_DIR],
+        _sam = subprocess.Popen([sys.executable, '-I', os.path.join(REPO, 'studio', 'sam3_worker.py'), SAM3_WEIGHTS],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
     return _sam
 
 
 def sam3_masks(path, ppm, params, whole=False):
     out = os.path.join(DATA, 'cache', f'.sam-{os.getpid()}.npz')
-    req = {'image': path, 'out': out, 'prompt': params.get('prompt') or 'sheet of paper',
+    req = {'mode': 'text', 'image': path, 'out': out, 'prompt': params.get('prompt') or 'sheet of paper',
            'threshold': float(params.get('threshold', 0.4)), 'whole': whole}
     with _lock:
         p = sam3_proc()
         p.stdin.write(json.dumps(req) + '\n'); p.stdin.flush()
         line = p.stdout.readline()
+    global _sam_used
+    _sam_used = time.time()
     if not line:
         raise RuntimeError('SAM 3 worker stopped (see errors in the terminal)')
     res = json.loads(line)
@@ -576,6 +677,14 @@ def cut_sheet(rel, sheet):
         return None
     crop = rgb[y0:y0 + M.shape[0], x0:x0 + M.shape[1]]
     rgba, ang, rect = sc.cutout(crop, M, Hh, ppm, exact=exact)
+    a = alpha(rel)
+    if a is not None:
+        # la trasparenza che il file aveva resta: stessa sagoma, stesso raddrizzo, stesso
+        # taglio applicati al suo canale alfa, e vale il piu' trasparente dei due
+        ac = np.repeat(a[y0:y0 + M.shape[0], x0:x0 + M.shape[1], None], 3, 2)
+        old = sc.cutout(ac, M, Hh, ppm, exact=exact)[0][..., 0]
+        rgba[..., 3] = np.minimum(rgba[..., 3], old)
+        rgba[rgba[..., 3] == 0, :3] = 0
     return rgba, ang, rect
 
 
@@ -620,11 +729,24 @@ def batch_of(rel):
     return sc.split_name(sc.clean_stem(os.path.splitext(parts[-1])[0]))[0]
 
 
+def recut_folder(rel):
+    p = abspath(rel)
+    stem = os.path.splitext(os.path.basename(p))[0]
+    d = os.path.dirname(p)
+    return d if os.path.basename(d) == stem else os.path.join(d, stem)
+
+
 def out_names(rel, st=None):
     st = st or load_state(rel)
     s = settings()
     on = [x for x in st['sheets'] if x.get('on', True)]
     stem = sc.clean_stem(os.path.splitext(os.path.basename(rel))[0])
+    if is_recut(rel):
+        # "sketchbook 3 a.png" -> sketchbook 3 a/sketchbook 3 a.png (com'era) + sketchbook 3 a a.png, b.png ...
+        d = recut_folder(rel)
+        return [(x['id'], os.path.join(d, f'{stem} {"abcdefghijklmnopqrstuvwxyz"[j % 26]}'
+                                          + (f' {sc.clean_stem(x["label"])}' if x.get('label') else '') + '.png'))
+                for j, x in enumerate(on)]
     batch = batch_of(rel)
     root = s['batch_folders'].get(batch) or s['out_root']
     root = root if os.path.isabs(os.path.expanduser(root)) else os.path.join(ROOT, root)
@@ -669,6 +791,8 @@ def export(rel, replace=True, log=print):
     rgb, icc, dpi, ppm = image(rel)
     sheets = {x['id']: x for x in st['sheets']}
     written = []
+    recut = is_recut(rel)
+    replace = replace and not recut      # accanto a un ritaglio: i pezzi vecchi restano, i nuovi prendono (2)
     lock = agent_lock()
     try:
         stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -698,10 +822,33 @@ def export(rel, replace=True, log=print):
         # l'agente non deve rifarla: la scansione e' fatta
         if rel.startswith('originals/') and written:
             sc.mark_done(rel[len('originals/'):], 'studio')
+        # un ritaglio ritagliato entra nella sua cartella, accanto ai pezzi nuovi (mai cancellato)
+        new_rel = None
+        if recut and any(w['status'] == 'written' for w in written):
+            src = abspath(rel)
+            d = recut_folder(rel)
+            if os.path.dirname(src) != d:
+                dst = sc.unique(os.path.join(d, os.path.basename(src)))
+                os.link(src, dst)
+                if not os.path.samefile(src, dst):
+                    raise IOError('could not move the previous cutout into its folder')
+                os.remove(src)
+                new_rel = relpath(dst)
+                written.append({'id': None, 'path': dst, 'status': 'moved', 'rel': new_rel})
+                sc.log(f'studio: {rel} -> {new_rel} (kept, next to its new pieces)')
     finally:
         lock.close()
     st['exported'] = time.time()
-    save_state(st)
+    if new_rel:
+        # lo stato segue il file
+        old = state_path(rel)
+        st['rel'] = new_rel
+        st['version'] = load_state(new_rel).get('version', 0)
+        save_state(st)
+        if os.path.exists(old):
+            os.remove(old)
+    else:
+        save_state(st)
     if settings().get('eagle'):
         eagle_add([w['path'] for w in written if w['status'] == 'written'], log)
     return written

@@ -32,6 +32,7 @@ const api = {
     return j;
   },
 };
+function store(k, v) { try { if (v === undefined) return localStorage.getItem('studio.' + k); localStorage.setItem('studio.' + k, v); } catch (e) { return null; } }
 const fmtSize = b => b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
 const COLORS = ['#3399ff', '#ff8c1a', '#2fb84f', '#c84ad0', '#e0b600', '#14b8c4', '#ff4d5e', '#7a6cff'];
 const CMP_COLORS = { auto: '#00a2ff', classic: '#ff7a00', vision: '#d100d1', sam3: '#00b050' };
@@ -57,6 +58,8 @@ const I = {
   t_brush_sub: '<svg viewBox="0 0 16 16"><path d="M9 2l5 5-6.5 6.5H4.5L2 11z" fill="#f7b6c2" stroke="#9b3048"/><path d="M5.5 7.5l5 5" stroke="#9b3048"/><path d="M4.5 13.5H14" stroke="#555"/></svg>',
   t_poly: '<svg viewBox="0 0 16 16"><path d="M2 13L4 3l7 1 3 6-5 4z" fill="#dbeeff" stroke="#1f6fd0"/><circle cx="2" cy="13" r="1.3" fill="#000"/><circle cx="4" cy="3" r="1.3" fill="#000"/><circle cx="11" cy="4" r="1.3" fill="#000"/></svg>',
   t_box: '<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" fill="none" stroke="#000" stroke-dasharray="2 1.2"/><path d="M8 5.5l.9 1.8 2 .3-1.4 1.4.3 2L8 10.1 6.2 11l.3-2-1.4-1.4 2-.3z" fill="#ffb400" stroke="#9c6b00" stroke-width=".5"/></svg>',
+  t_rect: '<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" fill="#dbeeff" stroke="#000" stroke-dasharray="2 1.2"/></svg>',
+  t_wand: '<svg viewBox="0 0 16 16"><path d="M2 14L10 6" stroke="#444" stroke-width="2.2" stroke-linecap="round"/><path d="M2 14L8.5 7.5" stroke="#d9d9d9" stroke-width="1"/><path d="M12 1l.7 1.8L14.5 3l-1.6 1 .4 1.9L12 5l-1.3.9.4-1.9-1.6-1 1.8-.2z" fill="#ffd21f" stroke="#a87b00" stroke-width=".5"/><circle cx="14" cy="8" r=".8" fill="#ffd21f"/><circle cx="8" cy="2" r=".7" fill="#ffd21f"/></svg>',
   t_hand: '<svg viewBox="0 0 16 16"><path d="M5 14c-1.5-1.5-3-4-3-5s1-1 1.5-.5L5 10V3.5c0-1 1.5-1 1.5 0V8V2.5c0-1 1.5-1 1.5 0V8V3c0-1 1.5-1 1.5 0v5.5V5c0-1 1.5-1 1.5 0v5c0 2-1 4-2 4z" fill="#fff" stroke="#000" stroke-width=".9"/></svg>',
   // barra in basso
   prev: '<svg viewBox="0 0 18 18"><path d="M11.5 4L6 9l5.5 5z" fill="#fff"/></svg>',
@@ -75,6 +78,7 @@ const S = {
   root: '', tree: [], dir: 'originals', items: [], sel: new Set(), anchor: null, filter: '',
   view: 'gallery', rel: null, info: null, st: null, names: {}, engines: [], settings: {},
   engine: 'auto', params: {}, tool: 'select', selSheet: null, brushMM: 1.5, showCut: true,
+  mode: 'add', wandTol: 14, wandContig: true, bg: store('bg') || 'blue',
   compare: null, hist: [], fut: [], open: new Set(['originals']), jobs: [], chat: null,
 };
 
@@ -118,6 +122,14 @@ function renderCmdbar() {
       ...S.engines.map(e => ({ label: e.name + (e.available ? '' : ' (not installed)'), check: S.engine === e.id, disabled: !e.available,
         do: () => { S.engine = e.id; renderSide(); if (ed) detect(); else if (S.sel.size) batch(false); } })),
       '-', { label: 'Compare engines', check: !!S.compare, disabled: !ed, do: toggleCompare, kbd: 'C' },
+      { label: 'Unload SAM 3 (free memory)', disabled: !S.samLoaded, do: () => api.post('sam_unload').then(() => { S.samLoaded = false; status('SAM 3 unloaded'); }) },
+    ] }),
+    cmd('View', null, { menu: () => [
+      ...[['blue', 'Light blue background'], ['white', 'White background'], ['grey', 'Grey background'], ['dark', 'Dark background'], ['checker', 'Checkerboard']].map(([b, l]) => ({ label: l, check: S.bg === b, do: () => setBg(b) })),
+      '-', { label: 'Cut view', check: S.showCut, disabled: !ed, kbd: 'O', do: () => { S.showCut = !S.showCut; const cb = $('#cutview'); if (cb) cb.checked = S.showCut; requestTile(); draw(); } },
+      { label: 'Compare engines', check: !!S.compare, disabled: !ed, kbd: 'C', do: toggleCompare },
+      '-', { label: 'Fit', disabled: !ed, kbd: '⌘0', do: fit }, { label: 'Actual pixels', disabled: !ed, kbd: '⌘1', do: actual },
+      '-', { label: 'Reset pane sizes', do: () => { store('navw', ''); store('sidew', ''); applyPaneSizes(); } },
     ] }),
     cmd('Export', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Save the cutouts (⌘S)' }),
     cmd('Batch', null, { menu: () => [
@@ -192,14 +204,14 @@ async function openDir(rel) {
   go('gallery');
 }
 const crumbs = (...parts) => h('div', { class: 'crumbs' }, ...parts);
-const visibleItems = () => S.items.filter(i => !S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase()));
+const visibleItems = () => S.items.filter(i => !i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
 function selectAll() { visibleItems().forEach(i => S.sel.add(i.rel)); }
 
 function renderGallery() {
   const main = $('#main'); main.innerHTML = '';
   const items = visibleItems();
   const grid = h('div', { class: 'gallery', tabindex: 0 });
-  const sub = (S.tree.find(n => n.rel === S.dir)?.children || []).filter(c => !S.filter || c.name.toLowerCase().includes(S.filter.toLowerCase()));
+  const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   sub.forEach(c => grid.append(h('div', { class: 'thumb', title: c.name, ondblclick: () => openDir(c.rel), onclick: () => openDir(c.rel) },
     h('div', { class: 'pic', html: I.folder.replace('class="ico"', 'width="96" height="96"') }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
   if (!items.length && !sub.length) grid.append(h('div', { class: 'empty' }, S.items.length ? 'No scans match the search.' : 'This folder is empty.'));
@@ -234,7 +246,7 @@ function clickItem(e, it, idx, items) {
 // ------------------------------------------------------------ pannello a destra
 function renderSide() {
   const side = $('#side'); side.innerHTML = '';
-  side.style.display = ['gallery', 'editor'].includes(S.view) ? '' : 'none';
+  side.style.display = $('#split2').style.display = ['gallery', 'editor'].includes(S.view) ? '' : 'none';
   if (S.view === 'gallery') return sideGallery(side);
   if (S.view === 'editor') return sideEditor(side);
 }
@@ -244,7 +256,7 @@ function engineChooser() {
   for (const e of S.engines) {
     box.append(h('label', { class: 'radio' + (e.available ? '' : ' dis'), title: e.note },
       h('input', { type: 'radio', name: 'eng', checked: S.engine === e.id, disabled: !e.available, onchange: () => { S.engine = e.id; renderSide(); } }),
-      h('div', {}, h('div', { class: 'rn' }, e.name), h('div', { class: 'rd' }, e.available ? e.note : (e.id === 'sam3' ? 'Not installed yet: convert ~/sam3.pt to ~/sam3-hf (see STUDIO.md).' : 'Not available.')))));
+      h('div', {}, h('div', { class: 'rn' }, e.name), h('div', { class: 'rd' }, e.available ? e.note : (e.id === 'sam3' ? 'Needs ~/sam3.pt (the file DigitalSreeni Image Annotator uses).' : 'Not available.')))));
   }
   const e = S.engines.find(x => x.id === S.engine);
   for (const p of e?.params || []) {
@@ -356,13 +368,22 @@ async function openScan(rel) {
   renderCmdbar(); renderNav(); renderNavbar();
   const main = $('#main'); main.innerHTML = '';
   const tools = [['select', I.t_select, 'Select (V)'], ['hand', I.t_hand, 'Pan (H, or hold Space)'], ['points', I.t_points, 'Edit points (A): drag; double-click an edge adds, ⌥-click removes'],
-    ['poly', I.t_poly, 'New sheet by polygon (P): click points, Enter to close'], ['lasso_add', I.t_lasso_add, 'Lasso add (L)'], ['lasso_sub', I.t_lasso_sub, 'Lasso cut away (K)'],
-    ['brush_add', I.t_brush_add, 'Brush add (B)'], ['brush_sub', I.t_brush_sub, 'Eraser (E)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine']];
+    ['poly', I.t_poly, 'New sheet by polygon (P): click points, Enter to close'], ['rect', I.t_rect, 'Rectangle (M): add or cut a rectangle'], ['lasso', I.t_lasso_add, 'Lasso (L; K = lasso in Cut mode)'],
+    ['wand', I.t_wand, 'Magic wand (W): click a colour, like Photoshop'], ['brush', I.t_brush_add, 'Brush (B; E = eraser)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine']];
   const tb = h('div', { class: 'toolbox' }, tools.map(([id, ic, tip]) => h('div', { class: 'tool' + (S.tool === id ? ' on' : ''), 'data-tool': id, title: tip, onclick: () => setTool(id) }, svg(ic))),
+    h('hr'),
+    h('div', { class: 'modes', title: 'What lasso, rectangle, wand and brush do. X swaps, hold ⌥ for the other one.' },
+      h('div', { class: 'mode' + (S.mode === 'add' ? ' on' : ''), 'data-mode': 'add', onclick: () => setMode('add') }, '＋'),
+      h('div', { class: 'mode' + (S.mode === 'sub' ? ' on' : ''), 'data-mode': 'sub', onclick: () => setMode('sub') }, '－')),
+    h('div', { class: 'opt', id: 'modename' }, S.mode === 'add' ? 'Add' : 'Cut'),
     h('hr'), h('div', { class: 'opt' }, 'Brush'), h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: S.brushMM, title: 'Brush size in mm ([ and ])', oninput: e => { S.brushMM = +e.target.value; $('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'; } }),
-    h('div', { class: 'opt', id: 'bsz' }, S.brushMM.toFixed(1) + ' mm'), h('hr'),
-    h('label', { class: 'opt', title: 'Darken what will be cut away (X)' }, h('input', { type: 'checkbox', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; V.mtile = null; requestTile(); draw(); } }), h('br'), 'Cut view'));
-  const stage = h('div', { class: 'stage' });
+    h('div', { class: 'opt', id: 'bsz' }, S.brushMM.toFixed(1) + ' mm'),
+    h('hr'), h('div', { class: 'opt' }, 'Wand'), h('input', { type: 'range', min: 1, max: 80, step: 1, value: S.wandTol, title: 'Tolerance, like Photoshop (the automatic cut uses about 13-15)', oninput: e => { S.wandTol = +e.target.value; $('#wtol').textContent = 'tol ' + S.wandTol; } }),
+    h('div', { class: 'opt', id: 'wtol' }, 'tol ' + S.wandTol),
+    h('label', { class: 'opt', title: 'Only touching pixels (off: the same colour anywhere)' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => S.wandContig = e.target.checked }), ' contig.'),
+    h('hr'),
+    h('label', { class: 'opt', title: 'Darken what will be cut away (O)' }, h('input', { type: 'checkbox', id: 'cutview', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; requestTile(); draw(); } }), h('br'), 'Cut view'));
+  const stage = h('div', { class: 'stage bg-' + S.bg });
   cv = h('canvas'); hud = h('div', { class: 'hud' }); busyEl = h('div', { class: 'busy' }, h('div', { style: { width: '220px', background: '#fff', padding: '12px', border: '1px solid #9bb', borderRadius: '4px', boxShadow: '0 3px 12px rgba(0,0,0,.25)' } }, h('div', { id: 'busymsg', style: { marginBottom: '6px' } }, 'Working…'), h('div', { class: 'progress marquee' }, h('i'))));
   stage.append(cv, hud, busyEl);
   main.append(crumbs(h('b', {}, parts.slice(0, -1).join(' ▸ ')), ' ▸ ', parts.at(-1), h('span', { class: 'sub', id: 'edsub' }, '')), h('div', { class: 'editor' }, tb, stage));
@@ -378,13 +399,24 @@ async function openScan(rel) {
     if (S.rel !== rel) return;
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); renderSide(); renderCmdbar();
-    if (!st.sheets.length && !st.engine) detect();
-  } catch (e) { status('Could not open: ' + e.message); }
+    // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
+    if (!st.sheets.length && !st.engine) detect(null, 'auto');
+  } catch (e) {
+    // il file non c'e' piu' (spostato dall'agente o cancellato): si torna alla cartella
+    if (S.rel !== rel) return;
+    const gone = /No such file|not found|FileNotFound/i.test(e.message);
+    S.rel = null; S.info = null; S.st = null; $('#title').textContent = 'Scan Studio';
+    await openDir(S.dir || 'originals');
+    alertDialog(gone ? 'This scan is no longer there' : 'Could not open this scan',
+      gone ? `${parts.at(-1)} was moved or deleted (the agent moves new scans from the inbox to originals/). The folder has been refreshed.` : e.message);
+  }
 }
 function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
 function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
+function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.textContent = m === 'add' ? 'Add' : 'Cut'; }
+function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); }
 function setTool(t) { S.tool = t; S.poly = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
-const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', lasso_add: 'crosshair', lasso_sub: 'crosshair', brush_add: 'none', brush_sub: 'none' })[t];
+const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none' })[t];
 
 function resize() {
   const r = cv.parentElement.getBoundingClientRect();
@@ -415,7 +447,8 @@ let tileTimer, tileSeq = 0;
 function requestTile() {
   clearTimeout(tileTimer);
   tileTimer = setTimeout(async () => {
-    if (!S.info || V.s * V.dpr <= V.pScale * 1.05) { V.tile = V.mtile = null; draw(); return; }
+    if (!S.info) return;
+    const zoomed = V.s * V.dpr > V.pScale * 1.05;
     const [x0, y0] = toImg(0, 0), [x1, y1] = toImg(V.cw, V.ch);
     const box = { x: Math.max(0, Math.floor(x0)), y: Math.max(0, Math.floor(y0)) };
     box.w = Math.min(S.info.w, Math.ceil(x1)) - box.x; box.h = Math.min(S.info.h, Math.ceil(y1)) - box.y;
@@ -427,7 +460,7 @@ function requestTile() {
       const b = (r.headers.get('X-Box') || '').split(',').map(Number);
       return { bmp: await createImageBitmap(await r.blob()), box: b, rel };
     };
-    const [t, m] = await Promise.all([get('tile'), S.showCut && S.st?.sheets.length ? get('masktile', { v: S.st.version }) : null]);
+    const [t, m] = await Promise.all([zoomed ? get('tile') : null, S.showCut && S.st?.sheets.length ? get('masktile', { v: S.st.version }) : null]);
     if (seq !== tileSeq || rel !== S.rel) return;
     V.tile = t; V.mtile = m; draw();
   }, 140);
@@ -447,8 +480,9 @@ function draw() {
   if (tileOk(V.tile)) { c.imageSmoothingEnabled = false; const [a, b] = toScr(V.tile.box[0], V.tile.box[1]); c.drawImage(V.tile.bmp, a, b, (V.tile.box[2] - V.tile.box[0]) * V.s, (V.tile.box[3] - V.tile.box[1]) * V.s); }
   const sheets = S.st?.sheets || [];
   // cio' che verra' tolto: scurito. Da vicino la maschera vera, da lontano i contorni
+  const covers = t => { const [a, b] = toImg(0, 0), [e, f] = toImg(V.cw, V.ch); return t.box[0] <= Math.max(0, a) + 1 && t.box[1] <= Math.max(0, b) + 1 && t.box[2] >= Math.min(S.info.w, e) - 1 && t.box[3] >= Math.min(S.info.h, f) - 1; };
   if (S.showCut && sheets.length) {
-    if (tileOk(V.mtile)) {
+    if (tileOk(V.mtile) && covers(V.mtile)) {
       c.imageSmoothingEnabled = false; const [a, b] = toScr(V.mtile.box[0], V.mtile.box[1]);
       c.drawImage(V.mtile.bmp, a, b, (V.mtile.box[2] - V.mtile.box[0]) * V.s, (V.mtile.box[3] - V.mtile.box[1]) * V.s);
     } else {
@@ -472,7 +506,8 @@ function draw() {
     if (sel) { c.fillStyle = col + '14'; c.fill(); }
     for (const o of s.ops) {
       c.beginPath(); c.strokeStyle = c.fillStyle = o.op === 'add' ? 'rgba(40,170,60,.35)' : 'rgba(220,40,40,.35)';
-      if (o.kind === 'stroke') { c.lineWidth = Math.max(1, 2 * o.r * V.s); c.lineCap = c.lineJoin = 'round'; const [x, y] = toScr(...o.pts[0]); c.moveTo(x, y); o.pts.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); }
+      if (o.kind === 'wand') { (o.outline || []).forEach(p => polyPath(c, p)); c.fill('evenodd'); const [x, y] = toScr(...o.seed); c.fillStyle = o.op === 'add' ? '#1e8a1e' : '#c22'; c.fillRect(x - 3, y - 3, 6, 6); }
+      else if (o.kind === 'stroke') { c.lineWidth = Math.max(1, 2 * o.r * V.s); c.lineCap = c.lineJoin = 'round'; const [x, y] = toScr(...o.pts[0]); c.moveTo(x, y); o.pts.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); }
       else { polyPath(c, o.pts); c.fill(); }
     }
     c.setLineDash([3, 2]); c.lineWidth = 1; c.strokeStyle = col;
@@ -496,8 +531,9 @@ function draw() {
   if (S.poly?.length) { c.save(); c.beginPath(); const [x, y] = toScr(...S.poly[0]); c.moveTo(x, y); S.poly.forEach(p => c.lineTo(...toScr(...p))); if (mouse) c.lineTo(...toScr(...mouse)); c.strokeStyle = '#000'; c.setLineDash([4, 3]); c.lineWidth = 1.2; c.stroke(); S.poly.forEach(p => { const [a, b] = toScr(...p); c.fillStyle = '#fff'; c.fillRect(a - 3, b - 3, 6, 6); c.strokeRect(a - 3, b - 3, 6, 6); }); c.restore(); }
   if (drag?.lasso) { c.save(); c.beginPath(); polyPath(c, drag.lasso); c.fillStyle = drag.add ? 'rgba(40,170,60,.2)' : 'rgba(220,40,40,.2)'; c.fill(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.stroke(); c.restore(); }
   if (drag?.stroke) { c.save(); c.beginPath(); c.lineCap = c.lineJoin = 'round'; c.lineWidth = 2 * drag.r * V.s; c.strokeStyle = drag.add ? 'rgba(40,170,60,.45)' : 'rgba(220,40,40,.45)'; const [x, y] = toScr(...drag.stroke[0]); c.moveTo(x, y); drag.stroke.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); c.restore(); }
+  if (drag?.rect) { c.save(); const [a, b] = toScr(drag.rect[0], drag.rect[1]), [e, f] = toScr(drag.rect[2], drag.rect[3]); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = drag.add ? 'rgba(40,170,60,.2)' : 'rgba(220,40,40,.2)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (drag?.box) { c.save(); const [a, b] = toScr(drag.box[0], drag.box[1]), [e, f] = toScr(drag.box[2], drag.box[3]); c.setLineDash([5, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(51,153,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
-  if (mouse && (S.tool === 'brush_add' || S.tool === 'brush_sub')) { const [x, y] = toScr(...mouse); c.beginPath(); c.arc(x, y, Math.max(2, brushR() * V.s), 0, 7); c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke(); c.strokeStyle = '#fff'; c.setLineDash([3, 3]); c.stroke(); }
+  if (mouse && S.tool === 'brush') { const [x, y] = toScr(...mouse); c.beginPath(); c.arc(x, y, Math.max(2, brushR() * V.s), 0, 7); c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke(); c.strokeStyle = '#fff'; c.setLineDash([3, 3]); c.stroke(); }
   hud.textContent = `${Math.round(V.s * V.dpr * 100)}%` + (mouse ? ` · ${Math.round(mouse[0])}, ${Math.round(mouse[1])} px · ${(mouse[0] / S.info.ppm).toFixed(1)}, ${(mouse[1] / S.info.ppm).toFixed(1)} mm` : '');
 }
 const brushR = () => S.brushMM * S.info.ppm / 2;
@@ -564,8 +600,11 @@ function bindCanvas(stage) {
       return;
     }
     if (tool === 'poly') { S.poly = S.poly || []; S.poly.push(rnd(pt)); draw(); return; }
-    if (tool === 'lasso_add' || tool === 'lasso_sub') { drag = { lasso: [rnd(pt)], add: tool === 'lasso_add' }; return; }
-    if (tool === 'brush_add' || tool === 'brush_sub') { drag = { stroke: [rnd(pt)], r: brushR(), add: tool === 'brush_add' }; draw(); return; }
+    const add = (S.mode === 'add') !== e.altKey;
+    if (tool === 'lasso') { drag = { lasso: [rnd(pt)], add }; return; }
+    if (tool === 'rect') { drag = { rect: [...pt, ...pt], add }; return; }
+    if (tool === 'brush') { drag = { stroke: [rnd(pt)], r: brushR(), add }; draw(); return; }
+    if (tool === 'wand') { wandAt(pt, add); return; }
     if (tool === 'box') { drag = { box: [...pt, ...pt] }; return; }
   });
   cv.addEventListener('pointermove', e => {
@@ -576,6 +615,7 @@ function bindCanvas(stage) {
     if (drag?.lasso) { const l = drag.lasso.at(-1); if (Math.hypot(pt[0] - l[0], pt[1] - l[1]) * V.s > 2) drag.lasso.push(rnd(pt)); draw(); return; }
     if (drag?.stroke) { const l = drag.stroke.at(-1); if (Math.hypot(pt[0] - l[0], pt[1] - l[1]) * V.s > 1.5) drag.stroke.push(rnd(pt)); draw(); return; }
     if (drag?.box) { drag.box[2] = pt[0]; drag.box[3] = pt[1]; draw(); return; }
+    if (drag?.rect) { drag.rect[2] = pt[0]; drag.rect[3] = pt[1]; draw(); return; }
     if (S.tool === 'points') { const s = S.st?.sheets.find(x => x.id === S.selSheet); const k = s ? nearestVertex(s, sx, sy) : -1; if (k !== hoverV) { hoverV = k; } cv.style.cursor = k >= 0 ? (e.altKey ? 'not-allowed' : 'move') : 'default'; }
     draw();
   });
@@ -585,6 +625,10 @@ function bindCanvas(stage) {
     if (d.vertex != null) { afterEdit(); return; }
     if (d.lasso && d.lasso.length > 2) applyRegion({ kind: 'poly', pts: d.lasso }, d.add);
     if (d.stroke) applyRegion({ kind: 'stroke', pts: d.stroke, r: d.r }, d.add);
+    if (d.rect) {
+      const [a, b, c2, d2] = [Math.min(d.rect[0], d.rect[2]), Math.min(d.rect[1], d.rect[3]), Math.max(d.rect[0], d.rect[2]), Math.max(d.rect[1], d.rect[3])].map(Math.round);
+      if ((c2 - a) * V.s > 3 && (d2 - b) * V.s > 3) applyRegion({ kind: 'poly', pts: [[a, b], [c2, b], [c2, d2], [a, d2]] }, d.add);
+    }
     if (d.box) {
       const b = [Math.min(d.box[0], d.box[2]), Math.min(d.box[1], d.box[3]), Math.max(d.box[0], d.box[2]), Math.max(d.box[1], d.box[3])].map(Math.round);
       if ((b[2] - b[0]) * V.s > 8 && (b[3] - b[1]) * V.s > 8) detect(b);
@@ -624,6 +668,25 @@ function applyRegion(op, add) {
   if (add && targets.length > 1) targets = targets.slice(0, 1);
   commit(() => targets.forEach(s => s.ops.push({ op: add ? 'add' : 'sub', ...op })));
 }
+async function wandAt(pt, add) {
+  if (pt[0] < 0 || pt[1] < 0 || pt[0] >= S.info.w || pt[1] >= S.info.h) return;
+  status('Magic wand…', true);
+  let op;
+  try { op = await api.post('wand', { rel: S.rel, x: Math.round(pt[0]), y: Math.round(pt[1]), tol: S.wandTol, contig: S.wandContig }); }
+  catch (e) { return status('Wand: ' + e.message); }
+  status(`Wand: ${(op.area / S.info.ppm / S.info.ppm / 100).toFixed(1)} cm² selected, tolerance ${op.tol}`);
+  op.op = add ? 'add' : 'sub';
+  const sheets = S.st.sheets;
+  let targets = S.selSheet ? sheets.filter(s => s.id === S.selSheet) : sheets.filter(s => inside(op.seed, s.poly));
+  if (!targets.length && !add) targets = sheets.filter(s => overlaps(bbox(s.poly), [op.pts[0][0], op.pts[0][1], op.pts[1][0], op.pts[1][1]]));
+  if (!targets.length) {
+    if (!add) return status('Nothing there to cut away');
+    // un foglio nuovo fatto solo dalla bacchetta (es. un disegno cliccato sul coperchio)
+    const outline = op.outline.reduce((a, p) => area(p) > area(a) ? p : a, op.outline[0]);
+    return commit(() => { const s = { id: newId(), src: null, base: 'ops', engine: 'wand', poly0: null, poly: outline, ops: [op], on: true, label: '', holes: [] }; sheets.push(s); S.selSheet = s.id; });
+  }
+  commit(() => targets.slice(0, add ? 1 : targets.length).forEach(s => s.ops.push(op)));
+}
 function closePoly() {
   const p = S.poly; S.poly = null;
   if (p && p.length >= 3) commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: p, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
@@ -646,15 +709,17 @@ document.addEventListener('keydown', e => {
   if (mod && k === '0') { e.preventDefault(); return fit(); }
   if (mod && k === '1') { e.preventDefault(); return actual(); }
   if (mod) return;
-  const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', l: 'lasso_add', k: 'lasso_sub', b: 'brush_add', e: 'brush_sub', r: 'box' };
-  if (tools[k.toLowerCase()]) return setTool(tools[k.toLowerCase()]);
+  const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', m: 'rect', l: 'lasso', k: 'lasso', w: 'wand', b: 'brush', e: 'brush', r: 'box' };
+  const kl = k.toLowerCase();
+  if (kl === 'x') return setMode(S.mode === 'add' ? 'sub' : 'add');
+  if (tools[kl]) { if ('lb'.includes(kl)) setMode('add'); if ('ke'.includes(kl)) setMode('sub'); return setTool(tools[kl]); }
   if (k === 'Escape') { if (S.poly) { S.poly = null; draw(); } else if (openMenu) closeMenu(); else if ($('.dlg-back')) $('.dlg-back').remove(); else if (S.selSheet) { S.selSheet = null; renderSide(); draw(); } else go('gallery'); return; }
   if (k === 'Enter' && S.poly) return closePoly();
   if (k === '+' || k === '=') return zoomBy(1.4);
   if (k === '-') return zoomBy(1 / 1.4);
   if (k === '[' || k === ']') { S.brushMM = Math.max(0.2, Math.min(10, S.brushMM * (k === ']' ? 1.25 : 0.8))); $('#bsz') && ($('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'); return draw(); }
   if (k === 'c') return toggleCompare();
-  if (k === 'x') { S.showCut = !S.showCut; V.mtile = null; requestTile(); return draw(); }
+  if (k === 'o') { S.showCut = !S.showCut; const cb = $('#cutview'); if (cb) cb.checked = S.showCut; requestTile(); return draw(); }
   if (k === 'Tab') { e.preventDefault(); const sh = S.st.sheets; if (!sh.length) return; const i = sh.findIndex(s => s.id === S.selSheet); S.selSheet = sh[(i + (e.shiftKey ? -1 : 1) + sh.length) % sh.length].id; renderSide(); return draw(); }
   if ((k === 'Delete' || k === 'Backspace') && S.selSheet) { const s = S.st.sheets.find(x => x.id === S.selSheet); commit(() => { if (s.src) s.on = !(s.on !== false); else { S.st.sheets = S.st.sheets.filter(x => x !== s); S.selSheet = null; } }); return; }
   if (k === 'ArrowRight') return step(1);
@@ -678,7 +743,7 @@ function save() {
       const r = await api.post('state', { state: st });
       if (S.st === st) { st.version = r.version; }
       const fresh = await api.get('state', { rel }); if (S.rel === rel) { S.names = fresh.names || {}; renderSide(); }
-      V.mtile = null; requestTile();
+      requestTile();
     } catch (e) {
       if (e.status === 409 && S.rel === rel) { status('Changed elsewhere (Claude or a job): reloaded'); setState(await api.get('state', { rel })); renderSide(); draw(); }
       else status('Could not save: ' + e.message);
@@ -690,17 +755,19 @@ async function flushSave() { if (saveTimer) { clearTimeout(saveTimer); save(); }
 
 // ------------------------------------------------------------ azioni
 function busy(on, msg) { busyEl?.classList.toggle('on', on); const m = $('#busymsg'); if (m && msg) m.textContent = msg; }
-async function detect(box) {
+async function detect(box, engine) {
   if (!S.rel) return;
   await flushSave();
-  const eng = S.engines.find(e => e.id === S.engine);
-  if (!eng?.available) return status(`${eng?.name || S.engine} is not available`);
+  engine = engine || S.engine;
+  const eng = S.engines.find(e => e.id === engine);
+  if (!eng?.available) return status(`${eng?.name || engine} is not available`);
   const many = Array.isArray(box);
   if (!many && S.st.sheets.some(sheetEdited) && !confirm('Detecting again replaces the sheets and your edits on them. Continue?')) return;
-  busy(true, `${eng.name}${many ? ' (inside the box)' : ''}…`);
+  busy(true, `${eng.name}${many ? ' (inside the box)' : ''}…` + (engine === 'sam3' && !S.samLoaded ? ' loading the model the first time (~10 s)' : ''));
   try {
     if (!many) pushHist();
-    const r = await api.post('detect', { rel: S.rel, engine: S.engine, params: engParams(), box: many ? box : null, replace: !many });
+    const r = await api.post('detect', { rel: S.rel, engine, params: engine === S.engine ? engParams() : {}, box: many ? box : null, replace: !many });
+    if (engine === 'sam3') S.samLoaded = true;
     setState(r.state); const fresh = await api.get('state', { rel: S.rel }); S.names = fresh.names || {};
     status(`${eng.name}: ${r.state.sheets.length} sheet(s) in ${r.meta.seconds ?? 0}s`);
     V.mtile = null; requestTile();
@@ -720,8 +787,10 @@ async function doExport() {
   busy(true, 'Saving the cutouts…');
   try {
     const r = await api.post('export', { rel: S.rel });
+    const moved = r.written.find(w => w.status === 'moved');
+    if (moved) { S.rel = moved.rel; S.dir = moved.rel.split('/').slice(0, -1).join('/'); }
     const st = await api.get('state', { rel: S.rel }); setState(st);
-    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.moved_old ? '   (old one moved aside)' : ''}`).join('\n');
+    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cutout you started from, kept)' : ''}`).join('\n');
     status(`Exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`);
     alertDialog('Cutouts saved', h('pre', { class: 'log' }, list || 'Nothing to save.'));
   } catch (e) { alertDialog('Export failed', e.message); }
@@ -889,8 +958,30 @@ function toggleChat() {
 $$('.caption [data-win]').forEach(el => el.addEventListener('click', () => {
   const a = window.pywebview?.api; const w = el.dataset.win;
   if (a) return a[w]?.();
-  if (w === 'close') window.close();
+  // in Chrome: ingrandisci = schermo intero, riduci = nascondi la finestra, chiudi = chiudi
+  if (w === 'max') return document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  if (w === 'min') return api.post('open', { what: 'hide' });
+  if (w === 'close') { flushSave().finally(() => window.close()); }
 }));
+
+// ------------------------------------------------------------ pannelli ridimensionabili
+function applyPaneSizes() {
+  $('#nav').style.width = (+store('navw') || 210) + 'px';
+  $('#side').style.width = (+store('sidew') || 290) + 'px';
+}
+function splitter(el, key, sign, min, max) {
+  el.addEventListener('pointerdown', e => {
+    el.setPointerCapture(e.pointerId); el.classList.add('on');
+    const pane = $(key === 'navw' ? '#nav' : '#side'), w0 = pane.getBoundingClientRect().width, x0 = e.clientX;
+    const move = ev => { const w = Math.max(min, Math.min(max, w0 + sign * (ev.clientX - x0))); pane.style.width = w + 'px'; store(key, Math.round(w)); };
+    const up = () => { el.classList.remove('on'); el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+  });
+  el.addEventListener('dblclick', () => { store(key, ''); applyPaneSizes(); });
+}
+applyPaneSizes();
+splitter($('#split1'), 'navw', 1, 140, 480);
+splitter($('#split2'), 'sidew', -1, 220, 620);
 
 // ------------------------------------------------------------ avvio
 (async function init() {

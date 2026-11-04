@@ -131,7 +131,7 @@ input, textarea, select, button { font: inherit; color: inherit; }
 
 /* ------------------------------------------------ editor */
 .editor { flex: 1; display: flex; min-height: 0; }
-.toolbox { width: 58px; flex: none; padding: 6px 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; align-content: start;
+.toolbox { width: 62px; flex: none; padding: 6px 5px; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; align-content: start;
   background: linear-gradient(to right, #eef3fa, #dde7f2); border-right: 1px solid #b6c6d8; }
 .toolbox .tool { width: 23px; height: 23px; display: grid; place-items: center; border: 1px solid transparent; border-radius: 3px; }
 .toolbox .tool svg { width: 16px; height: 16px; }
@@ -140,8 +140,20 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .toolbox hr { grid-column: 1/-1; border: 0; border-top: 1px solid #b6c6d8; border-bottom: 1px solid #fff; margin: 4px 0; width: 100%; }
 .toolbox .opt { grid-column: 1/-1; font-size: 10px; color: var(--muted); text-align: center; }
 .toolbox input[type=range] { grid-column: 1/-1; width: 46px; }
-.stage { flex: 1; position: relative; overflow: hidden; background:
-  repeating-conic-gradient(#f3f3f3 0% 25%, #fbfbfb 0% 50%) 0 0 / 16px 16px; }
+.stage { flex: 1; position: relative; overflow: hidden; }
+.stage.bg-blue { background: linear-gradient(to bottom, #eef4fb 0%, #d6e4f3 100%); }
+.stage.bg-white { background: #fff; }
+.stage.bg-grey { background: #8a8d91; }
+.stage.bg-dark { background: #262a30; }
+.stage.bg-checker { background: repeating-conic-gradient(#e6e6e6 0% 25%, #fbfbfb 0% 50%) 0 0 / 16px 16px; }
+.toolbox .modes { grid-column: 1/-1; display: flex; border: 1px solid #8da2bb; border-radius: 3px; overflow: hidden; }
+.toolbox .mode { flex: 1; text-align: center; font-weight: bold; line-height: 18px; background: linear-gradient(#fafafa, #e3e7ec); cursor: default; }
+.toolbox .mode + .mode { border-left: 1px solid #8da2bb; }
+.toolbox .mode[data-mode=add].on { color: #fff; background: linear-gradient(#7fd27f, #2f9e2f); }
+.toolbox .mode[data-mode=sub].on { color: #fff; background: linear-gradient(#f08a8a, #c63030); }
+.toolbox label.opt { cursor: default; }
+.split { width: 5px; margin: 0 -2px; flex: none; z-index: 5; cursor: col-resize; position: relative; }
+.split:hover, .split.on { background: linear-gradient(to right, transparent 1px, #6cb8ef 1px, #6cb8ef 4px, transparent 4px); }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .stage .hud { position: absolute; left: 8px; bottom: 8px; padding: 2px 7px; background: rgba(255,255,255,.85);
   border: 1px solid #c3d1e0; border-radius: 3px; color: #333; font-size: 11px; pointer-events: none; }

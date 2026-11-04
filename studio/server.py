@@ -268,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
             return self.send(core.save_state(st))
+        if path == 'sam_unload':
+            core.sam3_unload()
+            return self.send({'ok': True})
         if path == 'wand':
             op = core.wand(rel, float(b['x']), float(b['y']), b.get('tol', 14), b.get('contig', True))
             return self.send(op or {'error': 'nothing selected'}, code=200 if op else 404)
@@ -298,6 +301,10 @@ class Handler(BaseHTTPRequestHandler):
                 subprocess.run(['open', '-a', 'Image Capture'])
             elif what == 'eagle':
                 subprocess.run(['open', '-a', 'Eagle'])
+            elif what == 'hide':
+                # "riduci a icona" della cornice Vista: nasconde la finestra di Chrome in primo piano
+                subprocess.run(['osascript', '-e', 'tell application "System Events" to set visible of '
+                                '(first process whose frontmost is true) to false'], timeout=10)
             elif what == 'scripts':
                 os.makedirs(core.SCRIPTS, exist_ok=True)
                 subprocess.run(['open', core.SCRIPTS])
