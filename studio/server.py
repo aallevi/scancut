@@ -102,6 +102,7 @@ class Jobs:
 
 
 JOBS = None
+LAST_SEEN = [0.0]       # ultima richiesta dalla finestra (per chiudersi quando non c'e' piu')
 
 
 # ---------------------------------------------------------------- HTTP
@@ -113,6 +114,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def guard(self):
+        LAST_SEEN[0] = time.time()
         # niente richieste da altri siti: host locale, e per le POST un'intestazione propria
         host = (self.headers.get('Host') or '').split(':')[0]
         if host not in ('127.0.0.1', 'localhost'):
@@ -333,6 +335,18 @@ def scanners():
     except Exception:
         pass
     return out
+
+
+def idle_exit(after_s=75):
+    # modalita' app: chiusa la finestra (niente richieste da un po', nessun lavoro in corso)
+    # il processo esce, e il prossimo clic nel Dock riparte pulito
+    def watch():
+        while True:
+            time.sleep(10)
+            busy = any(j['status'] in ('running', 'queued') for j in JOBS.jobs.values()) if JOBS else False
+            if LAST_SEEN[0] and not busy and time.time() - LAST_SEEN[0] > after_s:
+                os._exit(0)
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def serve(root, port=PORT, ready=None):

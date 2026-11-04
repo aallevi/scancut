@@ -82,9 +82,18 @@ def main():
         print(f'Scan Studio on {url}  (root {core.ROOT})', flush=True)
         server.serve(a.root, a.port)
         return
+    # gia' aperto (un'altra finestra, o il server a mano): basta una finestra nuova
+    import urllib.request
+    try:
+        urllib.request.urlopen(url + 'api/settings', timeout=1).read()
+        window(url)
+        return
+    except OSError:
+        pass
     ready = threading.Event()
     threading.Thread(target=server.serve, args=(a.root, a.port, lambda h: ready.set()), daemon=True).start()
     ready.wait(10)
+    server.idle_exit()
     if not window(url):
         print(f'Scan Studio on {url}  (Ctrl-C to quit)', flush=True)
         try:
