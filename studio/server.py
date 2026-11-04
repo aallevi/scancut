@@ -184,17 +184,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(core.listing(q.get('dir', 'originals')))
         if path == 'thumb':
             p = core.preview_path(rel, int(q.get('size', 256)))
-            return self.send(open(p, 'rb').read(), 'image/jpeg', cache=True)
+            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', cache=True)
         if path == 'preview':
             p = core.preview_path(rel, 2400)
-            return self.send(open(p, 'rb').read(), 'image/jpeg', cache=True)
+            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', cache=True)
         if path == 'info':
             return self.send(core.info(rel))
         if path == 'tile':
             crop, box = core.tile(rel, float(q['x']), float(q['y']), float(q['w']), float(q['h']), float(q['out']))
-            b = io.BytesIO(); Image.fromarray(crop).save(b, 'JPEG', quality=92)
+            b = io.BytesIO()
+            png = crop.ndim == 3 and crop.shape[2] == 4
+            Image.fromarray(crop).save(b, 'PNG' if png else 'JPEG', **({'compress_level': 1} if png else {'quality': 92}))
             self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
+            self.send_header('Content-Type', 'image/png' if png else 'image/jpeg')
             self.send_header('X-Box', ','.join(map(str, box)))
             self.send_header('Content-Length', str(b.tell()))
             self.end_headers(); self.wfile.write(b.getvalue()); return

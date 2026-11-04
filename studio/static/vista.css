@@ -326,3 +326,6 @@ input[type=checkbox], input[type=radio] { accent-color: #2a8ae0; }
 .chip { padding: 1px 8px; border: 1px solid #a8c4e2; border-radius: 10px; background: linear-gradient(#fafdff, #e3f0fc); cursor: default; }
 .chip:hover { border-color: #3c7fb1; background: linear-gradient(#eaf6fd, #bee6fd); }
 .group > .gh .info { margin-left: 2px; }
+.thumb img.checker { background: repeating-conic-gradient(#ddd 0% 25%, #fff 0% 50%) 0 0 / 12px 12px; }
+.menu .mnote { font-size: 10.5px; color: #6d6d6d; white-space: normal; max-width: 340px; margin-top: 1px; }
+.menu .mi.disabled .mnote { color: #8d8d8d; }

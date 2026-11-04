@@ -173,15 +173,25 @@ def detect_rgb(rel):
     return (rgb * f + np.array(fill_colour(rel), np.float32) * (1 - f)).round().astype(np.uint8)
 
 
+def has_alpha(rel):
+    im = Image.open(abspath(rel))
+    return im.mode in ('RGBA', 'LA', 'PA') or 'transparency' in im.info
+
+
 def preview_path(rel, size):
-    p = os.path.join(DATA, 'previews', f'{file_key(rel)}-{size}.jpg')
+    # anteprime: JPEG per le scansioni, PNG con la trasparenza per i ritagli
+    alpha_ = has_alpha(rel)
+    p = os.path.join(DATA, 'previews', f'{file_key(rel)}-{size}.' + ('png' if alpha_ else 'jpg'))
     if not os.path.exists(p):
         im = Image.open(abspath(rel))
-        im.draft('RGB', (size, size))
-        im = im.convert('RGB')
+        if alpha_:
+            im = im.convert('RGBA')
+        else:
+            im.draft('RGB', (size, size))
+            im = im.convert('RGB')
         im.thumbnail((size, size), Image.LANCZOS)
         tmp = p + '.part'
-        im.save(tmp, 'JPEG', quality=88)
+        im.save(tmp, 'PNG' if alpha_ else 'JPEG', **({'compress_level': 3} if alpha_ else {'quality': 88}))
         os.replace(tmp, p)
     return p
 
@@ -189,7 +199,7 @@ def preview_path(rel, size):
 def info(rel):
     rgb, icc, dpi, ppm = image(rel)
     h, w = rgb.shape[:2]
-    return {'rel': rel, 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm,
+    return {'rel': rel, 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm, 'alpha': alpha(rel) is not None,
             'mm': [round(w / ppm), round(h / ppm)], 'name': os.path.basename(rel)}
 
 
@@ -199,6 +209,9 @@ def tile(rel, x, y, w, h, out_w):
     x0, y0 = max(0, int(x)), max(0, int(y))
     x1, y1 = min(W, int(x + w)), min(H, int(y + h))
     crop = rgb[y0:y1, x0:x1]
+    a = alpha(rel)
+    if a is not None:
+        crop = np.dstack([crop, a[y0:y1, x0:x1]])      # i ritagli: la trasparenza resta
     if crop.size == 0:
         crop = np.zeros((1, 1, 3), np.uint8)
     out_w = max(1, min(int(out_w), crop.shape[1] * 4))

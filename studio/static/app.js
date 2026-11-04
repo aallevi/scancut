@@ -140,7 +140,8 @@ function menu(btn, items) {
   const el = h('div', { class: 'menu', style: { left: r.left + 'px', top: r.bottom + 1 + 'px' } },
     items.map(it => it === '-' ? h('div', { class: 'sep' }) :
       h('div', { class: 'mi' + (it.disabled ? ' disabled' : ''), title: it.title || null, onclick: () => { closeMenu(); it.do && it.do(); } },
-        it.check ? h('span', { class: 'ck' }, '✓') : null, it.label, it.kbd ? h('span', { class: 'kbd' }, it.kbd) : null)));
+        it.check ? h('span', { class: 'ck' }, '✓') : null, it.label, it.kbd ? h('span', { class: 'kbd' }, it.kbd) : null,
+        it.note ? h('div', { class: 'mnote' }, it.note) : null)));
   document.body.append(el);
   btn.classList.add('open');
   openMenu = { el, btn };
@@ -197,6 +198,15 @@ function renderCmdbar() {
         { label: S.samLoaded ? 'Unload SAM 3 (free 3.4 GB)' : 'SAM 3 not loaded (loads on first use)', disabled: !S.samLoaded, do: () => api.post('sam_unload').then(() => { S.samLoaded = false; status('SAM 3 unloaded'); }) },
       ];
     } }),
+    cmd('Fix', null, { title: 'Corrections that change pixels: always a separate copy, never the original or the cutout', menu: () => [
+      { label: 'About “fake pixels”…', do: fakePixelsDialog, note: 'Why these make extra copies and the rest of the studio never changes a pixel.' },
+      '-',
+      { label: 'Descreen (moiré on printed paper)', disabled: true, note: 'Coming. Notch filter on the image spectrum (FFT), like pro descreening. Saves a separate copy · fake pixels.' },
+      { label: 'Levels and contrast', disabled: true, note: 'Coming. Curves on 16-bit data (48-bit scans via SANE). Saves a separate copy · fake pixels.' },
+      { label: 'Noise and grain reduction', disabled: true, note: 'Coming. BM3D, a top-quality denoiser. Saves a separate copy · fake pixels.' },
+      '-',
+      { label: 'Dust and scratch removal', disabled: true, note: 'Not available: the LiDE 400 has no infrared channel, so dust cannot be told apart from ink. Software removal paints invented pixels over every speck.' },
+    ] }),
     cmd('Export', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Save the cutouts (⌘S)' }),
     cmd('Batch', null, { menu: () => [
       { label: `Detect selected (${S.sel.size}) with ${engName(S.engine)}`, disabled: !S.sel.size, do: () => batch(false) },
@@ -339,7 +349,7 @@ function renderGallery() {
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
       onclick: e => clickItem(e, it, idx, items), ondblclick: () => openScan(it.rel) },
       h('div', { class: 'badges' }, badges),
-      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}`, loading: 'lazy', draggable: 'false' })),
+      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}`, loading: 'lazy', draggable: 'false', class: /\.png$/i.test(it.name) ? 'checker' : null })),
       h('div', { class: 'cap' }, it.name));
     grid.append(el);
   });
@@ -667,7 +677,9 @@ function draw() {
   const c = ctx; c.setTransform(V.dpr, 0, 0, V.dpr, 0, 0); c.clearRect(0, 0, V.cw, V.ch);
   // la scansione con un'ombra, come una foto in Photo Gallery
   const [ix, iy] = toScr(0, 0), iw = S.info.w * V.s, ih = S.info.h * V.s;
-  c.save(); c.shadowColor = 'rgba(0,0,0,.35)'; c.shadowBlur = 8; c.shadowOffsetY = 2; c.fillStyle = '#fff'; c.fillRect(ix, iy, iw, ih); c.restore();
+  // una scansione su un foglio bianco con l'ombra; un ritaglio trasparente direttamente sullo sfondo scelto
+  if (!S.info.alpha) { c.save(); c.shadowColor = 'rgba(0,0,0,.35)'; c.shadowBlur = 8; c.shadowOffsetY = 2; c.fillStyle = '#fff'; c.fillRect(ix, iy, iw, ih); c.restore(); }
+  else { c.save(); c.setLineDash([4, 4]); c.strokeStyle = 'rgba(60,90,130,.45)'; c.strokeRect(ix - .5, iy - .5, iw + 1, ih + 1); c.restore(); }
   c.imageSmoothingEnabled = V.s * V.dpr < V.pScale * 2;
   if (V.img) c.drawImage(V.img, ix, iy, iw, ih);
   const tileOk = t => t && t.rel === S.rel && t.box.length === 4;
@@ -1160,6 +1172,13 @@ function cutoutDialog(s) {
   dialog('Cutout preview', S.names[s.id] || 'Cutout', h('div', {}, box, info), [['Close', () => true, true]], { style: { width: '760px' } });
 }
 
+function fakePixelsDialog() {
+  dialog('Fix', 'Only real pixels, unless you ask', h('div', { style: { width: '520px', lineHeight: 1.5 } },
+    h('p', {}, 'Everything else in Scan Studio only decides which pixels of your scan are kept: cutouts change transparency, never colour. The originals are never touched.'),
+    h('p', {}, 'The Fix tools are different: they compute new pixel values (removing moiré, changing contrast, smoothing grain). That is what “fake pixels” means here. So they never overwrite anything: each one saves an extra copy next to the cutout, named after the fix, and the copy is marked in its file information.'),
+    h('p', { class: 'muted' }, 'Dust removal is left out on purpose: without an infrared channel (the LiDE 400 has none) a speck of dust and a dot of ink look the same, and any software fix invents what is under the speck.')),
+    [['OK', () => true, true]]);
+}
 async function settingsDialog() {
   const s = await api.get('settings');
   const f = {};
