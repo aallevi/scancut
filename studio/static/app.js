@@ -339,7 +339,9 @@ function renderGallery() {
   const items = visibleItems();
   const grid = h('div', { class: 'gallery', tabindex: 0 });
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
-  sub.forEach(c => grid.append(h('div', { class: 'thumb', title: c.name, ondblclick: () => openDir(c.rel), onclick: () => openDir(c.rel) },
+  // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
+  sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: () => { S.selDir = null; openDir(c.rel); },
+    onclick: () => { S.selDir = c.rel; S.sel.clear(); renderGallery(); renderSide(); renderCmdbar(); } },
     h('div', { class: 'pic', html: I.folder.replace('class="ico"', 'width="96" height="96"') }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
   if (!items.length && !sub.length) grid.append(h('div', { class: 'empty' }, S.items.length ? 'No scans match the search.' : 'This folder is empty.'));
   items.forEach((it, idx) => {
@@ -367,6 +369,7 @@ function clickItem(e, it, idx, items) {
   } else if (e.metaKey || e.ctrlKey) {
     S.sel.has(it.rel) ? S.sel.delete(it.rel) : S.sel.add(it.rel); S.anchor = it.rel;
   } else { S.sel = new Set([it.rel]); S.anchor = it.rel; }
+  S.selDir = null;
   renderGallery(); renderSide(); renderCmdbar();
 }
 
@@ -1121,6 +1124,7 @@ document.addEventListener('keydown', e => {
   if ((mod && k === ']') || (e.altKey && k === 'ArrowRight')) { e.preventDefault(); return navFwd(); }
   if (S.view === 'gallery') {
     if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
+    if (k === 'Enter' && S.selDir) { const d = S.selDir; S.selDir = null; return openDir(d); }
     if (k === 'Enter' && S.sel.size) openScan([...S.sel][0]);
     if (k === 'ArrowRight') step(1); if (k === 'ArrowLeft') step(-1);
     return;
