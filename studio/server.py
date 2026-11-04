@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
 
-from . import core
+from . import core, scanner
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 PORT = 8765
@@ -63,6 +63,35 @@ class Jobs:
                 say(f'{rel}: ERROR {e}')
             j['done'] += 1
 
+    def do_preview(self, j, say):
+        # anteprima del letto intero, veloce (75 dpi): per scegliere le aree
+        dev = j['args']['dev']
+        d = os.path.join(core.DATA, 'scanner'); os.makedirs(d, exist_ok=True)
+        tif = os.path.join(d, 'preview.tif')
+        def prog(p): j['pct'] = p
+        scanner.scan(dev, tif, 75, 'Color', progress=prog, cancelled=lambda: j['status'] == 'cancelled')
+        Image.open(tif).convert('RGB').save(os.path.join(d, 'preview.png'))
+        os.remove(tif)
+        j['done'] = 1
+        say('preview ready')
+
+    def do_scan(self, j, say):
+        # una scansione per area, nell'inbox: l'agente le sposta in originals/ e le ritaglia
+        a = j['args']
+        areas = a.get('areas') or [None]
+        batch = core.sc.clean_stem(a.get('batch') or 'scan')
+        for k, area in enumerate(areas):
+            if j['status'] == 'cancelled':
+                break
+            out = next_scan_name(batch)
+            def prog(p, k=k): j['pct'] = (k + p / 100) / len(areas) * 100
+            say(f'scanning {os.path.basename(out)} at {a["res"]} dpi, {a["mode"]}' + (f', area {area[2]:.0f} x {area[3]:.0f} mm' if area else ', whole bed'))
+            scanner.scan(a['dev'], out, int(a['res']), a['mode'], area=tuple(area) if area else None,
+                         progress=prog, cancelled=lambda: j['status'] == 'cancelled')
+            say(f'  -> inbox/{os.path.basename(out)}')
+            j['done'] += 1
+        core.save_settings({'scan_device': a['dev'], 'scan_res': int(a['res']), 'scan_mode': a['mode'], 'scan_batch': batch})
+
     def do_export(self, j, say):
         for rel in j['args']['rels']:
             for w in core.export(rel, log=say):
@@ -102,6 +131,19 @@ class Jobs:
 
 
 JOBS = None
+
+
+def next_scan_name(batch):
+    # "<lotto> <numero>.tif", il primo numero libero fra inbox e originals/<lotto>
+    used = [0]
+    for d in (os.path.join(core.ROOT, 'inbox'), os.path.join(core.ROOT, 'originals', batch)):
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                b, n = core.sc.split_name(core.sc.clean_stem(os.path.splitext(f.replace('.part', ''))[0]))
+                if b == batch and n:
+                    used.append(n)
+    os.makedirs(os.path.join(core.ROOT, 'inbox'), exist_ok=True)
+    return os.path.join(core.ROOT, 'inbox', f'{batch} {max(used) + 1}.tif')
 LAST_SEEN = [0.0]       # ultima richiesta dalla finestra (per chiudersi quando non c'e' piu')
 
 
@@ -262,7 +304,19 @@ class Handler(BaseHTTPRequestHandler):
                 sh = next((x for x in core.load_state(rel)['sheets'] if x['id'] == q['id']), None)
             return self.send(core.histogram(rel, sh))
         if path == 'scanners':
-            return self.send(scanners())
+            if not scanner.available():
+                return self.send({'available': False, 'devices': []})
+            devs = scanner.devices(refresh=q.get('refresh') == '1')
+            for d in devs:
+                d['options'] = scanner.options(d['id'])
+            return self.send({'available': True, 'devices': devs})
+        if path == 'scanner_preview':
+            p = os.path.join(core.DATA, 'scanner', 'preview.png')
+            if not os.path.exists(p):
+                return self.send({'error': 'no preview yet'}, code=404)
+            return self.send(open(p, 'rb').read(), 'image/png')
+        if path == 'next_scan_name':
+            return self.send({'name': os.path.basename(next_scan_name(core.sc.clean_stem(q.get('batch') or 'scan')))})
         self.send_error(404)
 
     # ------------------------------------------------------------ POST
@@ -296,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('batch', 'export', 'claude'):
+            if kind not in ('batch', 'export', 'claude', 'preview', 'scan'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'cancel':

@@ -47,7 +47,7 @@ const I = {
   warn: '<svg class="ico" viewBox="0 0 16 16"><path d="M8 1.5l7 12.5H1z" fill="#ffd34d" stroke="#b58500"/><path d="M8 6v4" stroke="#333" stroke-width="1.6"/><circle cx="8" cy="12" r=".9" fill="#333"/></svg>',
   inbox: '<svg class="ico" viewBox="0 0 16 16"><path d="M1.5 9l2-6h9l2 6v4.5h-13z" fill="#dfeefe" stroke="#3a6ea5"/><path d="M1.5 9h4l1 2h3l1-2h4" fill="none" stroke="#3a6ea5"/></svg>',
   jobs: '<svg class="ico" viewBox="0 0 16 16"><rect x="1.5" y="3" width="13" height="10" rx="1" fill="#fff" stroke="#566d86"/><rect x="3" y="5" width="7" height="2" fill="#36b51a"/><rect x="3" y="9" width="10" height="2" fill="#9fd88f"/></svg>',
-  scanner: '<svg class="ico" viewBox="0 0 16 16"><rect x="1" y="6" width="14" height="6" rx="1.5" fill="#d9e3ee" stroke="#4a5c70"/><rect x="2" y="4" width="12" height="2.5" rx="1" fill="#9fb5cc" stroke="#4a5c70"/><rect x="3" y="9" width="6" height="1" fill="#33aaff"/><circle cx="12.5" cy="9.5" r=".9" fill="#5be35b"/></svg>',
+  scanner: '<img class="ico" src="scanner-icon.png" alt="">',
   script: '<svg class="ico" viewBox="0 0 16 16"><path d="M3 1.5h7l3 3v10H3z" fill="#fff" stroke="#566d86"/><path d="M5 7l-1.5 1.5L5 10M8 7l1.5 1.5L8 10" stroke="#2a72c9" fill="none"/></svg>',
   gear: '<svg class="ico" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5" fill="#cfd8e3" stroke="#56677a" stroke-width="2" stroke-dasharray="2 1.4"/><circle cx="8" cy="8" r="2" fill="#fff" stroke="#56677a"/></svg>',
   claude: '<svg viewBox="0 0 16 16"><path d="M8 1l1.6 4.6L14 4l-3 3.6L15 9l-4.6.6L11 15 8 11.2 5 15l.6-5.4L1 9l4-1.4L2 4l4.4 1.6z" fill="#e8835a" stroke="#fff" stroke-width=".6"/></svg>',
@@ -1110,6 +1110,7 @@ document.addEventListener('keydown', e => {
     if (k === 'ArrowRight') step(1); if (k === 'ArrowLeft') step(-1);
     return;
   }
+  if (S.view === 'scanners' && (k === 'Delete' || k === 'Backspace') && SC.sel >= 0) { SC.areas.splice(SC.sel, 1); SC.sel = -1; drawBed(); renderScanSide(); return; }
   if (S.view !== 'editor') return;
   if (k === ' ') { if (!spaceDown) { spaceDown = true; cv.style.cursor = 'grab'; } e.preventDefault(); return; }
   if (mod && k.toLowerCase() === 'z') { e.preventDefault(); return e.shiftKey ? redo() : undo(); }
@@ -1311,20 +1312,171 @@ function renderJobs() {
 }
 
 // ------------------------------------------------------------ scanner e script
+// ------------------------------------------------------------ scanner (SANE)
+const SC = { devs: null, dev: null, opts: null, areas: [], sel: -1, img: null, job: null, pct: 0 };
+const PRESETS = [['A4', 210, 297], ['A5', 148, 210], ['A5 landscape', 210, 148], ['Letter', 215.9, 279.4], ['10 × 15 cm', 100, 150], ['13 × 18 cm', 130, 180], ['A6', 105, 148]];
 async function renderScanners() {
   const main = $('#main'); main.innerHTML = '';
-  const list = await api.get('scanners').catch(() => []);
-  const card = s => h('div', { style: { display: 'flex', gap: '14px', alignItems: 'center', padding: '12px', border: '1px solid #d5dfe9', borderRadius: '4px', background: 'linear-gradient(#fff,#f3f7fb)', marginBottom: '8px' } },
-    h('div', { html: I.scanner.replace('class="ico"', 'width="48" height="48"') }),
-    h('div', { style: { flex: 1 } }, h('div', { style: { fontSize: '14px', color: '#1e3287' } }, s.name), h('div', { class: 'small muted' }, s.uri), h('div', { class: 'small muted' }, 'Driverless (eSCL over USB).')),
-    h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => api.post('open', { what: 'canon' }) }, 'IJ Scan Utility'), h('button', { class: 'btn', onclick: () => api.post('open', { what: 'imagecapture' }) }, 'Image Capture')));
-  main.append(addressBar(null, null, 'Scanners'), h('div', { style: { padding: '14px', overflow: 'auto' } },
-    list.length ? list.map(card) : h('div', { class: 'muted' }, 'No scanner known to macOS right now. Plug in the Canon LiDE 400 and switch it on.'),
-    h('div', { class: 'group', style: { margin: '16px 0 0', maxWidth: '640px' } }, h('div', { class: 'gh' }, 'How scans get here'),
-      h('div', {}, 'Scan with Image Capture or IJ Scan Utility into ', h('b', {}, '~/Scans/inbox'), '. The agent moves each scan to originals/ and cuts it; open it here to check or fix the edges.'),
-      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => api.post('open', { what: 'kick' }).then(() => status('Agent started')) }, 'Run the agent now'))),
-    h('div', { class: 'group', style: { margin: '16px 0 0', maxWidth: '640px' } }, h('div', { class: 'gh' }, 'Coming next (milestone 2)'),
-      h('div', { class: 'muted' }, 'Driving the scanner from here: preview scan of the whole bed, drag the scan area, DPI and colour mode, several scanners side by side, scanning straight into a batch.'))));
+  const bed = h('div', { class: 'bedwrap' }); const side = h('div', { class: 'scanside' });
+  main.append(addressBar(null, null, 'Scanners'), h('div', { class: 'scanpage' }, bed, side));
+  side.append(h('div', { class: 'group' }, h('div', { class: 'gh' }, 'Scanner'), h('div', { class: 'muted' }, 'Looking for scanners…')));
+  if (!SC.devs) {
+    const r = await api.get('scanners').catch(e => ({ error: e.message }));
+    if (S.view !== 'scanners') return;
+    if (!r.available) { side.innerHTML = ''; side.append(group('Scanner', h('div', {}, 'SANE is not installed. In Terminal: ', h('code', {}, 'brew install sane-backends')))); return; }
+    SC.devs = r.devices || [];
+    SC.dev = SC.devs.find(d => d.id === S.settings.scan_device) || SC.devs[0] || null;
+    SC.res = S.settings.scan_res || 600; SC.mode = S.settings.scan_mode || 'Color'; SC.batch = S.settings.scan_batch || 'scan';
+    loadPreview();
+  }
+  bedCanvas(bed);
+  renderScanSide(side);
+}
+function loadPreview() { const im = new Image(); im.onload = () => { SC.img = im; drawBed(); }; im.onerror = () => { SC.img = null; drawBed(); }; im.src = '/api/scanner_preview?t=' + Date.now(); }
+function renderScanSide(side) {
+  side = side || $('.scanside'); if (!side) return; side.innerHTML = '';
+  const o = SC.dev?.options || {};
+  if (!SC.devs.length) {
+    side.append(group('Scanner', h('div', { class: 'muted' }, 'No scanner found. Plug in the LiDE 400, switch it on, then '), h('button', { class: 'btn', onclick: () => { SC.devs = null; renderScanners(); } }, 'Look again')));
+    return;
+  }
+  const running = SC.job && ['queued', 'running'].includes(SC.job.status);
+  side.append(group('Scanner',
+    h('select', { onchange: e => { SC.dev = SC.devs.find(d => d.id === e.target.value); renderScanSide(); } }, SC.devs.map(d => h('option', { value: d.id, selected: d === SC.dev }, d.name))),
+    h('div', { class: 'small muted', style: { marginTop: '4px' } }, `Bed ${o.width_mm?.toFixed(1)} × ${o.height_mm?.toFixed(1)} mm · up to ${Math.max(...(o.resolutions || [0]))} dpi · via SANE`),
+    h('div', { class: 'btns' }, h('button', { class: 'btn', disabled: running, onclick: () => startScanJob('preview') }, 'Preview whole bed'), info('A quick 75 dpi scan of the whole bed (about 15 s), to see where your sheets are and draw the areas to scan.'))));
+  const list = h('div');
+  SC.areas.forEach((a, i) => {
+    const px = [Math.round(a[2] / 25.4 * SC.res), Math.round(a[3] / 25.4 * SC.res)];
+    const mb = px[0] * px[1] * (SC.mode.startsWith('Gray') || SC.mode.includes('gray') ? 1 : 3) * (SC.mode.includes('48') || SC.mode.includes('16') ? 2 : 1) / 1048576;
+    list.append(h('div', { class: 'sheet' + (i === SC.sel ? ' sel' : ''), onclick: () => { SC.sel = i; drawBed(); renderScanSide(); } },
+      h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }), h('span', {}),
+      h('div', { class: 'nm' }, `${a[2].toFixed(0)} × ${a[3].toFixed(0)} mm`, h('small', {}, `${px[0]} × ${px[1]} px · ${mb.toFixed(0)} MB`)),
+      h('button', { class: 'btn small', title: 'Remove this area', onclick: e => { e.stopPropagation(); SC.areas.splice(i, 1); SC.sel = -1; drawBed(); renderScanSide(); } }, '✕')));
+  });
+  if (!SC.areas.length) list.append(h('div', { class: 'muted small' }, 'No areas: the whole bed is scanned. Drag on the bed to draw an area, or add a format:'));
+  const sets = S.settings.frame_sets || {};
+  side.append(group('Areas', list,
+    h('div', { class: 'chips', style: { marginTop: '6px' } }, PRESETS.map(([n, w, hh]) => h('span', { class: 'chip', title: `Add a ${n} area at the top left of the bed`, onclick: () => addArea(w, hh) }, n))),
+    h('div', { class: 'row' }, h('label', {}, 'Frame sets'),
+      h('select', { class: 'f', onchange: e => { if (e.target.value) { SC.areas = JSON.parse(JSON.stringify(sets[e.target.value])); SC.sel = -1; drawBed(); renderScanSide(); } } },
+        h('option', { value: '' }, Object.keys(sets).length ? 'Load…' : '(none saved)'), Object.keys(sets).map(k => h('option', { value: k }, k))),
+      info('Saved groups of areas, e.g. "two A5 side by side". Draw the areas, then Save.')),
+    h('div', { class: 'btns' },
+      h('button', { class: 'btn small', disabled: !SC.areas.length, onclick: saveFrameSet }, 'Save areas as…'),
+      h('button', { class: 'btn small', disabled: !SC.areas.length, onclick: () => { SC.areas = []; SC.sel = -1; drawBed(); renderScanSide(); } }, 'Clear'))));
+  const deep = m => m.includes('48') || m.includes('16 bits');
+  side.append(group('Settings',
+    h('div', { class: 'row' }, h('label', {}, 'Resolution'), h('select', { class: 'f', onchange: e => { SC.res = +e.target.value; renderScanSide(); } },
+      (o.resolutions || [300, 600]).map(r => h('option', { value: r, selected: r === SC.res }, r + ' dpi'))),
+      info('Only the resolutions the scanner itself offers, never upscaled. For drawings 600 dpi is a good default; 1200 for fine pencil. The LiDE 400 sensor is 4800 dpi, but very high settings mostly add file size: I will measure what it really resolves on a test sheet.')),
+    h('div', { class: 'row' }, h('label', {}, 'Colour'), h('select', { class: 'f', onchange: e => { SC.mode = e.target.value; renderScanSide(); } },
+      (o.modes || ['Color']).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: m === SC.mode, disabled: deep(m) },
+        ({ Color: 'Colour (24-bit)', Gray: 'Grey (8-bit)', '48 bits color': 'Colour 48-bit (coming)', '16 bits gray': 'Grey 16-bit (coming)' })[m] || m))),
+      info('48-bit colour works on your LiDE 400 through SANE (tested). It is greyed out until the cutting pipeline reads 16-bit scans; then cutouts keep all 16 bits.')),
+    h('div', { class: 'row' }, h('label', {}, 'Batch'), h('input', { type: 'text', class: 'f', value: SC.batch, oninput: e => { SC.batch = e.target.value; nextName(); } }),
+      info('Scans are named “<batch> <number>.tif” and go to the inbox; the agent moves them to originals/<batch>/ and cuts them, like your Image Capture scans.')),
+    h('div', { class: 'small muted', id: 'nextname' }, '')));
+  nextName();
+  const pct = running ? Math.round(SC.job.pct || 0) : 0;
+  side.append(group('Scan',
+    h('div', { class: 'btns' }, h('button', { class: 'btn default', style: { minWidth: '140px', height: '28px' }, disabled: running, onclick: () => startScanJob('scan') },
+      SC.areas.length > 1 ? `Scan ${SC.areas.length} areas` : 'Scan'),
+      running ? h('button', { class: 'btn', onclick: () => api.post('cancel', { id: SC.job.id }) }, 'Cancel') : null),
+    running ? h('div', { style: { marginTop: '8px' } }, h('div', { class: 'progress' }, h('i', { style: { width: pct + '%' } })), h('div', { class: 'small muted' }, (SC.job.kind === 'preview' ? 'Preview' : 'Scanning') + ` · ${pct}%`)) : null,
+    SC.job?.status === 'done' && SC.job.kind === 'scan' ? h('div', { class: 'small', style: { color: '#2d7a2d', marginTop: '6px' } }, `✓ ${SC.job.done} scan(s) in the inbox; the agent is cutting them.`) : null,
+    SC.job?.status === 'failed' ? h('div', { class: 'small', style: { color: '#b03030', marginTop: '6px' } }, SC.job.log.at(-1)) : null));
+}
+async function nextName() {
+  const el = $('#nextname'); if (!el) return;
+  const r = await api.get('next_scan_name', { batch: SC.batch || 'scan' }).catch(() => null);
+  if (r) el.textContent = 'Next file: inbox/' + r.name;
+}
+function addArea(w, hh) {
+  const o = SC.dev.options; w = Math.min(w, o.width_mm); hh = Math.min(hh, o.height_mm);
+  SC.areas.push([0, 0, w, hh]); SC.sel = SC.areas.length - 1; drawBed(); renderScanSide();
+}
+function saveFrameSet() {
+  const inp = h('input', { type: 'text', value: '', placeholder: 'e.g. two A5 side by side' });
+  dialog('Frame sets', 'Save these areas', h('div', { style: { width: '380px' } }, inp), [['Save', async () => {
+    const n = inp.value.trim(); if (!n) return false;
+    const sets = Object.assign({}, S.settings.frame_sets || {}, { [n]: SC.areas });
+    S.settings = await api.post('settings', { frame_sets: sets }); renderScanSide();
+  }, true], ['Cancel', () => true]]);
+  setTimeout(() => inp.focus(), 0);
+}
+async function startScanJob(kind) {
+  if (!SC.dev) return;
+  const body = kind === 'preview' ? { kind, dev: SC.dev.id } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
+  SC.job = await api.post('jobs', body).catch(e => (alertDialog('Scanner', e.message), null));
+  if (!SC.job) return;
+  renderScanSide();
+  const tick = async () => {
+    const j = await api.get('job', { id: SC.job.id }).catch(() => null); if (!j) return;
+    SC.job = j; if (S.view === 'scanners') renderScanSide();
+    if (['queued', 'running'].includes(j.status)) return setTimeout(tick, 500);
+    if (j.kind === 'preview' && j.status === 'done') loadPreview();
+    if (j.kind === 'scan' && j.status === 'done') { status(`${j.done} scan(s) in the inbox`); setTimeout(() => api.get('tree').then(t => { S.tree = t.tree; renderNav(); }), 1500); }
+  };
+  tick();
+}
+let bedcv, bedctx, bedV = { s: 1, ox: 0, oy: 0 }, bedDrag = null;
+function bedCanvas(wrap) {
+  bedcv = h('canvas'); wrap.append(bedcv); bedctx = bedcv.getContext('2d');
+  new ResizeObserver(() => drawBed()).observe(wrap);
+  const mm = e => { const r = bedcv.getBoundingClientRect(); return [(e.clientX - r.left - bedV.ox) / bedV.s, (e.clientY - r.top - bedV.oy) / bedV.s]; };
+  const clampA = a => { const o = SC.dev.options; a[2] = Math.max(5, Math.min(a[2], o.width_mm)); a[3] = Math.max(5, Math.min(a[3], o.height_mm)); a[0] = Math.max(0, Math.min(a[0], o.width_mm - a[2])); a[1] = Math.max(0, Math.min(a[1], o.height_mm - a[3])); return a; };
+  bedcv.addEventListener('pointerdown', e => {
+    if (!SC.dev) return; bedcv.setPointerCapture(e.pointerId);
+    const p = mm(e), tol = 6 / bedV.s;
+    const sel = SC.areas[SC.sel];
+    if (sel) {
+      for (const [cx, cy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) if (Math.abs(p[0] - (sel[0] + cx * sel[2])) < tol && Math.abs(p[1] - (sel[1] + cy * sel[3])) < tol) { bedDrag = { resize: [cx, cy], start: sel.slice(), p }; return; }
+    }
+    const hit = SC.areas.map((a, i) => [a, i]).reverse().find(([a]) => p[0] >= a[0] && p[0] <= a[0] + a[2] && p[1] >= a[1] && p[1] <= a[1] + a[3]);
+    if (hit) { SC.sel = hit[1]; bedDrag = { move: true, start: hit[0].slice(), p }; renderScanSide(); drawBed(); return; }
+    bedDrag = { create: p }; SC.sel = -1;
+  });
+  bedcv.addEventListener('pointermove', e => {
+    if (!bedDrag) return; const p = mm(e), o0 = bedDrag.p || bedDrag.create, d = [p[0] - o0[0], p[1] - o0[1]];
+    if (bedDrag.create) bedDrag.box = [Math.min(p[0], o0[0]), Math.min(p[1], o0[1]), Math.abs(d[0]), Math.abs(d[1])];
+    else if (bedDrag.move) { const a = SC.areas[SC.sel]; a[0] = bedDrag.start[0] + d[0]; a[1] = bedDrag.start[1] + d[1]; clampA(a); }
+    else if (bedDrag.resize) {
+      const a = SC.areas[SC.sel], s0 = bedDrag.start, [cx, cy] = bedDrag.resize;
+      if (cx) a[2] = s0[2] + d[0]; else { a[0] = s0[0] + d[0]; a[2] = s0[2] - d[0]; }
+      if (cy) a[3] = s0[3] + d[1]; else { a[1] = s0[1] + d[1]; a[3] = s0[3] - d[1]; }
+      if (a[2] < 5) a[2] = 5; if (a[3] < 5) a[3] = 5; clampA(a);
+    }
+    drawBed();
+  });
+  bedcv.addEventListener('pointerup', () => {
+    if (bedDrag?.box && bedDrag.box[2] > 5 && bedDrag.box[3] > 5) { SC.areas.push(clampA(bedDrag.box.map(v => Math.round(v * 10) / 10))); SC.sel = SC.areas.length - 1; }
+    bedDrag = null; drawBed(); renderScanSide();
+  });
+}
+function drawBed() {
+  if (!bedcv || !SC.dev) return;
+  const wrap = bedcv.parentElement, r = wrap.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  bedcv.width = r.width * dpr; bedcv.height = r.height * dpr; bedcv.style.width = r.width + 'px'; bedcv.style.height = r.height + 'px';
+  const c = bedctx, o = SC.dev.options; c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.fillStyle = bgPaint(c); c.fillRect(0, 0, r.width, r.height);
+  const m = 24; bedV.s = Math.min((r.width - 2 * m) / o.width_mm, (r.height - 2 * m) / o.height_mm);
+  bedV.ox = (r.width - o.width_mm * bedV.s) / 2; bedV.oy = (r.height - o.height_mm * bedV.s) / 2;
+  const X = v => bedV.ox + v * bedV.s, Y = v => bedV.oy + v * bedV.s;
+  c.save(); c.shadowColor = 'rgba(0,0,0,.35)'; c.shadowBlur = 10; c.shadowOffsetY = 2; c.fillStyle = '#f4f4f2'; c.fillRect(X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s); c.restore();
+  if (SC.img) c.drawImage(SC.img, X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s);
+  else { c.fillStyle = '#7a8796'; c.font = '13px "Segoe UI", Tahoma, sans-serif'; c.textAlign = 'center'; c.fillText('Press “Preview whole bed” to see what is on the scanner', X(o.width_mm / 2), Y(o.height_mm / 2)); c.textAlign = 'left'; }
+  const areas = SC.areas;
+  if (areas.length) { c.save(); c.beginPath(); c.rect(X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s); areas.forEach(a => c.rect(X(a[0]), Y(a[1]), a[2] * bedV.s, a[3] * bedV.s)); c.fillStyle = 'rgba(20,30,45,.35)'; c.fill('evenodd'); c.restore(); }
+  areas.forEach((a, i) => {
+    const col = COLORS[i % COLORS.length];
+    c.save(); c.lineWidth = i === SC.sel ? 2.5 : 1.5; c.strokeStyle = col; c.setLineDash(i === SC.sel ? [] : [6, 4]); c.strokeRect(X(a[0]), Y(a[1]), a[2] * bedV.s, a[3] * bedV.s); c.setLineDash([]);
+    const label = `${i + 1} · ${a[2].toFixed(0)} × ${a[3].toFixed(0)} mm`; c.font = '600 11px "Segoe UI", Tahoma, sans-serif'; const w = c.measureText(label).width + 10;
+    c.fillStyle = col; c.fillRect(X(a[0]), Y(a[1]) - 17, w, 16); c.fillStyle = '#fff'; c.fillText(label, X(a[0]) + 5, Y(a[1]) - 5);
+    if (i === SC.sel) [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => { c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.lineWidth = 1; c.fillRect(X(a[0] + cx * a[2]) - 4, Y(a[1] + cy * a[3]) - 4, 8, 8); c.strokeRect(X(a[0] + cx * a[2]) - 4, Y(a[1] + cy * a[3]) - 4, 8, 8); });
+    c.restore();
+  });
+  if (bedDrag?.box) { const b = bedDrag.box; c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.fillStyle = 'rgba(51,153,255,.15)'; c.fillRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.restore(); }
 }
 function renderScripts() {
   const main = $('#main'); main.innerHTML = '';

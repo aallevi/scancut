@@ -922,6 +922,8 @@ DEFAULT_SETTINGS = {
     'eagle_folder': '',
     'claude_tools': 'Read,Bash(curl -s http://127.0.0.1:*),Bash(/opt/miniconda3/bin/python3 -I studio.py:*)',
     'compare_engines': ['classic', 'vision'],
+    'scan_device': '', 'scan_res': 600, 'scan_mode': 'Color', 'scan_batch': 'scan',
+    'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
 
 
