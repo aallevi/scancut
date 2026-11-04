@@ -12,13 +12,14 @@ cutouts are never overwritten, only real pixels.
 ... studio.py --root <copy>                           # work on a scratch copy
 ```
 
-From the Dock: `~/Applications/Scan Studio.app`, built from `scan-studio.applescript`
-(`osacompile -s -o ~/Applications/Scan\ Studio.app scan-studio.applescript`, then copy the
-icon to `Contents/Resources/applet.icns`). A click starts the studio, or brings a hidden or
-closed window back (`scan-studio.sh`, `studio/appctl`: `swiftc -O studio/appctl.swift -o
-studio/appctl`, no permissions needed). Closed window: the studio quits after ~1 minute.
+From the Dock: `~/Applications/Scan Studio.app`, a native Swift app (`studio/mac/ScanStudio.swift`,
+built and ad-hoc signed by `studio/mac/build.sh`; rebuild after changing the Swift file or the
+icon, pages and Python are read live). One WebKit window with no macOS frame: the Vista
+frame's buttons minimise to the Dock, zoom and close for real. It starts `studio.py serve`
+as a child (or uses one already running) and stops it on quit, after saving pending edits.
+Dock click brings the window back; ⌘Q quits; View > Reload; Web Inspector via right-click.
 
-The window uses pywebview when installed (`pip install pywebview`: frameless, the
+From a terminal, without the app: the window uses pywebview when installed (`pip install pywebview`: frameless, the
 Vista caption buttons work); otherwise Chrome/Edge in app mode, otherwise the browser.
 
 ## Headless

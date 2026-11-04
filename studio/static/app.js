@@ -1282,6 +1282,9 @@ function toggleChat() {
 // ------------------------------------------------------------ finestra (pywebview senza cornice)
 $$('.caption [data-win]').forEach(el => el.addEventListener('click', () => {
   const a = window.pywebview?.api; const w = el.dataset.win;
+  // nell'app del Dock (WebKit nativo): riduci nel Dock, ingrandisci, chiudi davvero
+  const mac = window.webkit?.messageHandlers?.studio;
+  if (mac) return mac.postMessage({ cmd: w });
   if (a) return a[w]?.();
   // in Chrome: ingrandisci = schermo intero, riduci = nascondi la finestra, chiudi = chiudi
   if (w === 'max') return document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
