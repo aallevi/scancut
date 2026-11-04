@@ -107,7 +107,7 @@ double-click resets.
 ## Shortcuts (editor)
 
 V select · H pan (or hold Space) · A edit points (double-click edge adds, ⌥-click
-removes) · P polygon (Enter closes) · M rectangle · L lasso · W magic wand · B brush ·
+removes) · P polygon (Enter closes) · M rectangle · L lasso · W Magic Wand (options in the bar above the scan) · B brush ·
 K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the other) ·
 R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
 ⇧/⌘-click or drag on empty space selects several sheets · ⌘A all · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.

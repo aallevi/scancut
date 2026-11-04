@@ -247,8 +247,8 @@ def engines():
     out = [
         {'id': 'auto', 'name': 'Automatic (as the agent)', 'kind': 'builtin', 'available': True,
          'note': 'Classic cut; Apple Vision too when the paper is close to the lid colour.', 'params': [TOL_PARAM]},
-        {'id': 'classic', 'name': 'Classic (magic wand)', 'kind': 'builtin', 'available': True,
-         'note': 'Background colour, wand from outside, shadow pass. Keeps fibres and tears.', 'params': [TOL_PARAM]},
+        {'id': 'classic', 'name': 'Classic auto-cut (lid colour)', 'kind': 'builtin', 'available': True,
+         'note': 'Finds the lid colour and removes it from the outside in, then the shadow. Keeps fibres and tears. Without the Apple Vision fallback.', 'params': [TOL_PARAM]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),

@@ -572,29 +572,19 @@ async function openScan(rel) {
   const main = $('#main'); main.innerHTML = '';
   const tools = [['select', I.t_select, 'Select (V)'], ['hand', I.t_hand, 'Pan (H, or hold Space)'], ['points', I.t_points, 'Edit points (A): drag; double-click an edge adds, ⌥-click removes'],
     ['poly', I.t_poly, 'New sheet by polygon (P): click points, Enter to close'], ['rect', I.t_rect, 'Rectangle (M): add or cut a rectangle'], ['lasso', I.t_lasso_add, 'Lasso (L; K = lasso in Cut mode)'],
-    ['wand', I.t_wand, 'Magic wand (W): click a colour, like Photoshop'], ['brush', I.t_brush_add, 'Brush (B; E = eraser)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine'],
+    ['wand', I.t_wand, 'Magic Wand (W): click a colour to select it, like Photoshop. Options appear in the bar above the scan'], ['brush', I.t_brush_add, 'Brush (B; E = eraser)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine'],
     ['sam', I.t_sam, 'SAM 3 (S): click the object the prompt names (⌥-click excludes), or drag a box. Enter starts a new object.']];
   const tb = h('div', { class: 'toolbox' }, tools.map(([id, ic, tip]) => h('div', { class: 'tool' + (S.tool === id ? ' on' : ''), 'data-tool': id, title: tip, onclick: () => setTool(id) }, svg(ic))),
     h('hr'),
-    h('div', { class: 'modes', title: 'What lasso, rectangle, wand and brush do. X swaps, hold ⌥ for the other one.' },
-      h('div', { class: 'mode' + (S.mode === 'new' ? ' on' : ''), 'data-mode': 'new', title: 'New: a separate sheet from the selection', onclick: () => setMode('new') }, '□'),
-      h('div', { class: 'mode' + (S.mode === 'add' ? ' on' : ''), 'data-mode': 'add', title: 'Add to the sheet (⇧)', onclick: () => setMode('add') }, '＋'),
-      h('div', { class: 'mode' + (S.mode === 'sub' ? ' on' : ''), 'data-mode': 'sub', title: 'Cut away from the sheet (⌥)', onclick: () => setMode('sub') }, '－'),
-      h('div', { class: 'mode' + (S.mode === 'int' ? ' on' : ''), 'data-mode': 'int', title: 'Keep only the overlap with the sheet (⇧⌥)', onclick: () => setMode('int') }, '∩')),
-    h('div', { class: 'opt', id: 'modename' }, (MODE_NAMES[S.mode] || 'Add') + ' ', info(TIPS.modes)),
-    h('hr'), h('div', { class: 'opt' }, 'Brush ', info(TIPS.brush)), h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: S.brushMM, title: 'Brush size in mm ([ and ])', oninput: e => { S.brushMM = +e.target.value; $('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'; } }),
-    h('div', { class: 'opt', id: 'bsz' }, S.brushMM.toFixed(1) + ' mm'),
-    h('hr'), h('div', { class: 'opt' }, 'Wand ', info(TIPS.wand)), h('input', { type: 'range', min: 1, max: 80, step: 1, value: S.wandTol, title: 'Tolerance, like Photoshop (the automatic cut uses about 13-15)', oninput: e => { S.wandTol = +e.target.value; $('#wtol').textContent = 'tol ' + S.wandTol; } }),
-    h('div', { class: 'opt', id: 'wtol' }, 'tol ' + S.wandTol),
-    h('label', { class: 'opt', title: 'Only touching pixels (off: the same colour anywhere)' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => S.wandContig = e.target.checked }), ' contig. ', info(TIPS.contig)),
-    h('hr'),
     h('label', { class: 'opt', title: 'Darken what will be cut away (O)' }, h('input', { type: 'checkbox', id: 'cutview', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; requestTile(); draw(); } }), h('br'), 'Cut view ', info(TIPS.cutview)));
+  const optbar = h('div', { class: 'optbar', id: 'optbar' });
   const stage = h('div', { class: 'stage bg-' + S.bg });
   cv = h('canvas'); hud = h('div', { class: 'hud' }); busyEl = h('div', { class: 'busy' }, h('div', { style: { width: '220px', background: '#fff', padding: '12px', border: '1px solid #9bb', borderRadius: '4px', boxShadow: '0 3px 12px rgba(0,0,0,.25)' } }, h('div', { id: 'busymsg', style: { marginBottom: '6px' } }, 'Working…'), h('div', { class: 'progress marquee' }, h('i'))));
   const loupe = h('canvas', { class: 'loupe', id: 'loupe', width: 360, height: 360 });
   const dens = h('div', { class: 'dens', id: 'dens' });
   stage.append(cv, hud, dens, loupe, busyEl);
-  main.append(addressBar(parts.slice(0, -1).join('/'), parts.at(-1)), h('div', { class: 'editor' }, tb, stage));
+  main.append(addressBar(parts.slice(0, -1).join('/'), parts.at(-1)), optbar, h('div', { class: 'editor' }, tb, stage));
+  renderOptions();
   ctx = cv.getContext('2d');
   bindCanvas(stage);
   new ResizeObserver(() => { resize(); draw(); }).observe(stage);
@@ -621,10 +611,63 @@ async function openScan(rel) {
 }
 function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
 function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
-const MODE_NAMES = { new: 'New', add: 'Add', sub: 'Cut', int: 'Intersect' };
-function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.firstChild.textContent = MODE_NAMES[m] + ' '; }
+const MODE_NAMES = { new: 'New selection', add: 'Add', sub: 'Subtract', int: 'Intersect' };
+// le icone dei modi come in Photoshop: un quadrato, due uniti, uno meno l'altro, la parte comune
+const MODE_ICONS = {
+  new: '<svg viewBox="0 0 22 16"><rect x="5" y="2.5" width="12" height="11" fill="#cfe6fb" stroke="#24548a"/></svg>',
+  add: '<svg viewBox="0 0 22 16"><path d="M2.5 2.5h9v4h8v8h-9v-4h-8z" fill="#b9e6b4" stroke="#1d6b2a"/></svg>',
+  sub: '<svg viewBox="0 0 22 16"><path d="M2.5 2.5h9v4h-1v4h-8z" fill="#cfe6fb" stroke="#24548a"/><rect x="10.5" y="6.5" width="9" height="8" fill="#fff" stroke="#b03030" stroke-dasharray="2 1.2"/></svg>',
+  int: '<svg viewBox="0 0 22 16"><rect x="2.5" y="2.5" width="9" height="8" fill="#fff" stroke="#6b52c9" stroke-dasharray="2 1.2"/><rect x="10.5" y="6.5" width="9" height="8" fill="#fff" stroke="#6b52c9" stroke-dasharray="2 1.2"/><rect x="10.5" y="6.5" width="1" height="4" fill="#c9bdf5" stroke="#3b2a99"/></svg>',
+};
+const MODE_HINTS = {
+  new: 'makes a new, separate sheet from what you select (e.g. only the ink: turn Contiguous off and click a black line)',
+  add: 'adds what you select to the sheet',
+  sub: 'cuts what you select away from the sheet',
+  int: 'keeps only the part of the sheet that is also in your selection (e.g. only the ink inside this page)',
+};
+function setMode(m) { S.mode = m; renderOptions(); }
+function modeGroup() {
+  return h('div', { class: 'og' }, h('span', { class: 'ol' }, 'Mode'),
+    h('div', { class: 'segs' }, ['new', 'add', 'sub', 'int'].map(m => h('div', { class: 'seg' + (S.mode === m ? ' on' : ''), title: MODE_NAMES[m] + ': ' + MODE_HINTS[m] + ({ add: ' (hold ⇧)', sub: ' (hold ⌥)', int: ' (hold ⇧⌥)' }[m] || ''), onclick: () => setMode(m) },
+      svg(MODE_ICONS[m]), h('span', {}, MODE_NAMES[m])))));
+}
+function numSlider(label, val, min, max, step, unit, onv, tip) {
+  const num = h('input', { type: 'number', class: 'onum', min, max, step, value: val });
+  const rng = h('input', { type: 'range', class: 'orng', min, max, step, value: val });
+  rng.oninput = () => { num.value = rng.value; onv(+rng.value); };
+  num.onchange = () => { const v = Math.max(min, Math.min(max, +num.value || min)); num.value = v; rng.value = v; onv(v); };
+  return h('div', { class: 'og' }, h('span', { class: 'ol' }, label), rng, num, unit ? h('span', { class: 'ou' }, unit) : null, tip ? info(tip) : null);
+}
+const TOOL_TITLES = { select: 'Select', hand: 'Pan', points: 'Edit points', poly: 'Polygon', rect: 'Rectangle selection', lasso: 'Lasso selection', wand: 'Magic Wand', brush: 'Brush', box: 'Detect in a box', sam: 'SAM 3' };
+function renderOptions() {
+  const bar = $('#optbar'); if (!bar) return;
+  bar.innerHTML = '';
+  const t = S.tool;
+  const hint = txt => h('div', { class: 'ohint' }, txt);
+  const icon = (S.tool && I['t_' + (t === 'lasso' ? 'lasso_add' : t === 'brush' ? 'brush_add' : t)]) || '';
+  bar.append(h('div', { class: 'otool' }, svg(icon), h('b', {}, TOOL_TITLES[t] || t)));
+  if (t === 'wand') {
+    bar.append(modeGroup(),
+      numSlider('Tolerance', S.wandTol, 1, 120, 1, '', v => { S.wandTol = v; }, TIPS.wand),
+      h('label', { class: 'og' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => { S.wandContig = e.target.checked; renderOptions(); } }), ' Contiguous', info(TIPS.contig)),
+      hint(`Click a colour on the scan. ${MODE_NAMES[S.mode]} ${MODE_HINTS[S.mode]}.${S.wandContig ? '' : ' Contiguous is off: every pixel of that colour on the whole scan.'}`));
+  } else if (t === 'lasso' || t === 'rect') {
+    bar.append(modeGroup(), hint(`${t === 'rect' ? 'Drag a rectangle' : 'Drag around an area'}. ${MODE_NAMES[S.mode]} ${MODE_HINTS[S.mode]}.`));
+  } else if (t === 'brush') {
+    bar.append(h('div', { class: 'og' }, h('span', { class: 'ol' }, 'Paint'),
+        h('div', { class: 'segs' }, [['add', 'Add'], ['sub', 'Erase']].map(([m, l]) => h('div', { class: 'seg' + ((S.mode === m || (m === 'add' && S.mode !== 'sub')) ? ' on' : ''), onclick: () => setMode(m) }, svg(MODE_ICONS[m]), h('span', {}, l))))),
+      numSlider('Size', S.brushMM, 0.2, 20, 0.1, 'mm', v => { S.brushMM = v; draw(); }, TIPS.brush),
+      hint(S.mode === 'sub' ? 'Paint over what should become transparent.' : 'Paint over paper the cut missed. [ and ] change the size.'));
+  } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; Delete removes.'));
+  else if (t === 'hand') bar.append(hint('Drag to move around. Also: hold Space with any tool, or scroll with two fingers.'));
+  else if (t === 'points') bar.append(hint('Drag the points of the selected sheet. Double-click an edge to add a point, ⌥-click a point to remove it.'));
+  else if (t === 'poly') bar.append(hint('Click the corners of a new sheet; Enter (or double-click) closes it, Esc cancels.'));
+  else if (t === 'box') bar.append(h('div', { class: 'og' }, h('span', { class: 'ol' }, 'Engine'), h('b', {}, engName(S.engine))), hint('Drag a box: the chosen engine looks for sheets only inside it, and adds them.'));
+  else if (t === 'sam') bar.append(h('div', { class: 'og' }, h('span', { class: 'ol' }, 'Prompt'), h('b', {}, '“' + samParams().prompt + '”'), h('button', { class: 'btn small', onclick: samPromptDialog }, 'Change…')),
+      hint('Click the object SAM 3 should pick (⌥-click excludes one), or drag a box to search inside it. Enter starts a new object.'));
+}
 function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); if (S.view === 'gallery') renderGallery(); draw(); }
-function setTool(t) { S.tool = t; S.poly = null; S.sam = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
+function setTool(t) { S.tool = t; S.poly = null; S.sam = null; renderOptions(); $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
 const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none', sam: 'crosshair' })[t];
 
 function resize() {
@@ -1083,7 +1126,7 @@ document.addEventListener('keydown', e => {
   if (k === 'Enter' && S.sam) { S.sam = null; status('SAM 3: next click starts a new object'); return draw(); }
   if (k === '+' || k === '=') return zoomBy(1.4);
   if (k === '-') return zoomBy(1 / 1.4);
-  if (k === '[' || k === ']') { S.brushMM = Math.max(0.2, Math.min(10, S.brushMM * (k === ']' ? 1.25 : 0.8))); $('#bsz') && ($('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'); return draw(); }
+  if (k === '[' || k === ']') { S.brushMM = Math.max(0.2, Math.min(10, S.brushMM * (k === ']' ? 1.25 : 0.8))); renderOptions(); return draw(); }
   if (k === 'c') return toggleCompare();
   if (k === 'o') { S.showCut = !S.showCut; const cb = $('#cutview'); if (cb) cb.checked = S.showCut; requestTile(); return draw(); }
   if (k === 'Tab') { e.preventDefault(); const sh = S.st.sheets; if (!sh.length) return; const i = sh.findIndex(s => s.id === S.selSheet); S.selSheet = sh[(i + (e.shiftKey ? -1 : 1) + sh.length) % sh.length].id; renderSide(); return draw(); }
