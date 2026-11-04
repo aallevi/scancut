@@ -13,3 +13,4 @@ vision_mask
 # studio: stato e cache, non codice
 studio-data/
 studio/appctl
+tools/snap

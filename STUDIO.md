@@ -119,3 +119,14 @@ buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
 Drive the scanner directly (ImageCaptureCore helper, like `vision_mask.swift`):
 overview scan, scan area, DPI/colour, several scanners, scan into a batch.
 The LiDE 400 is registered as `Canon_LiDE_400` (eSCL over USB).
+
+## Testing (for Claude)
+
+- Scratch root: `python3 -I studio.py serve --root <copy> --port 8799`, never the live ~/Scans.
+- Screenshots: `swiftc -O tools/snap.swift -o tools/snap`, then
+  `tools/snap "http://127.0.0.1:8799/#originals%2F<file>" out.png 1400 880 <wait-s> [script.js]`;
+  the JS runs after load (studio globals like `S`, `openScan`, `detect` are reachable), page
+  errors are printed. Read the PNG to check.
+- Pipeline changes: run the HEAD copy and the new `scancut.py` on the same inbox in two
+  scratch roots and `cmp` every cutout (`tools/make_test_scans.py` makes made-up scans for this).
+
