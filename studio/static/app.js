@@ -1323,6 +1323,10 @@ async function settingsDialog() {
     field('keep_16bit', 'Keep 16 bits', h('input', { type: 'checkbox', checked: s.keep_16bit }), 'Cutouts of 48-bit colour or 16-bit grey scans keep all 16 bits per channel (PNG or JPEG XL). Off: 8-bit cutouts.'),
     field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
     field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by the second export button (“To …/”).'),
+    h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Colour calibration (IT8)'),
+    field('it8_remind', 'Remind me', h('input', { type: 'checkbox', checked: s.it8_remind }), 'A reminder to recalibrate with the IT8.7/2 chart.'),
+    field('it8_days', 'Every', h('input', { type: 'number', min: 7, max: 730, step: 1, value: s.it8_days || 90 }), 'days (90 = quarterly). ' + (s.it8_last ? 'Counting since ' + new Date(s.it8_last * 1000).toLocaleDateString() + '.' : '')),
+    h('div', { class: 'btns', style: { margin: '0 0 6px 126px' } }, h('button', { class: 'btn small', onclick: async () => { S.settings = await api.post('settings', { it8_last: Date.now() / 1000, it8_snooze: 0 }); status('IT8 count restarted today'); } }, 'I calibrated today')),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Scan agent'),
     field('autocut', 'Cut automatically', h('input', { type: 'checkbox', checked: s.autocut }), 'On: new scans in the inbox are filed into originals/ and cut. Off: only filed; you cut them here when you want.'),
     field('compare_engines', 'Compare', h('input', { type: 'text', value: (s.compare_engines || []).join(', ') }), 'Engines shown by Compare, e.g. classic, vision, sam3'),
@@ -1332,7 +1336,8 @@ async function settingsDialog() {
     const bf = {}; f.batch_folders.value.split('\n').forEach(l => { const m = l.split('='); if (m.length >= 2 && m[0].trim()) bf[m[0].trim()] = m.slice(1).join('=').trim(); });
     S.settings = await api.post('settings', { out_root: f.out_root.value.trim() || 'cut', template: f.template.value.trim() || '{batch}/{stem}{sheet}', batch_folders: bf,
       eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), export_format: f.export_format.value, export_existing: f.export_existing.value,
-      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, keep_16bit: f.keep_16bit.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
+      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, keep_16bit: f.keep_16bit.checked,
+      it8_remind: f.it8_remind.checked, it8_days: Math.max(7, +f.it8_days.value || 90), compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
     if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); S.names = st.names || {}; renderSide(); }
   }, true], ['Cancel', () => true]]);
 }
@@ -1432,8 +1437,8 @@ function renderScanSide(side) {
   const deep = m => m.includes('48') || m.includes('16 bits');
   side.append(group('Settings',
     h('div', { class: 'row' }, h('label', {}, 'Resolution'), h('select', { class: 'f', onchange: e => { SC.res = +e.target.value; renderScanSide(); } },
-      (o.resolutions || [300, 600]).map(r => h('option', { value: r, selected: r === SC.res }, r + ' dpi'))),
-      info('Only the resolutions the scanner itself offers, never upscaled. For drawings 600 dpi is a good default; 1200 for fine pencil. The LiDE 400 sensor is 4800 dpi, but very high settings mostly add file size: I will measure what it really resolves on a test sheet.')),
+      (o.resolutions || [300, 600]).map(r => h('option', { value: r, selected: r === SC.res }, r + ' dpi' + (r === 4800 ? ' (no extra detail, measured)' : r === 2400 ? ' (finest real detail)' : '')))),
+      info('Only the resolutions the scanner itself offers, never upscaled. Measured on your LiDE 400 (1 cm of paper and pencil, 4 Nov 2026): 1200 shows clearly more than 600, 2400 adds a little fibre detail, 4800 adds nothing over 2400 (4× the file). Drawings: 600; fine pencil or texture: 1200; maximum real detail: 2400.')),
     h('div', { class: 'row' }, h('label', {}, 'Colour'), h('select', { class: 'f', onchange: e => { SC.mode = e.target.value; renderScanSide(); } },
       (o.modes || ['Color']).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: m === SC.mode },
         ({ Color: 'Colour (24-bit)', Gray: 'Grey (8-bit)', '48 bits color': 'Colour 48-bit (16 per channel)', '16 bits gray': 'Grey 16-bit' })[m] || m))),
@@ -1623,6 +1628,21 @@ applyPaneSizes();
 splitter($('#split1'), 'navw', 1, 140, 480);
 splitter($('#split2'), 'sidew', -1, 220, 620);
 
+// ------------------------------------------------------------ promemoria IT8 (ogni 90 giorni, rimandabile)
+async function it8Reminder() {
+  const s = S.settings, day = 86400, now = Date.now() / 1000;
+  if (!s.it8_remind) return;
+  if (!s.it8_last) { S.settings = await api.post('settings', { it8_last: now }); return; }   // si comincia a contare oggi
+  if (now < s.it8_last + (s.it8_days || 90) * day || now < (s.it8_snooze || 0)) return;
+  const since = Math.round((now - s.it8_last) / day);
+  const c = await choose('Colour calibration', 'Time to recalibrate the scanner colours?',
+    `The last IT8 calibration (or the start of the count) was ${since} days ago. Scanner lamps and sensors drift slowly; recalibrating every ${s.it8_days || 90} days keeps colours accurate. You need the IT8.7/2 chart and about five minutes.`,
+    [['snooze', 'Remind me in 2 weeks', true], ['done', 'I calibrated today'], ['off', 'Turn off reminders']]);
+  if (c === 'snooze') S.settings = await api.post('settings', { it8_snooze: now + 14 * day });
+  if (c === 'done') S.settings = await api.post('settings', { it8_last: now, it8_snooze: 0 });
+  if (c === 'off') { S.settings = await api.post('settings', { it8_remind: false }); status('IT8 reminders off (Settings › Colour calibration)'); }
+}
+
 // ------------------------------------------------------------ avvio
 (async function init() {
   renderCmdbar(); renderNavbar();
@@ -1633,5 +1653,6 @@ splitter($('#split2'), 'sidew', -1, 220, 620);
   if (hash) { S.dir = hash.split('/').slice(0, -1).join('/'); S.items = await api.get('list', { dir: S.dir }).catch(() => []); openScan(hash); }
   else openDir('originals');
   pollJobs();
+  setTimeout(it8Reminder, 2500);
   setInterval(async () => { const t = await api.get('tree').catch(() => null); if (t && JSON.stringify(t.tree) !== JSON.stringify(S.tree)) { S.tree = t.tree; renderNav(); if (S.view === 'gallery') refreshItems(); } }, 5000);
 })();

@@ -999,7 +999,11 @@ DEFAULT_SETTINGS = {
     'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
     'export_subfolder': 'extra',
     'verify_jxl': False,
-    'keep_16bit': True,                # scansioni a 48/16 bit: i ritagli tengono i 16 bit               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
+    'keep_16bit': True,
+    'it8_remind': True,                # ricordare di ricalibrare i colori (IT8)
+    'it8_days': 90,                    # ogni quanti giorni
+    'it8_last': 0,                     # ultima calibrazione (o inizio del conteggio)
+    'it8_snooze': 0,                   # rimandato fino a                # scansioni a 48/16 bit: i ritagli tengono i 16 bit               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
 
