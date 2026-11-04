@@ -692,7 +692,19 @@ def sheet_mask(rel, sheet):
     else:
         M = P
     for o in sheet.get('ops', []):
-        if o.get('kind') == 'wand':
+        if o.get('kind') == 'sheets':
+            # fogli uniti: ogni pezzo con la sua sagoma (e i suoi buchi), come prima dell'unione
+            R = np.zeros(shape, bool)
+            for i, sub in enumerate(o['sheets']):
+                sy, sx, SM, SH, se = sheet_mask(rel, sub)
+                a0, b0 = max(bx0, sx), max(by0, sy)
+                a1, b1 = min(bx1, sx + SM.shape[1]), min(by1, sy + SM.shape[0])
+                if a1 > a0 and b1 > b0:
+                    R[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0] |= SM[b0 - sy:b1 - sy, a0 - sx:a1 - sx]
+                    Hh[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0] |= SH[b0 - sy:b1 - sy, a0 - sx:a1 - sx]
+                if i == 0:
+                    exact = se
+        elif o.get('kind') == 'wand':
             R = wand_region(rel, o['seed'], o['tol'], o.get('contig', True))[by0:by1, bx0:bx1]
         else:
             R = _raster(o['pts'], shape, off, o.get('kind', 'poly'), o.get('r', 0))

@@ -284,3 +284,6 @@ input[type=checkbox], input[type=radio] { accent-color: #2a8ae0; }
 .stage canvas.loupe { position: absolute; inset: auto; width: 180px; height: 180px; display: none; pointer-events: none; border-radius: 50%;
   border: 3px solid #fff; box-shadow: 0 0 0 1px #345, 0 4px 14px rgba(0,0,0,.45); background: #888; }
 .hist { width: 100%; height: 90px; border: 1px solid #c3d1e0; display: block; cursor: pointer; }
+
+.multi { margin-top: 6px; padding: 6px; border: 1px solid var(--sel-border); border-radius: 3px; background: var(--sel-bg); }
+.multi .mh { color: #1e3287; font-weight: 600; }

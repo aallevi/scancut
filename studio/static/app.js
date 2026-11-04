@@ -84,6 +84,20 @@ const S = {
   compare: null, hist: [], fut: [], open: new Set(['originals']), jobs: [], chat: null,
 };
 
+S._primary = null; S.selSet = new Set();
+Object.defineProperty(S, 'selSheet', { get() { return S._primary; }, set(v) { S._primary = v; S.selSet = new Set(v ? [v] : []); } });
+const isSel = id => S.selSet.has(id);
+const selSheets = () => (S.st?.sheets || []).filter(s => S.selSet.has(s.id));
+function toggleSel(id) {
+  if (S.selSet.has(id)) { S.selSet.delete(id); S._primary = [...S.selSet].pop() || null; }
+  else { S.selSet.add(id); S._primary = id; }
+}
+function selectIds(ids, add) {
+  if (!add) S.selSet = new Set();
+  ids.forEach(i => S.selSet.add(i));
+  S._primary = ids.length ? ids[ids.length - 1] : ([...S.selSet].pop() || null);
+}
+
 // ------------------------------------------------------------ menu a tendina
 let openMenu = null;
 function closeMenu() { if (openMenu) { openMenu.el.remove(); openMenu.btn.classList.remove('open'); openMenu = null; } }
@@ -334,20 +348,36 @@ function sideEditor(side) {
   const list = h('div');
   (st?.sheets || []).forEach((s, i) => {
     const name = S.names[s.id];
-    list.append(h('div', { class: 'sheet' + (S.selSheet === s.id ? ' sel' : ''), onclick: () => { S.selSheet = s.id; renderSide(); draw(); } },
+    list.append(h('div', { class: 'sheet' + (isSel(s.id) ? ' sel' : ''), onclick: e => {
+      if (e.metaKey || e.ctrlKey) toggleSel(s.id);
+      else if (e.shiftKey && S._primary) { const ids = st.sheets.map(x => x.id), a = ids.indexOf(S._primary), b = ids.indexOf(s.id); selectIds(ids.slice(Math.min(a, b), Math.max(a, b) + 1), true); S._primary = s.id; }
+      else S.selSheet = s.id;
+      renderSide(); draw();
+    } },
       h('input', { type: 'checkbox', checked: s.on !== false, title: 'Export this sheet', onclick: e => e.stopPropagation(), onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
       h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
-  const sel = st?.sheets.find(s => s.id === S.selSheet);
+  const many = selSheets();
+  const sel = many.length > 1 ? null : st?.sheets.find(s => s.id === S.selSheet);
+  if (many.length > 1) list.append(h('div', { class: 'multi' },
+    h('div', { class: 'mh' }, `${many.length} sheets selected`),
+    h('div', { class: 'btns' },
+      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Export on'),
+      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Export off'),
+      h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
+      h('button', { class: 'btn small', disabled: !many.some(x => sheetEdited(x) && x.poly0), onclick: () => commit(() => many.forEach(x => { if (x.poly0) { x.poly = JSON.parse(JSON.stringify(x.poly0)); x.ops = []; } })) }, 'Undo their edits'),
+      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
+    h('div', { class: 'row' }, h('label', {}, 'Label all'), h('input', { type: 'text', class: 'f', placeholder: 'same label on each', onchange: e => commit(() => many.forEach(x => x.label = e.target.value)) })),
+    h('div', { class: 'small muted' }, 'Lasso, rectangle, wand and brush in Cut mode act on all of them. ⌘-click toggles, ⇧-click adds a range, drag on empty space to box-select, ⌘A selects all.')));
   side.append(group('Sheets', list, sel ? h('div', { style: { marginTop: '6px' } },
     h('div', { class: 'row' }, h('label', {}, 'Label'), h('input', { type: 'text', class: 'f', value: sel.label || '', placeholder: 'used by {label} in names',
       onchange: e => commit(() => { sel.label = e.target.value; }) })),
     h('div', { class: 'btns' },
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
-      h('button', { class: 'btn small', onclick: () => commit(() => { st.sheets = st.sheets.filter(x => x !== sel); S.selSheet = null; }) }, 'Remove'))) : null));
+      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete'))) : null));
   side.append(group('Save',
     h('div', { class: 'small muted' }, 'Names follow the template in Settings: ', h('code', {}, S.settings.template)),
     h('div', { class: 'btns' },
@@ -529,7 +559,7 @@ function draw() {
     r.polys.forEach(p => { c.beginPath(); polyPath(c, p); c.stroke(); }); c.restore();
   }
   sheets.forEach((s, i) => {
-    const col = COLORS[i % COLORS.length], sel = s.id === S.selSheet, off = s.on === false;
+    const col = COLORS[i % COLORS.length], sel = isSel(s.id), off = s.on === false;
     c.save();
     c.beginPath(); polyPath(c, s.poly);
     if (off) c.setLineDash([4, 4]);
@@ -553,7 +583,7 @@ function draw() {
       if (txt.trim()) { c.font = '600 11px "Segoe UI", Tahoma, sans-serif'; const w = c.measureText(txt).width + 10;
         c.fillStyle = off ? '#888' : col; c.beginPath(); c.roundRect(lx, ly - 20, w, 16, 3); c.fill(); c.fillStyle = '#fff'; c.fillText(txt, lx + 5, ly - 8); }
     }
-    if (sel && (S.tool === 'points')) {
+    if (s.id === S.selSheet && S.selSet.size === 1 && (S.tool === 'points')) {
       c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.lineWidth = 1;
       s.poly.forEach((q, k) => { const [x, y] = toScr(...q); const hot = drag?.vertex === k || hoverV === k; c.fillStyle = hot ? col : '#fff'; c.fillRect(x - 3.5, y - 3.5, 7, 7); c.strokeRect(x - 3.5, y - 3.5, 7, 7); });
     }
@@ -565,11 +595,12 @@ function draw() {
   if (drag?.stroke) { c.save(); c.beginPath(); c.lineCap = c.lineJoin = 'round'; c.lineWidth = 2 * drag.r * V.s; c.strokeStyle = drag.add ? 'rgba(40,170,60,.45)' : 'rgba(220,40,40,.45)'; const [x, y] = toScr(...drag.stroke[0]); c.moveTo(x, y); drag.stroke.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); c.restore(); }
   if (drag?.sambox && Math.abs(drag.sambox[2] - drag.sambox[0]) * V.s > 8) { c.save(); const [a, b] = toScr(drag.sambox[0], drag.sambox[1]), [e, f] = toScr(drag.sambox[2], drag.sambox[3]); c.setLineDash([5, 3]); c.strokeStyle = '#5b3fd9'; c.lineWidth = 1.5; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(123,92,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (S.sam?.points.length) { c.save(); S.sam.points.forEach((q, i) => { const [x, y] = toScr(...q); c.beginPath(); c.arc(x, y, 6, 0, 7); c.fillStyle = S.sam.labels[i] ? '#2fb84f' : '#e03a3a'; c.fill(); c.lineWidth = 2; c.strokeStyle = '#fff'; c.stroke(); c.fillStyle = '#fff'; c.font = 'bold 10px sans-serif'; c.fillText(S.sam.labels[i] ? '+' : '–', x - 3, y + 3.5); }); c.restore(); }
+  if (drag?.marq) { c.save(); const [a, b] = toScr(drag.marq[0], drag.marq[1]), [e, f] = toScr(drag.marq[2], drag.marq[3]); c.setLineDash([3, 3]); c.strokeStyle = '#3399ff'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(51,153,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (drag?.rect) { c.save(); const [a, b] = toScr(drag.rect[0], drag.rect[1]), [e, f] = toScr(drag.rect[2], drag.rect[3]); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = drag.add ? 'rgba(40,170,60,.2)' : 'rgba(220,40,40,.2)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (drag?.box) { c.save(); const [a, b] = toScr(drag.box[0], drag.box[1]), [e, f] = toScr(drag.box[2], drag.box[3]); c.setLineDash([5, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(51,153,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (mouse && S.tool === 'brush') { const [x, y] = toScr(...mouse); c.beginPath(); c.arc(x, y, Math.max(2, brushR() * V.s), 0, 7); c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke(); c.strokeStyle = '#fff'; c.setLineDash([3, 3]); c.stroke(); }
-  const ss = sheets.find(s => s.id === S.selSheet);
-  let info = '';
+  const ss = S.selSet.size === 1 ? sheets.find(s => s.id === S.selSheet) : null;
+  let info = S.selSet.size > 1 ? ` · ${S.selSet.size} sheets selected` : '';
   if (ss) { const b = bbox(ss.poly), w = b[2] - b[0], hh = b[3] - b[1]; info = ` · sheet ≈ ${(w / S.info.ppm).toFixed(0)} × ${(hh / S.info.ppm).toFixed(0)} mm · ${Math.round(w)} × ${Math.round(hh)} px · ${(w * hh * 4 / 1048576).toFixed(1)} MB RGBA`; }
   hud.textContent = `${Math.round(V.s * V.dpr * 100)}%` + (mouse ? ` · ${Math.round(mouse[0])}, ${Math.round(mouse[1])} px · ${(mouse[0] / S.info.ppm).toFixed(1)}, ${(mouse[1] / S.info.ppm).toFixed(1)} mm` : '') + info;
 }
@@ -620,8 +651,10 @@ function bindCanvas(stage) {
     const tool = spaceDown || e.button === 1 ? 'hand' : S.tool;
     if (tool === 'hand') { drag = { pan: [sx - V.ox, sy - V.oy] }; cv.style.cursor = 'grabbing'; return; }
     if (tool === 'select') {
-      const s = sheetAt(pt); S.selSheet = s?.id || null; renderSide(); draw();
-      if (!s) drag = { pan: [sx - V.ox, sy - V.oy] };
+      const s = sheetAt(pt), mod = e.shiftKey || e.metaKey || e.ctrlKey;
+      if (s) { if (mod) toggleSel(s.id); else if (!isSel(s.id)) S.selSheet = s.id; else S._primary = s.id; renderSide(); draw(); return; }
+      // sul vuoto: riquadro di selezione (lo spostamento resta con Spazio, H o due dita)
+      drag = { marq: [...pt, ...pt], add: mod };
       return;
     }
     if (tool === 'points') {
@@ -654,6 +687,7 @@ function bindCanvas(stage) {
     if (drag?.stroke) { const l = drag.stroke.at(-1); if (Math.hypot(pt[0] - l[0], pt[1] - l[1]) * V.s > 1.5) drag.stroke.push(rnd(pt)); draw(); return; }
     if (drag?.box) { drag.box[2] = pt[0]; drag.box[3] = pt[1]; draw(); return; }
     if (drag?.rect) { drag.rect[2] = pt[0]; drag.rect[3] = pt[1]; draw(); return; }
+    if (drag?.marq) { drag.marq[2] = pt[0]; drag.marq[3] = pt[1]; draw(); return; }
     if (drag?.sambox) { drag.sambox[2] = pt[0]; drag.sambox[3] = pt[1]; draw(); return; }
     measure(pt, sx, sy);
     if (S.tool === 'points') { const s = S.st?.sheets.find(x => x.id === S.selSheet); const k = s ? nearestVertex(s, sx, sy) : -1; if (k !== hoverV) { hoverV = k; } cv.style.cursor = k >= 0 ? (e.altKey ? 'not-allowed' : 'move') : 'default'; }
@@ -665,6 +699,12 @@ function bindCanvas(stage) {
     if (d.vertex != null) { afterEdit(); return; }
     if (d.lasso && d.lasso.length > 2) applyRegion({ kind: 'poly', pts: d.lasso }, d.add);
     if (d.stroke) applyRegion({ kind: 'stroke', pts: d.stroke, r: d.r }, d.add);
+    if (d.marq) {
+      const b = [Math.min(d.marq[0], d.marq[2]), Math.min(d.marq[1], d.marq[3]), Math.max(d.marq[0], d.marq[2]), Math.max(d.marq[1], d.marq[3])];
+      if ((b[2] - b[0]) * V.s < 4 && (b[3] - b[1]) * V.s < 4) { if (!d.add) S.selSheet = null; }
+      else selectIds(S.st.sheets.filter(s => overlaps(bbox(s.poly), b)).map(s => s.id), d.add);
+      renderSide();
+    }
     if (d.sambox) {
       const b = [Math.min(d.sambox[0], d.sambox[2]), Math.min(d.sambox[1], d.sambox[3]), Math.max(d.sambox[0], d.sambox[2]), Math.max(d.sambox[1], d.sambox[3])].map(Math.round);
       if ((b[2] - b[0]) * V.s > 8 && (b[3] - b[1]) * V.s > 8) detect(b, 'sam3');
@@ -749,7 +789,7 @@ function loupeDraw() {
 function applyRegion(op, add) {
   const ob = bbox(op.pts).map((v, i) => v + (i < 2 ? -1 : 1) * (op.r || 0));
   const sheets = S.st.sheets;
-  let targets = S.selSheet ? sheets.filter(s => s.id === S.selSheet) : sheets.filter(s => overlaps(bbox(s.poly), ob));
+  let targets = S.selSet.size ? sheets.filter(s => isSel(s.id) && (S.selSet.size === 1 || overlaps(bbox(s.poly), ob))) : sheets.filter(s => overlaps(bbox(s.poly), ob));
   if (add && !targets.length) {
     if (op.kind === 'poly') { commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: op.pts, ops: [], on: true, label: '', holes: [] }; sheets.push(s); S.selSheet = s.id; }); }
     else status('Brush: select a sheet first (or draw a new one with the lasso or polygon)');
@@ -768,7 +808,8 @@ async function wandAt(pt, add) {
   status(`Wand: ${(op.area / S.info.ppm / S.info.ppm / 100).toFixed(1)} cm² selected, tolerance ${op.tol}`);
   op.op = add ? 'add' : 'sub';
   const sheets = S.st.sheets;
-  let targets = S.selSheet ? sheets.filter(s => s.id === S.selSheet) : sheets.filter(s => inside(op.seed, s.poly));
+  const wb = [op.pts[0][0], op.pts[0][1], op.pts[1][0], op.pts[1][1]];
+  let targets = S.selSet.size ? sheets.filter(s => isSel(s.id) && (S.selSet.size === 1 || overlaps(bbox(s.poly), wb))) : sheets.filter(s => inside(op.seed, s.poly));
   if (!targets.length && !add) targets = sheets.filter(s => overlaps(bbox(s.poly), [op.pts[0][0], op.pts[0][1], op.pts[1][0], op.pts[1][1]]));
   if (!targets.length) {
     if (!add) return status('Nothing there to cut away');
@@ -804,6 +845,35 @@ async function samClick(pt, add) {
   } catch (e) { alertDialog('SAM 3 failed', e.message); }
   busy(false); renderSide(); draw();
 }
+function deleteSelected() {
+  const ids = new Set(S.selSet); if (!ids.size) return;
+  commit(() => { S.st.sheets = S.st.sheets.filter(x => !ids.has(x.id)); S.selSheet = null; });
+  status(`${ids.size} sheet${ids.size > 1 ? 's' : ''} deleted (⌘Z brings ${ids.size > 1 ? 'them' : 'it'} back)`);
+}
+function hull(pts) {
+  // inviluppo convesso (solo per disegnare e cliccare il foglio unito; i pixel restano quelli dei pezzi)
+  const p = pts.map(q => [q[0], q[1]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo.at(-2), lo.at(-1), q) <= 0) lo.pop(); lo.push(q); }
+  for (const q of p.slice().reverse()) { while (up.length >= 2 && cross(up.at(-2), up.at(-1), q) <= 0) up.pop(); up.push(q); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+function mergeSelected() {
+  const many = selSheets(); if (many.length < 2) return;
+  const parts = JSON.parse(JSON.stringify(many));
+  const all = parts.flatMap(x => x.poly.concat(...x.ops.map(o => o.pts || [])));
+  const b = bbox(all);
+  commit(() => {
+    const first = S.st.sheets.indexOf(many[0]);
+    const m = { id: newId(), src: null, base: 'ops', engine: 'merged', poly0: null, poly: hull(all), on: true, label: many[0].label || '',
+      holes: parts.flatMap(x => x.holes || []), ops: [{ op: 'add', kind: 'sheets', sheets: parts, pts: [[b[0], b[1]], [b[2], b[3]]] }] };
+    S.st.sheets = S.st.sheets.filter(x => !many.includes(x));
+    S.st.sheets.splice(Math.min(first, S.st.sheets.length), 0, m);
+    S.selSheet = m.id;
+  });
+  status(`${many.length} sheets merged into one`);
+}
 function closePoly() {
   const p = S.poly; S.poly = null;
   if (p && p.length >= 3) commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: p, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
@@ -825,6 +895,7 @@ document.addEventListener('keydown', e => {
   if (mod && k === 's') { e.preventDefault(); return doExport(); }
   if (mod && k === '0') { e.preventDefault(); return fit(); }
   if (mod && k === '1') { e.preventDefault(); return actual(); }
+  if (mod && k === 'a') { e.preventDefault(); selectIds(S.st.sheets.map(s => s.id)); renderSide(); return draw(); }
   if (mod) return;
   const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', m: 'rect', l: 'lasso', k: 'lasso', w: 'wand', b: 'brush', e: 'brush', r: 'box', s: 'sam' };
   if (k === 'g') { S.loupe = !S.loupe; store('loupe', S.loupe ? '1' : '0'); return loupeDraw(); }
@@ -840,7 +911,7 @@ document.addEventListener('keydown', e => {
   if (k === 'c') return toggleCompare();
   if (k === 'o') { S.showCut = !S.showCut; const cb = $('#cutview'); if (cb) cb.checked = S.showCut; requestTile(); return draw(); }
   if (k === 'Tab') { e.preventDefault(); const sh = S.st.sheets; if (!sh.length) return; const i = sh.findIndex(s => s.id === S.selSheet); S.selSheet = sh[(i + (e.shiftKey ? -1 : 1) + sh.length) % sh.length].id; renderSide(); return draw(); }
-  if ((k === 'Delete' || k === 'Backspace') && S.selSheet) { const s = S.st.sheets.find(x => x.id === S.selSheet); commit(() => { if (s.src) s.on = !(s.on !== false); else { S.st.sheets = S.st.sheets.filter(x => x !== s); S.selSheet = null; } }); return; }
+  if ((k === 'Delete' || k === 'Backspace') && S.selSet.size) return deleteSelected();
   if (k === 'ArrowRight') return step(1);
   if (k === 'ArrowLeft') return step(-1);
 });
