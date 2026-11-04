@@ -35,21 +35,16 @@ final class StudioWindow: NSWindow {
     }
 }
 
-let RADIUS: CGFloat = 8        // come la cornice disegnata dalla pagina (vista.css .window)
+let useLiquidGlass = false     // vedi buildWindow
+let RADIUS: CGFloat = 10       // come la cornice disegnata dalla pagina (vista.css html.native .window)
 
 func frameMask(_ size: NSSize) -> NSImage {
     // rettangolo con gli angoli in alto arrotondati (coordinate di AppKit: l'alto e' maxY)
     let img = NSImage(size: size, flipped: false) { r in
         let p = NSBezierPath()
-        p.move(to: NSPoint(x: r.minX, y: r.minY))
-        p.line(to: NSPoint(x: r.maxX, y: r.minY))
-        p.line(to: NSPoint(x: r.maxX, y: r.maxY - RADIUS))
-        p.appendArc(withCenter: NSPoint(x: r.maxX - RADIUS, y: r.maxY - RADIUS), radius: RADIUS, startAngle: 0, endAngle: 90)
-        p.line(to: NSPoint(x: r.minX + RADIUS, y: r.maxY))
-        p.appendArc(withCenter: NSPoint(x: r.minX + RADIUS, y: r.maxY - RADIUS), radius: RADIUS, startAngle: 90, endAngle: 180)
-        p.close(); NSColor.black.setFill(); p.fill(); return true
+        NSColor.black.setFill(); NSBezierPath(roundedRect: r, xRadius: RADIUS, yRadius: RADIUS).fill(); return true
     }
-    img.capInsets = NSEdgeInsets(top: RADIUS + 1, left: RADIUS + 1, bottom: 1, right: RADIUS + 1)
+    img.capInsets = NSEdgeInsets(top: RADIUS + 1, left: RADIUS + 1, bottom: RADIUS + 1, right: RADIUS + 1)
     img.resizingMode = .stretch
     return img
 }
@@ -144,6 +139,10 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     func buildWindow() {
         let cfg = WKWebViewConfiguration()
         cfg.userContentController.add(self, name: "studio")
+        // la pagina sa di essere nell'app (finestra trasparente, cornice per il vetro) prima di disegnarsi
+        cfg.userContentController.addUserScript(WKUserScript(
+            source: "document.documentElement.classList.add('native'); window.__scanStudioApp = true;",
+            injectionTime: .atDocumentStart, forMainFrameOnly: true))
         cfg.preferences.setValue(true, forKey: "developerExtrasEnabled")
         web = WKWebView(frame: .zero, configuration: cfg)
         web.uiDelegate = self
@@ -159,17 +158,17 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = true
-        window.collectionBehavior = [.fullScreenPrimary, .managed]
+        // (niente collectionBehavior: con .fullScreenPrimary il vetro disegna una riga squadrata agli angoli)
         window.delegate = self
         window.isReleasedWhenClosed = false
 
-        // il vetro: la sfocatura vera di macOS dietro la pagina, ritagliata con la forma Vista;
-        // la pagina ci disegna sopra la sua cornice semitrasparente
-        let content = NSVisualEffectView()
-        content.material = .hudWindow
-        content.blendingMode = .behindWindow
-        content.state = .active
-        content.maskImage = frameMask(NSSize(width: 64, height: 64))
+        // il vetro: Liquid Glass di macOS (26+) tinto d'azzurro Vista, sotto la pagina; la pagina ci
+        // disegna sopra la cornice semitrasparente. Sui macOS piu' vecchi la sfocatura di prima
+        let content = NSView()
+        // niente ritaglio dei livelli: dentro il vetro un livello ritagliato fa comparire una riga scura
+        // squadrata fuori dagli angoli; la forma la danno il vetro e la cornice disegnata dalla pagina
+        content.wantsLayer = true
+        content.layer?.backgroundColor = .clear
         web.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(web)
         let strip = DragStrip()
@@ -197,7 +196,25 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             else { cs += [v.topAnchor.constraint(equalTo: content.topAnchor, constant: 30), v.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -corner)] }
             NSLayoutConstraint.activate(cs)
         }
-        window.contentView = content
+        // Liquid Glass (NSGlassEffectView) in una finestra senza bordo disegna una riga scura squadrata
+        // fuori dagli angoli tondi (macOS 27, nov 2026): per ora la sfocatura classica, stessa forma
+        if #available(macOS 26.0, *), useLiquidGlass {
+            let glass = NSGlassEffectView()
+            glass.style = .regular
+            glass.cornerRadius = RADIUS
+            glass.tintColor = NSColor(calibratedRed: 0.32, green: 0.55, blue: 0.80, alpha: 0.30)
+            glass.contentView = content
+            window.contentView = glass
+        } else {
+            let fx = NSVisualEffectView()
+            fx.material = .hudWindow; fx.blendingMode = .behindWindow; fx.state = .active
+            fx.maskImage = frameMask(NSSize(width: 64, height: 64))
+            content.translatesAutoresizingMaskIntoConstraints = false
+            fx.addSubview(content)
+            NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: fx.leadingAnchor), content.trailingAnchor.constraint(equalTo: fx.trailingAnchor),
+                                         content.topAnchor.constraint(equalTo: fx.topAnchor), content.bottomAnchor.constraint(equalTo: fx.bottomAnchor)])
+            window.contentView = fx
+        }
         window.setFrameAutosaveName("ScanStudioMain")
         if !window.setFrameUsingName("ScanStudioMain") { window.center() }
         window.makeKeyAndOrderFront(nil)
@@ -305,10 +322,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
 
     @objc func reload() { web.reload() }
 
-    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self.window.invalidateShadow() }
-    }
-    func windowDidResize(_ n: Notification) { window.invalidateShadow() }
+    // niente invalidateShadow(): ricalcolata dal contenuto, l'ombra diventa un rettangolo con una
+    // riga scura squadrata fuori dagli angoli tondi; quella del vetro segue gia' la sua forma
 
     static let loadingPage = """
     <html><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0b3a52;

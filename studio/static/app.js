@@ -126,7 +126,7 @@ const TIPS = {
   wand: 'Magic wand tolerance, per colour channel, like Photoshop: a click selects every pixel within this many levels of the clicked colour. The automatic cut uses about 13-15. Raise it if the wand stops at shadows, lower it if it leaks into the paper.',
   contig: 'Contiguous: only pixels connected to the click. Off: the same colour anywhere on the scan (e.g. every bit of lid showing through holes).',
   cutview: 'Darkens what will be cut away. Zoomed in, it shows the exact final edge pixel by pixel, not the simplified outline. O toggles it.',
-  modes: 'What lasso, rectangle, wand and brush do: + adds to the sheet, − cuts away. X swaps; hold ⌥ while clicking for the other one.',
+  modes: 'What lasso, rectangle and wand do, like Photoshop: □ New makes a separate sheet from the selection (e.g. only the ink: wand with contig. off, click a black line), + adds to the sheet, − cuts away, ∩ keeps only the overlap (e.g. only the ink inside this page). While clicking: ⇧ adds, ⌥ cuts, ⇧⌥ intersects. X swaps + and −.',
   hist: 'How many pixels have each lightness (grey) and each R, G, B value. The dashed line is the lid colour the automatic cut found. Read-only; click to switch linear/log.',
   template: 'How cutouts are named: {batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. A / makes subfolders.',
   densit: 'Values of the real scan pixel under the cursor (or the 3×3 / 5×5 average, View menu). "vs lid" is the colour distance the automatic cut measures; under the tolerance it counts as lid.',
@@ -577,9 +577,11 @@ async function openScan(rel) {
   const tb = h('div', { class: 'toolbox' }, tools.map(([id, ic, tip]) => h('div', { class: 'tool' + (S.tool === id ? ' on' : ''), 'data-tool': id, title: tip, onclick: () => setTool(id) }, svg(ic))),
     h('hr'),
     h('div', { class: 'modes', title: 'What lasso, rectangle, wand and brush do. X swaps, hold ⌥ for the other one.' },
-      h('div', { class: 'mode' + (S.mode === 'add' ? ' on' : ''), 'data-mode': 'add', onclick: () => setMode('add') }, '＋'),
-      h('div', { class: 'mode' + (S.mode === 'sub' ? ' on' : ''), 'data-mode': 'sub', onclick: () => setMode('sub') }, '－')),
-    h('div', { class: 'opt', id: 'modename' }, S.mode === 'add' ? 'Add' : 'Cut', ' ', info(TIPS.modes)),
+      h('div', { class: 'mode' + (S.mode === 'new' ? ' on' : ''), 'data-mode': 'new', title: 'New: a separate sheet from the selection', onclick: () => setMode('new') }, '□'),
+      h('div', { class: 'mode' + (S.mode === 'add' ? ' on' : ''), 'data-mode': 'add', title: 'Add to the sheet (⇧)', onclick: () => setMode('add') }, '＋'),
+      h('div', { class: 'mode' + (S.mode === 'sub' ? ' on' : ''), 'data-mode': 'sub', title: 'Cut away from the sheet (⌥)', onclick: () => setMode('sub') }, '－'),
+      h('div', { class: 'mode' + (S.mode === 'int' ? ' on' : ''), 'data-mode': 'int', title: 'Keep only the overlap with the sheet (⇧⌥)', onclick: () => setMode('int') }, '∩')),
+    h('div', { class: 'opt', id: 'modename' }, (MODE_NAMES[S.mode] || 'Add') + ' ', info(TIPS.modes)),
     h('hr'), h('div', { class: 'opt' }, 'Brush ', info(TIPS.brush)), h('input', { type: 'range', min: 0.2, max: 10, step: 0.1, value: S.brushMM, title: 'Brush size in mm ([ and ])', oninput: e => { S.brushMM = +e.target.value; $('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'; } }),
     h('div', { class: 'opt', id: 'bsz' }, S.brushMM.toFixed(1) + ' mm'),
     h('hr'), h('div', { class: 'opt' }, 'Wand ', info(TIPS.wand)), h('input', { type: 'range', min: 1, max: 80, step: 1, value: S.wandTol, title: 'Tolerance, like Photoshop (the automatic cut uses about 13-15)', oninput: e => { S.wandTol = +e.target.value; $('#wtol').textContent = 'tol ' + S.wandTol; } }),
@@ -619,7 +621,8 @@ async function openScan(rel) {
 }
 function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
 function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
-function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.textContent = m === 'add' ? 'Add' : 'Cut'; }
+const MODE_NAMES = { new: 'New', add: 'Add', sub: 'Cut', int: 'Intersect' };
+function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.firstChild.textContent = MODE_NAMES[m] + ' '; }
 function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); if (S.view === 'gallery') renderGallery(); draw(); }
 function setTool(t) { S.tool = t; S.poly = null; S.sam = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
 const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none', sam: 'crosshair' })[t];
@@ -716,7 +719,7 @@ function draw() {
     c.lineWidth = sel ? 2 : 1.25; c.strokeStyle = off ? '#888' : col; c.stroke();
     if (sel) { c.fillStyle = col + '14'; c.fill(); }
     for (const o of s.ops) {
-      c.beginPath(); c.strokeStyle = c.fillStyle = o.op === 'add' ? 'rgba(40,170,60,.35)' : 'rgba(220,40,40,.35)';
+      c.beginPath(); c.strokeStyle = c.fillStyle = o.op === 'add' ? 'rgba(40,170,60,.35)' : o.op === 'int' ? 'rgba(40,110,230,.30)' : 'rgba(220,40,40,.35)';
       if (o.kind === 'wand') { (o.outline || []).forEach(p => polyPath(c, p)); c.fill('evenodd'); const [x, y] = toScr(...o.seed); c.fillStyle = o.op === 'add' ? '#1e8a1e' : '#c22'; c.fillRect(x - 3, y - 3, 6, 6); }
       else if (o.kind === 'stroke') { c.lineWidth = Math.max(1, 2 * o.r * V.s); c.lineCap = c.lineJoin = 'round'; const [x, y] = toScr(...o.pts[0]); c.moveTo(x, y); o.pts.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); }
       else { polyPath(c, o.pts); c.fill(); }
@@ -831,11 +834,12 @@ function bindCanvas(stage) {
       return;
     }
     if (tool === 'poly') { S.poly = S.poly || []; S.poly.push(rnd(pt)); draw(); return; }
-    const add = (S.mode === 'add') !== e.altKey;
-    if (tool === 'lasso') { drag = { lasso: [rnd(pt)], add }; return; }
-    if (tool === 'rect') { drag = { rect: [...pt, ...pt], add }; return; }
-    if (tool === 'brush') { drag = { stroke: [rnd(pt)], r: brushR(), add }; draw(); return; }
-    if (tool === 'wand') { wandAt(pt, add); return; }
+    const mode = e.shiftKey && e.altKey ? 'int' : e.shiftKey ? 'add' : e.altKey ? (S.mode === 'sub' ? 'add' : 'sub') : S.mode;
+    const add = mode === 'add' || mode === 'new';
+    if (tool === 'lasso') { drag = { lasso: [rnd(pt)], add, mode }; return; }
+    if (tool === 'rect') { drag = { rect: [...pt, ...pt], add, mode }; return; }
+    if (tool === 'brush') { drag = { stroke: [rnd(pt)], r: brushR(), add, mode: mode === 'new' || mode === 'int' ? 'add' : mode }; draw(); return; }
+    if (tool === 'wand') { wandAt(pt, mode); return; }
     if (tool === 'sam') { drag = { sambox: [...pt, ...pt], add, start: [sx, sy] }; return; }
     if (tool === 'box') { drag = { box: [...pt, ...pt] }; return; }
   });
@@ -858,8 +862,8 @@ function bindCanvas(stage) {
     const d = drag; drag = null; cv.style.cursor = cursorFor(spaceDown ? 'hand' : S.tool);
     if (!d) return;
     if (d.vertex != null) { afterEdit(); return; }
-    if (d.lasso && d.lasso.length > 2) applyRegion({ kind: 'poly', pts: d.lasso }, d.add);
-    if (d.stroke) applyRegion({ kind: 'stroke', pts: d.stroke, r: d.r }, d.add);
+    if (d.lasso && d.lasso.length > 2) applyRegion({ kind: 'poly', pts: d.lasso }, d.mode);
+    if (d.stroke) applyRegion({ kind: 'stroke', pts: d.stroke, r: d.r }, d.mode);
     if (d.marq) {
       const b = [Math.min(d.marq[0], d.marq[2]), Math.min(d.marq[1], d.marq[3]), Math.max(d.marq[0], d.marq[2]), Math.max(d.marq[1], d.marq[3])];
       if ((b[2] - b[0]) * V.s < 4 && (b[3] - b[1]) * V.s < 4) { if (!d.add) S.selSheet = null; }
@@ -873,7 +877,7 @@ function bindCanvas(stage) {
     }
     if (d.rect) {
       const [a, b, c2, d2] = [Math.min(d.rect[0], d.rect[2]), Math.min(d.rect[1], d.rect[3]), Math.max(d.rect[0], d.rect[2]), Math.max(d.rect[1], d.rect[3])].map(Math.round);
-      if ((c2 - a) * V.s > 3 && (d2 - b) * V.s > 3) applyRegion({ kind: 'poly', pts: [[a, b], [c2, b], [c2, d2], [a, d2]] }, d.add);
+      if ((c2 - a) * V.s > 3 && (d2 - b) * V.s > 3) applyRegion({ kind: 'poly', pts: [[a, b], [c2, b], [c2, d2], [a, d2]] }, d.mode);
     }
     if (d.box) {
       const b = [Math.min(d.box[0], d.box[2]), Math.min(d.box[1], d.box[3]), Math.max(d.box[0], d.box[2]), Math.max(d.box[1], d.box[3])].map(Math.round);
@@ -947,38 +951,47 @@ function loupeDraw() {
   c.strokeStyle = '#fff'; c.lineWidth = 1; c.strokeRect(half * z - 3, half * z - 3, z + 6, z + 6);
   c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(0, 336, 360, 24); c.fillStyle = '#fff'; c.font = '12px "Segoe UI", Tahoma'; c.fillText(`${S.loupeZoom}:1 · real pixels · ${x}, ${y}`, 8, 352);
 }
-function applyRegion(op, add) {
+function newOpsSheet(op, outline, engine) {
+  // un foglio nuovo fatto solo di questa selezione (es. il solo inchiostro: la carta resta trasparente)
+  return { id: newId(), src: null, base: 'ops', engine, poly0: null, poly: outline, ops: [Object.assign({}, op, { op: 'add' })], on: true, label: '', holes: [] };
+}
+function applyRegion(op, mode) {
   const ob = bbox(op.pts).map((v, i) => v + (i < 2 ? -1 : 1) * (op.r || 0));
   const sheets = S.st.sheets;
+  if (mode === 'new') {
+    const outline = op.kind === 'poly' ? op.pts : [[ob[0], ob[1]], [ob[2], ob[1]], [ob[2], ob[3]], [ob[0], ob[3]]];
+    return commit(() => { const s = op.kind === 'poly' ? { id: newId(), src: null, engine: 'manual', poly0: null, poly: op.pts, ops: [], on: true, label: '', holes: [] } : newOpsSheet(op, outline, 'brush'); sheets.push(s); S.selSheet = s.id; });
+  }
   let targets = S.selSet.size ? sheets.filter(s => isSel(s.id) && (S.selSet.size === 1 || overlaps(bbox(s.poly), ob))) : sheets.filter(s => overlaps(bbox(s.poly), ob));
-  if (add && !targets.length) {
+  if (mode === 'add' && !targets.length) {
     if (op.kind === 'poly') { commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: op.pts, ops: [], on: true, label: '', holes: [] }; sheets.push(s); S.selSheet = s.id; }); }
     else status('Brush: select a sheet first (or draw a new one with the lasso or polygon)');
     return;
   }
-  if (!targets.length) return status('Nothing there to cut away');
-  if (add && targets.length > 1) targets = targets.slice(0, 1);
-  commit(() => targets.forEach(s => s.ops.push({ op: add ? 'add' : 'sub', ...op })));
+  if (!targets.length) return status(mode === 'int' ? 'Select the sheet to intersect with first' : 'Nothing there to cut away');
+  if (mode === 'add' && targets.length > 1) targets = targets.slice(0, 1);
+  commit(() => targets.forEach(s => s.ops.push({ op: mode, ...op })));
 }
-async function wandAt(pt, add) {
+async function wandAt(pt, mode) {
   if (pt[0] < 0 || pt[1] < 0 || pt[0] >= S.info.w || pt[1] >= S.info.h) return;
   status('Magic wand…', true);
   let op;
   try { op = await api.post('wand', { rel: S.rel, x: Math.round(pt[0]), y: Math.round(pt[1]), tol: S.wandTol, contig: S.wandContig }); }
   catch (e) { return status('Wand: ' + e.message); }
-  status(`Wand: ${(op.area / S.info.ppm / S.info.ppm / 100).toFixed(1)} cm² selected, tolerance ${op.tol}`);
-  op.op = add ? 'add' : 'sub';
+  status(`Wand: ${(op.area / S.info.ppm / S.info.ppm / 100).toFixed(1)} cm² selected, tolerance ${op.tol}${op.contig ? '' : ', not contiguous'}`);
   const sheets = S.st.sheets;
+  const outline = op.outline.reduce((a, p) => area(p) > area(a) ? p : a, op.outline[0]);
+  if (mode === 'new') return commit(() => { const s = newOpsSheet(op, op.contig ? outline : [[op.pts[0][0], op.pts[0][1]], [op.pts[1][0], op.pts[0][1]], [op.pts[1][0], op.pts[1][1]], [op.pts[0][0], op.pts[1][1]]], 'wand'); sheets.push(s); S.selSheet = s.id; });
+  op.op = mode;
   const wb = [op.pts[0][0], op.pts[0][1], op.pts[1][0], op.pts[1][1]];
   let targets = S.selSet.size ? sheets.filter(s => isSel(s.id) && (S.selSet.size === 1 || overlaps(bbox(s.poly), wb))) : sheets.filter(s => inside(op.seed, s.poly));
-  if (!targets.length && !add) targets = sheets.filter(s => overlaps(bbox(s.poly), [op.pts[0][0], op.pts[0][1], op.pts[1][0], op.pts[1][1]]));
+  if (!targets.length && mode !== 'add') targets = sheets.filter(s => overlaps(bbox(s.poly), wb));
   if (!targets.length) {
-    if (!add) return status('Nothing there to cut away');
+    if (mode !== 'add') return status(mode === 'int' ? 'Select the sheet to intersect with first' : 'Nothing there to cut away');
     // un foglio nuovo fatto solo dalla bacchetta (es. un disegno cliccato sul coperchio)
-    const outline = op.outline.reduce((a, p) => area(p) > area(a) ? p : a, op.outline[0]);
-    return commit(() => { const s = { id: newId(), src: null, base: 'ops', engine: 'wand', poly0: null, poly: outline, ops: [op], on: true, label: '', holes: [] }; sheets.push(s); S.selSheet = s.id; });
+    return commit(() => { const s = newOpsSheet(op, outline, 'wand'); sheets.push(s); S.selSheet = s.id; });
   }
-  commit(() => targets.slice(0, add ? 1 : targets.length).forEach(s => s.ops.push(op)));
+  commit(() => targets.slice(0, mode === 'add' ? 1 : targets.length).forEach(s => s.ops.push(op)));
 }
 async function samClick(pt, add) {
   const eng = S.engines.find(e => e.id === 'sam3');
@@ -1317,7 +1330,7 @@ function toggleChat() {
 
 // ------------------------------------------------------------ finestra (pywebview senza cornice)
 // nell'app del Dock la finestra e' trasparente: fuori dalla cornice Vista non si disegna niente
-if (window.webkit?.messageHandlers?.studio) document.documentElement.classList.add('native');
+if (window.__scanStudioApp || window.webkit?.messageHandlers?.studio) document.documentElement.classList.add('native');
 $$('.caption [data-win]').forEach(el => el.addEventListener('click', () => {
   const a = window.pywebview?.api; const w = el.dataset.win;
   // nell'app del Dock (WebKit nativo): riduci nel Dock, ingrandisci, chiudi davvero

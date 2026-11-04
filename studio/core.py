@@ -752,7 +752,7 @@ def sheet_mask(rel, sheet):
             R = wand_region(rel, o['seed'], o['tol'], o.get('contig', True))[by0:by1, bx0:bx1]
         else:
             R = _raster(o['pts'], shape, off, o.get('kind', 'poly'), o.get('r', 0))
-        M = M | R if o['op'] == 'add' else M & ~R
+        M = M | R if o['op'] == 'add' else (M & R) if o['op'] == 'int' else M & ~R
     Hh &= M
     return by0, bx0, M, Hh, exact
 
