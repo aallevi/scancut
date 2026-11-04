@@ -967,7 +967,8 @@ DEFAULT_SETTINGS = {
     'scan_device': '', 'scan_res': 600, 'scan_mode': 'Color', 'scan_batch': 'scan',
     'export_format': 'png',            # png | jxl (JPEG XL senza perdita, con la trasparenza)
     'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
-    'export_subfolder': 'extra',       # "Export to subfolder": i ritagli in <cartella>/<questo>/
+    'export_subfolder': 'extra',
+    'verify_jxl': False,               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
 
@@ -1070,36 +1071,70 @@ def agent_lock(timeout=30):
             time.sleep(0.5)
 
 
-def write_cutout(rgba, out, fmt, dpi, icc):
-    # PNG, o JPEG XL senza perdita (cjxl -d 0, con la trasparenza). Il JXL si rilegge e si
-    # confronta pixel per pixel: se non e' identico, si tiene il PNG
+def tag_metadata(out, src, dpi, w, h):
+    # i metadati della scansione (EXIF, XMP, IPTC, profilo colore) passano al ritaglio, con
+    # quello che il ritaglio cambia: misura vera (dpi della scansione: scala 1:1, ritagliare e
+    # ruotare a 90 gradi non ridimensionano), dimensioni in pixel, orientamento gia' applicato
+    if not shutil.which('exiftool'):
+        return False
+    d = f'{float(dpi):.4g}'
+    cmd = ['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', src, '-all:all', '-icc_profile',
+           f'-IFD0:XResolution={d}', f'-IFD0:YResolution={d}', '-IFD0:ResolutionUnit=inches', '-IFD0:Orientation#=1',
+           f'-ExifIFD:ExifImageWidth={w}', f'-ExifIFD:ExifImageHeight={h}',
+           f'-XMP-tiff:XResolution={d}', f'-XMP-tiff:YResolution={d}', '-XMP-tiff:ResolutionUnit=inches',
+           f'-XMP-exif:PixelXDimension={w}', f'-XMP-exif:PixelYDimension={h}',
+           '-Software=Scan Studio', f'-XMP-dc:Source={os.path.basename(src)}', out]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    return r.returncode == 0
+
+
+def icc_space(icc):
+    return icc[16:20] if icc and len(icc) > 20 else None
+
+
+def write_cutout(rgba, out, fmt, dpi, icc, src=None, gray=False):
+    # PNG, o JPEG XL senza perdita (cjxl -d 0, con la trasparenza). Una scansione in grigio
+    # resta grigia (grigio + trasparenza) con il suo profilo; il profilo va solo se combacia
+    img = Image.fromarray(rgba, 'RGBA')
+    if gray:
+        img = Image.fromarray(np.dstack([rgba[..., 0], rgba[..., 3]]), 'LA')
     kw = {'dpi': (dpi, dpi)}
-    if icc:
+    if icc and icc_space(icc) == (b'GRAY' if gray else b'RGB '):
         kw['icc_profile'] = icc
     if fmt == 'jxl' and shutil.which('cjxl'):
         png = out + '.src.png'
-        Image.fromarray(rgba, 'RGBA').save(png, 'PNG', compress_level=1, **kw)
+        img.save(png, 'PNG', compress_level=1, **kw)
         try:
             subprocess.run(['cjxl', png, out + '.part', '-d', '0', '-e', '7', '--quiet'], check=True, capture_output=True, timeout=600)
-            back = out + '.check.png'
-            subprocess.run(['djxl', out + '.part', back, '--quiet'], check=True, capture_output=True, timeout=600)
-            same = np.array_equal(np.asarray(Image.open(back).convert('RGBA')), rgba)
-            os.remove(back)
-            if not same:
-                raise RuntimeError('JPEG XL round trip differs')
+            if settings().get('verify_jxl'):
+                back = out + '.check.png'
+                subprocess.run(['djxl', out + '.part', back, '--quiet'], check=True, capture_output=True, timeout=600)
+                same = np.array_equal(np.asarray(Image.open(back).convert('RGBA')), np.asarray(img.convert('RGBA')))
+                os.remove(back)
+                if not same:
+                    raise RuntimeError('JPEG XL round trip differs')
             os.replace(out + '.part', out)
+            if src:
+                tag_metadata(out, src, dpi, rgba.shape[1], rgba.shape[0])
             return out
         except Exception:
             for f in (out + '.part',):
                 if os.path.exists(f):
                     os.remove(f)
-            out = os.path.splitext(out)[0] + '.png'
+            out = sc.unique(os.path.splitext(out)[0] + '.png')      # mai sopra un file che c'e' gia'
         finally:
             if os.path.exists(png):
                 os.remove(png)
-    Image.fromarray(rgba, 'RGBA').save(out + '.part', 'PNG', compress_level=4, **kw)
+    img.save(out + '.part', 'PNG', compress_level=4, **kw)
     os.replace(out + '.part', out)
+    if src:
+        tag_metadata(out, src, dpi, rgba.shape[1], rgba.shape[0])
     return out
+
+
+def is_gray(rel):
+    # una scansione in grigio (un canale): il ritaglio resta grigio
+    return Image.open(abspath(rel)).mode in ('L', 'LA', 'I;16', 'I;16B', 'I')
 
 
 def same_cutout(path, rgba):
@@ -1153,7 +1188,7 @@ def export(rel, replace=None, log=print, subfolder=None):
                 os.makedirs(os.path.dirname(moved), exist_ok=True)
                 moved = sc.unique(moved)
                 os.rename(out, moved)
-            out = write_cutout(rgba, sc.unique(out), fmt, dpi, icc)
+            out = write_cutout(rgba, sc.unique(out), fmt, dpi, icc, src=abspath(rel), gray=is_gray(rel))
             written.append({'id': sid, 'path': out, 'status': 'written', 'size': list(rgba.shape[1::-1]),
                             'tilt': round(ang, 2), 'rect': round(rect, 3), 'moved_old': moved})
             sc.log(f'studio: {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'

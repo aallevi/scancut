@@ -393,3 +393,12 @@ html.native .window { overflow: hidden; }
 .bedwrap canvas { position: absolute; inset: 0; cursor: crosshair; }
 .scanside { width: 310px; flex: none; overflow: auto; background: var(--info); border-left: 1px solid #c3d1e0; }
 .cmd img, img.ico { width: 16px; height: 16px; object-fit: contain; }
+
+/* densitometro richiudibile: la barra del titolo si clicca, il resto lascia passare il mouse */
+.dens .dh { pointer-events: auto; cursor: default; }
+.dens .dtog { font-style: normal; width: 18px; height: 16px; display: grid; place-items: center; margin-left: 6px; border-radius: 3px;
+  color: #fff; font-size: 10px; border: 1px solid rgba(0,0,0,.45);
+  background: linear-gradient(rgba(255,255,255,.45), rgba(255,255,255,.12) 50%, rgba(0,0,0,.12) 51%, rgba(255,255,255,.2)); }
+.dens .dh:hover .dtog { box-shadow: 0 0 5px rgba(120,200,255,.9); }
+.dens.collapsed { padding-bottom: 0; }
+.dens.collapsed .dc { display: none; }

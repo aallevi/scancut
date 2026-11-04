@@ -82,7 +82,7 @@ const S = {
   view: 'gallery', rel: null, info: null, st: null, names: {}, engines: [], settings: {},
   engine: 'auto', params: {}, tool: 'select', selSheet: null, brushMM: 1.5, showCut: true,
   mode: 'add', wandTol: 14, wandContig: true, bg: store('bg') || 'blue',
-  loupe: store('loupe') === '1', loupeZoom: +(store('loupez') || 8), densR: +(store('densr') || 1), histLog: false, sam: null,
+  loupe: store('loupe') === '1', densShut: store('densshut') === '1', loupeZoom: +(store('loupez') || 8), densR: +(store('densr') || 1), histLog: false, sam: null,
   compare: null, hist: [], fut: [], open: new Set(['originals']), jobs: [], chat: null,
 };
 
@@ -594,6 +594,8 @@ async function openScan(rel) {
   cv = h('canvas'); hud = h('div', { class: 'hud' }); busyEl = h('div', { class: 'busy' }, h('div', { style: { width: '220px', background: '#fff', padding: '12px', border: '1px solid #9bb', borderRadius: '4px', boxShadow: '0 3px 12px rgba(0,0,0,.25)' } }, h('div', { id: 'busymsg', style: { marginBottom: '6px' } }, 'Working…'), h('div', { class: 'progress marquee' }, h('i'))));
   const loupe = h('canvas', { class: 'loupe', id: 'loupe', width: 360, height: 360 });
   const dens = h('div', { class: 'dens', id: 'dens' });
+  // come le finestrelle di Vista: un clic sulla barra del titolo la chiude e la riapre
+  dens.addEventListener('click', e => { if (!e.target.closest('.dh')) return; S.densShut = !S.densShut; store('densshut', S.densShut ? '1' : ''); dens.classList.toggle('collapsed', S.densShut); const t = dens.querySelector('.dtog'); if (t) t.textContent = S.densShut ? '▾' : '▴'; if (measAt) measure(measAt.pt, measAt.sx, measAt.sy); });
   stage.append(cv, hud, dens, loupe, busyEl);
   main.append(addressBar(parts.slice(0, -1).join('/'), parts.at(-1)), optbar, h('div', { class: 'editor' }, tb, stage));
   renderOptions();
@@ -977,7 +979,8 @@ function measure(pt, sx, sy) {
     if (lo) { loupeImg = lo; loupeDraw(); }
     const el = $('#dens'); if (!el || !px || px.x == null) return;
     const lid = px.is_bg ? '<b style="color:#8a5a00">lid</b>' : '<b style="color:#1e6b2c">paper / ink</b>';
-    el.innerHTML = `<div class="dh"><b>Densitometer</b><span>${S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' average' : 'single pixel'}</span></div>`
+    el.classList.toggle('collapsed', S.densShut);
+    el.innerHTML = `<div class="dh" title="${S.densShut ? 'Expand' : 'Collapse'}"><b>Densitometer</b><span>${S.densShut ? `${px.rgb.map(v => v.toFixed(0)).join(' · ')} · ${px.is_bg ? 'lid' : 'paper/ink'}` : (S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' average' : 'single pixel')}</span><i class="dtog">${S.densShut ? '▾' : '▴'}</i></div>`
       + `<div class="dc">`
       + `<div><span>RGB</span>${px.rgb.map(v => v.toFixed(0)).join(' · ')}</div>`
       + `<div><span>L*a*b*</span>${px.lab.join(' · ')}</div>`
@@ -1312,6 +1315,7 @@ async function settingsDialog() {
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Engines and Claude'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Export'),
     field('export_format', 'Format', h('select', {}, [['png', 'PNG'], ['jxl', 'JPEG XL, lossless (smaller, keeps transparency)']].map(([v, l]) => h('option', { value: v, selected: s.export_format === v }, l))), 'JPEG XL is checked after writing: decoded back and compared pixel by pixel, else PNG is kept.'),
+    field('verify_jxl', 'Check JPEG XL', h('input', { type: 'checkbox', checked: s.verify_jxl }), 'Decode every JPEG XL back and compare it pixel by pixel (cjxl -d 0 is lossless by design; this only guards against a tool bug). Slower.'),
     field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
     field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by the second export button (“To …/”).'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Scan agent'),
@@ -1323,7 +1327,7 @@ async function settingsDialog() {
     const bf = {}; f.batch_folders.value.split('\n').forEach(l => { const m = l.split('='); if (m.length >= 2 && m[0].trim()) bf[m[0].trim()] = m.slice(1).join('=').trim(); });
     S.settings = await api.post('settings', { out_root: f.out_root.value.trim() || 'cut', template: f.template.value.trim() || '{batch}/{stem}{sheet}', batch_folders: bf,
       eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), export_format: f.export_format.value, export_existing: f.export_existing.value,
-      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
+      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
     if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); S.names = st.names || {}; renderSide(); }
   }, true], ['Cancel', () => true]]);
 }
