@@ -18,10 +18,16 @@ from PIL import Image
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter('ignore', RuntimeWarning)   # nanmedian su tratti vuoti
 
-ROOT = os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else '~/Scans')
-INBOX, CUT, ORIG, FAIL = (os.path.join(ROOT, d) for d in ('inbox', 'cut', 'originals', 'failed'))
-DONE = os.path.join(ROOT, '.scancut', 'done.tsv')   # scansioni gia' ritagliate
-LOG = os.path.join(ROOT, '.scancut', 'log.txt')
+def set_root(root):
+    # la radice si sceglie da riga di comando; lo studio (importandolo) la passa qui
+    global ROOT, INBOX, CUT, ORIG, FAIL, DONE, LOG
+    ROOT = os.path.expanduser(root)
+    INBOX, CUT, ORIG, FAIL = (os.path.join(ROOT, d) for d in ('inbox', 'cut', 'originals', 'failed'))
+    DONE = os.path.join(ROOT, '.scancut', 'done.tsv')   # scansioni gia' ritagliate
+    LOG = os.path.join(ROOT, '.scancut', 'log.txt')
+
+
+set_root(sys.argv[1] if __name__ == '__main__' and len(sys.argv) > 1 else '~/Scans')
 EXT = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
 WORK = 4.0            # px/mm della copia ridotta su cui si cercano i tagli
 STABLE_S = 4          # il file deve stare fermo tanto prima di toccarlo
@@ -53,7 +59,7 @@ def disk(d):
 
 # ---------------------------------------------------------------- lettura
 
-def load(path):
+def load(path, ppm_known=None):
     im = Image.open(path)
     icc = im.info.get('icc_profile')
     dpi = im.info.get('dpi', (0, 0))[0] or 0
@@ -62,7 +68,9 @@ def load(path):
     # il letto di uno scanner A4 e' largo ~216 mm: se il dpi dichiarato
     # non torna con le dimensioni, si ricava da li'
     ppm = dpi / 25.4 if dpi else 0
-    if not (150 <= w / ppm <= 240 if ppm else False):
+    if ppm_known:                     # un pezzo della scansione: la misura e' gia' nota
+        ppm = ppm_known
+    elif not (150 <= w / ppm <= 240 if ppm else False):
         ppm = w / 216.0
     return rgb, icc, dpi or ppm * 25.4, ppm
 
@@ -366,7 +374,8 @@ def finish(rgb, lab, d, T, piece, ppm, others, flags, scanedge, dw, Tw, forbid):
     if m.sum() < 150 * ppm * ppm:
         return None
     holes = cv2.dilate(holes.astype(np.uint8), disk(0.35 * ppm)).astype(bool) & m
-    return cutout(rgb, m, holes, ppm, exact=True)
+    # anche la sagoma e i buchi: lo studio li fa ritoccare a mano
+    return cutout(rgb, m, holes, ppm, exact=True) + ((m, holes, True),)
 
 
 def straight_side(prof, sign, ppm):
@@ -476,8 +485,8 @@ def crop_rgba(rgb, alpha):
     return rgba
 
 
-def cut_scan(path):
-    rgb, icc, dpi, ppm = load(path)
+def cut_scan(path, ai=True, ppm=None):
+    rgb, icc, dpi, ppm = load(path, ppm)
     blur = cv2.GaussianBlur(rgb, (odd(0.5 * ppm), odd(0.5 * ppm)), 0)
     lab = cv2.cvtColor(blur, cv2.COLOR_RGB2LAB).astype(np.float32)
     col, T = background(lab)
@@ -556,17 +565,17 @@ def cut_scan(path):
                          scanedge[y0:y1, x0:x1][sl], dw[y0:y1, x0:x1][sl], Tw, forbid[sl])
             if res is None:
                 continue
-            rgba, ang, rect = res
+            rgba, ang, rect, shape = res
             # color fondo e tutto storto: e' l'ombra del cartoncino, non un foglio
             if len(flags) > nflags and rect < 0.8:
                 continue
-            sheets.append((y0 + by0, x0 + bx0, rgba, ang, rect))
+            sheets.append((y0 + by0, x0 + bx0, rgba, ang, rect, shape))
     # in ordine di lettura: dall'alto, poi da sinistra
     band = 40 * ppm
     sheets.sort(key=lambda s: (int(s[0] // band), s[1]))
     # carta quasi del colore del fondo, o niente trovato: si prova anche Apple Vision
     # e si tiene il risultato che somiglia di piu' a dei fogli
-    if flags or not sheets:
+    if ai and (flags or not sheets):
         ai = cut_scan_ai(path, rgb, ppm)
         if score(ai) > score(sheets):
             return ai, icc, dpi, (col, T), True
@@ -576,7 +585,7 @@ def cut_scan(path):
 def score(sheets):
     if not sheets:
         return -1
-    return min(r for *_, r in sheets) - 0.03 * (len(sheets) - 1)
+    return min(s[4] for s in sheets) - 0.03 * (len(sheets) - 1)
 
 
 # ---------------------------------------------------------------- AI (bianco su bianco)
@@ -617,8 +626,9 @@ def cut_scan_ai(path, rgb, ppm):
             cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             cv2.drawContours(m, cnts, -1, 1, cv2.FILLED)
             m = cv2.erode(m, disk(0.35 * ppm)).astype(bool)
-            rgba, ang, rect = cutout(rgb[y0:y1, x0:x1], m, np.zeros_like(m), ppm)
-            sheets.append((y0, x0, rgba, ang, rect))
+            holes = np.zeros_like(m)
+            rgba, ang, rect = cutout(rgb[y0:y1, x0:x1], m, holes, ppm)
+            sheets.append((y0, x0, rgba, ang, rect, (m, holes, False)))
     sheets.sort(key=lambda s: (int(s[0] // (40 * ppm)), s[1]))
     return sheets
 
@@ -801,7 +811,7 @@ def process(keep):
         log(f'{name}: moved away from originals while being cut, cutouts not saved')
         return batch, -1
     od = os.path.join(CUT, batch); os.makedirs(od, exist_ok=True)
-    for j, (_, _, rgba, ang, rect) in enumerate(sheets):
+    for j, (_, _, rgba, ang, rect, _) in enumerate(sheets):
         suffix = '' if len(sheets) == 1 else ' ' + 'abcdefghijklmnopqrstuvwxyz'[j % 26]
         out = os.path.join(od, stem + suffix + '.png')
         if same_png(out, rgba):
@@ -815,7 +825,7 @@ def process(keep):
         note = '' if rect >= 0.9 else f'  CHECK: shape {rect:.2f} rectangular, sheets may overlap'
         log(f'  {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}{note}')
     log(f'{name}: {len(sheets)} sheet(s) in {time.time()-t0:.1f}s' + ('  (Apple Vision: paper same color as background)' if ai else ''))
-    if ai and any(r < 0.85 for *_, r in sheets):
+    if ai and any(s[4] < 0.85 for s in sheets):
         to_failed(keep, 'cut by Apple Vision but the shape looks wrong, check it (grey card behind helps)')
     return batch, len(sheets)
 

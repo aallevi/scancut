@@ -10,3 +10,5 @@ __pycache__/
 .DS_Store
 # si ricompila: swiftc -O vision_mask.swift -o vision_mask
 vision_mask
+# studio: stato e cache, non codice
+studio-data/

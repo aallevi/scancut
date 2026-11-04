@@ -17,6 +17,8 @@ imports the cutouts into Eagle and empties the folders by hand.
     scancut.py           the whole pipeline (comments in Italian)
     vision_mask.swift    Apple Vision helper; build: swiftc -O vision_mask.swift -o vision_mask
     com.antonioallevi.scancut.plist   copy of ~/Library/LaunchAgents/ (the live one)
+    studio.py, studio/   Scan Studio: Vista-style window + API + headless jobs (see STUDIO.md)
+    scripts/             user engines for the studio: segment(rgb, ppm, params) -> masks
     done.tsv             ledger of cut originals: path inside originals/, size, mtime, result
     log.txt, errors.txt  run log, launchd stderr
 ```
@@ -73,3 +75,6 @@ numbering each time it opens, so a taken name gets the next free number.
 - Known limits: overlapping sheets stay one piece; same-colour sheets touching with
   no gap may stay one; white on white relies on Vision (grey card is better);
   coloured paper on the white lid keeps a ~1 px light edge.
+- Scan Studio shares the pipeline: `cut_scan` returns each sheet's mask as a 6th
+  tuple item `(mask, holes, exact)`; untouched studio exports must stay byte-identical
+  to the agent's. Studio data lives in `.scancut/studio-data/` (gitignored).
