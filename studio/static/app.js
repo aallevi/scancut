@@ -379,10 +379,11 @@ function engineChooser() {
     let inp;
     if (p.type === 'bool') inp = h('input', { type: 'checkbox', checked: !!v, onchange: ev => S.params[p.id] = ev.target.checked });
     else if (p.choices) {
+      const free = p.id === 'prompt';      // la frase di SAM si puo' anche scrivere a mano
       inp = h('select', { class: 'f', onchange: ev => { if (ev.target.value === '__other') { samPromptDialog(); ev.target.value = v; } else { S.params[p.id] = ev.target.value; renderSide(); } } },
         p.choices.map(c => h('option', { value: c.text, selected: c.text === v, title: c.note }, c.text)),
         p.choices.some(c => c.text === v) ? null : h('option', { value: v, selected: true }, v),
-        h('option', { value: '__other' }, 'Other…'));
+        free ? h('option', { value: '__other' }, 'Other…') : null);
     } else inp = h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value });
     box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp, p.hint ? info(p.hint) : null));
     const ch = p.choices?.find(c => c.text === v);

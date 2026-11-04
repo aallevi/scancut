@@ -265,7 +265,12 @@ def engines():
                 n = re.search(r'^NOTE\s*=\s*[\'"](.+?)[\'"]', src, re.M)
                 if m: meta['name'] = m.group(1)
                 if n: meta['note'] = n.group(1)
-            except OSError:
+                # le impostazioni dello script (PARAMS = [...]) lette come dati, senza eseguirlo
+                import ast
+                for node in ast.parse(src).body:
+                    if isinstance(node, ast.Assign) and any(getattr(t, 'id', '') == 'PARAMS' for t in node.targets):
+                        meta['params'] = ast.literal_eval(node.value)
+            except (OSError, SyntaxError, ValueError):
                 pass
             out.append(meta)
     return out
