@@ -18,7 +18,12 @@ def main(weights):
     pred = {}
 
     def get(kind, conf):
-        # il modello si costruisce alla prima richiesta di quel tipo e poi resta
+        # un modello alla volta: ognuno pesa ~3.4 GB e con 16 GB due insieme non ci stanno
+        for other in [k for k in pred if k != kind]:
+            del pred[other]
+            import gc; gc.collect()
+            if dev == 'mps':
+                torch.mps.empty_cache()
         if kind not in pred:
             cls = SAM3SemanticPredictor if kind == 'text' else SAM3Predictor
             pred[kind] = cls(overrides=dict(model=weights, task='segment', conf=conf, device=dev,

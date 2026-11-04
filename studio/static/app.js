@@ -60,6 +60,7 @@ const I = {
   t_box: '<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" fill="none" stroke="#000" stroke-dasharray="2 1.2"/><path d="M8 5.5l.9 1.8 2 .3-1.4 1.4.3 2L8 10.1 6.2 11l.3-2-1.4-1.4 2-.3z" fill="#ffb400" stroke="#9c6b00" stroke-width=".5"/></svg>',
   t_rect: '<svg viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" fill="#dbeeff" stroke="#000" stroke-dasharray="2 1.2"/></svg>',
   t_wand: '<svg viewBox="0 0 16 16"><path d="M2 14L10 6" stroke="#444" stroke-width="2.2" stroke-linecap="round"/><path d="M2 14L8.5 7.5" stroke="#d9d9d9" stroke-width="1"/><path d="M12 1l.7 1.8L14.5 3l-1.6 1 .4 1.9L12 5l-1.3.9.4-1.9-1.6-1 1.8-.2z" fill="#ffd21f" stroke="#a87b00" stroke-width=".5"/><circle cx="14" cy="8" r=".8" fill="#ffd21f"/><circle cx="8" cy="2" r=".7" fill="#ffd21f"/></svg>',
+  t_sam: '<svg viewBox="0 0 16 16"><path d="M8 1.5l1.2 3.3 3.3-1.2-1.2 3.3 3.2 1.1-3.2 1.1 1.2 3.3-3.3-1.2L8 14.5l-1.2-3.3-3.3 1.2 1.2-3.3L1.5 8l3.2-1.1-1.2-3.3 3.3 1.2z" fill="#7b5cff" stroke="#3b2a99" stroke-width=".6"/><circle cx="8" cy="8" r="2" fill="#fff"/></svg>',
   t_hand: '<svg viewBox="0 0 16 16"><path d="M5 14c-1.5-1.5-3-4-3-5s1-1 1.5-.5L5 10V3.5c0-1 1.5-1 1.5 0V8V2.5c0-1 1.5-1 1.5 0V8V3c0-1 1.5-1 1.5 0v5.5V5c0-1 1.5-1 1.5 0v5c0 2-1 4-2 4z" fill="#fff" stroke="#000" stroke-width=".9"/></svg>',
   // barra in basso
   prev: '<svg viewBox="0 0 18 18"><path d="M11.5 4L6 9l5.5 5z" fill="#fff"/></svg>',
@@ -79,6 +80,7 @@ const S = {
   view: 'gallery', rel: null, info: null, st: null, names: {}, engines: [], settings: {},
   engine: 'auto', params: {}, tool: 'select', selSheet: null, brushMM: 1.5, showCut: true,
   mode: 'add', wandTol: 14, wandContig: true, bg: store('bg') || 'blue',
+  loupe: store('loupe') === '1', loupeZoom: +(store('loupez') || 8), densR: +(store('densr') || 1), histLog: false, sam: null,
   compare: null, hist: [], fut: [], open: new Set(['originals']), jobs: [], chat: null,
 };
 
@@ -128,6 +130,9 @@ function renderCmdbar() {
       ...[['blue', 'Light blue background'], ['white', 'White background'], ['grey', 'Grey background'], ['dark', 'Dark background'], ['checker', 'Checkerboard']].map(([b, l]) => ({ label: l, check: S.bg === b, do: () => setBg(b) })),
       '-', { label: 'Cut view', check: S.showCut, disabled: !ed, kbd: 'O', do: () => { S.showCut = !S.showCut; const cb = $('#cutview'); if (cb) cb.checked = S.showCut; requestTile(); draw(); } },
       { label: 'Compare engines', check: !!S.compare, disabled: !ed, kbd: 'C', do: toggleCompare },
+      '-', { label: 'Loupe', check: S.loupe, kbd: 'G', do: () => { S.loupe = !S.loupe; store('loupe', S.loupe ? '1' : '0'); loupeDraw(); } },
+      ...[4, 8, 16].map(z => ({ label: `   Loupe ${z}:1`, check: S.loupeZoom === z, do: () => { S.loupeZoom = z; store('loupez', z); } })),
+      ...[[0, 'Densitometer: single pixel'], [1, 'Densitometer: 3×3 average'], [2, 'Densitometer: 5×5 average']].map(([r, l]) => ({ label: l, check: S.densR === r, do: () => { S.densR = r; store('densr', r); } })),
       '-', { label: 'Fit', disabled: !ed, kbd: '⌘0', do: fit }, { label: 'Actual pixels', disabled: !ed, kbd: '⌘1', do: actual },
       '-', { label: 'Reset pane sizes', do: () => { store('navw', ''); store('sidew', ''); applyPaneSizes(); } },
     ] }),
@@ -263,7 +268,7 @@ function engineChooser() {
     const v = S.params[p.id] ?? p.default;
     const inp = p.type === 'bool' ? h('input', { type: 'checkbox', checked: !!v, onchange: ev => S.params[p.id] = ev.target.checked })
       : h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value });
-    box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp));
+    box.append(h('div', { class: 'row', title: p.hint || null }, h('label', {}, p.label), inp));
   }
   return box;
 }
@@ -292,6 +297,27 @@ function sideGallery(side) {
       h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Batches run in the background; see Jobs. Existing cutouts are never overwritten: changed ones are moved to studio-data/replaced.')));
 }
 
+let histData = null, histKey = '';
+async function loadHist(hc, sel) {
+  const key = `${S.rel}|${sel?.id || ''}|${S.st?.version || 0}`;
+  if (key !== histKey) {
+    histKey = key; histData = null;
+    histData = await api.get('histogram', { rel: S.rel, ...(sel ? { id: sel.id } : {}) }).catch(() => null);
+  }
+  drawHist(hc);
+}
+function drawHist(hc) {
+  const c = hc.getContext('2d'), W = hc.width, H = hc.height;
+  c.clearRect(0, 0, W, H); c.fillStyle = '#fff'; c.fillRect(0, 0, W, H);
+  if (!histData) return;
+  const f = v => S.histLog ? Math.log1p(v) : v;
+  const mx = Math.max(...['l', 'r', 'g', 'b'].map(k => Math.max(...histData[k].slice(1, 255).map(f))));
+  const path = (arr, close) => { c.beginPath(); c.moveTo(0, H); arr.forEach((v, i) => c.lineTo(i / 255 * W, H - 6 - f(v) / mx * (H - 12))); if (close) { c.lineTo(W, H); c.closePath(); } };
+  path(histData.l, true); c.fillStyle = 'rgba(80,90,105,.35)'; c.fill();
+  [['r', 'rgba(220,40,40,.8)'], ['g', 'rgba(30,160,60,.8)'], ['b', 'rgba(40,90,220,.8)']].forEach(([k, col]) => { path(histData[k]); c.strokeStyle = col; c.lineWidth = 1.5; c.stroke(); });
+  const x = histData.bg_l / 255 * W; c.setLineDash([5, 4]); c.strokeStyle = '#b07d16'; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); c.setLineDash([]);
+  c.fillStyle = '#555'; c.font = '20px "Segoe UI", Tahoma'; c.fillText(S.histLog ? 'log' : 'linear', W - 70, 24);
+}
 function sheetEdited(s) { return s.ops.length || JSON.stringify(s.poly) !== JSON.stringify(s.poly0); }
 function sideEditor(side) {
   if (!S.info) return;
@@ -328,6 +354,9 @@ function sideEditor(side) {
       h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: doExport }, 'Export'),
       h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder')),
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
+  const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
+  side.append(group('Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
+  loadHist(hc, sel);
   side.append(group('Scan', h('div', { class: 'small muted' }, `${S.info.w} × ${S.info.h} px · ${S.info.dpi} dpi · ${S.info.mm[0]} × ${S.info.mm[1]} mm`)));
 }
 
@@ -369,7 +398,8 @@ async function openScan(rel) {
   const main = $('#main'); main.innerHTML = '';
   const tools = [['select', I.t_select, 'Select (V)'], ['hand', I.t_hand, 'Pan (H, or hold Space)'], ['points', I.t_points, 'Edit points (A): drag; double-click an edge adds, ⌥-click removes'],
     ['poly', I.t_poly, 'New sheet by polygon (P): click points, Enter to close'], ['rect', I.t_rect, 'Rectangle (M): add or cut a rectangle'], ['lasso', I.t_lasso_add, 'Lasso (L; K = lasso in Cut mode)'],
-    ['wand', I.t_wand, 'Magic wand (W): click a colour, like Photoshop'], ['brush', I.t_brush_add, 'Brush (B; E = eraser)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine']];
+    ['wand', I.t_wand, 'Magic wand (W): click a colour, like Photoshop'], ['brush', I.t_brush_add, 'Brush (B; E = eraser)'], ['box', I.t_box, 'Detect inside a box (R) with the chosen engine'],
+    ['sam', I.t_sam, 'SAM 3 (S): click the object the prompt names (⌥-click excludes), or drag a box. Enter starts a new object.']];
   const tb = h('div', { class: 'toolbox' }, tools.map(([id, ic, tip]) => h('div', { class: 'tool' + (S.tool === id ? ' on' : ''), 'data-tool': id, title: tip, onclick: () => setTool(id) }, svg(ic))),
     h('hr'),
     h('div', { class: 'modes', title: 'What lasso, rectangle, wand and brush do. X swaps, hold ⌥ for the other one.' },
@@ -385,7 +415,9 @@ async function openScan(rel) {
     h('label', { class: 'opt', title: 'Darken what will be cut away (O)' }, h('input', { type: 'checkbox', id: 'cutview', checked: S.showCut, onchange: e => { S.showCut = e.target.checked; requestTile(); draw(); } }), h('br'), 'Cut view'));
   const stage = h('div', { class: 'stage bg-' + S.bg });
   cv = h('canvas'); hud = h('div', { class: 'hud' }); busyEl = h('div', { class: 'busy' }, h('div', { style: { width: '220px', background: '#fff', padding: '12px', border: '1px solid #9bb', borderRadius: '4px', boxShadow: '0 3px 12px rgba(0,0,0,.25)' } }, h('div', { id: 'busymsg', style: { marginBottom: '6px' } }, 'Working…'), h('div', { class: 'progress marquee' }, h('i'))));
-  stage.append(cv, hud, busyEl);
+  const loupe = h('canvas', { class: 'loupe', id: 'loupe', width: 360, height: 360 });
+  const dens = h('div', { class: 'dens', id: 'dens' });
+  stage.append(cv, hud, dens, loupe, busyEl);
   main.append(crumbs(h('b', {}, parts.slice(0, -1).join(' ▸ ')), ' ▸ ', parts.at(-1), h('span', { class: 'sub', id: 'edsub' }, '')), h('div', { class: 'editor' }, tb, stage));
   ctx = cv.getContext('2d');
   bindCanvas(stage);
@@ -415,8 +447,8 @@ function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
 function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
 function setMode(m) { S.mode = m; $$('.toolbox .mode').forEach(el => el.classList.toggle('on', el.dataset.mode === m)); const n = $('#modename'); if (n) n.textContent = m === 'add' ? 'Add' : 'Cut'; }
 function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); }
-function setTool(t) { S.tool = t; S.poly = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
-const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none' })[t];
+function setTool(t) { S.tool = t; S.poly = null; S.sam = null; $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw(); }
+const cursorFor = t => ({ hand: 'grab', select: 'default', points: 'default', box: 'crosshair', poly: 'crosshair', rect: 'crosshair', lasso: 'crosshair', wand: 'crosshair', brush: 'none', sam: 'crosshair' })[t];
 
 function resize() {
   const r = cv.parentElement.getBoundingClientRect();
@@ -531,10 +563,15 @@ function draw() {
   if (S.poly?.length) { c.save(); c.beginPath(); const [x, y] = toScr(...S.poly[0]); c.moveTo(x, y); S.poly.forEach(p => c.lineTo(...toScr(...p))); if (mouse) c.lineTo(...toScr(...mouse)); c.strokeStyle = '#000'; c.setLineDash([4, 3]); c.lineWidth = 1.2; c.stroke(); S.poly.forEach(p => { const [a, b] = toScr(...p); c.fillStyle = '#fff'; c.fillRect(a - 3, b - 3, 6, 6); c.strokeRect(a - 3, b - 3, 6, 6); }); c.restore(); }
   if (drag?.lasso) { c.save(); c.beginPath(); polyPath(c, drag.lasso); c.fillStyle = drag.add ? 'rgba(40,170,60,.2)' : 'rgba(220,40,40,.2)'; c.fill(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.stroke(); c.restore(); }
   if (drag?.stroke) { c.save(); c.beginPath(); c.lineCap = c.lineJoin = 'round'; c.lineWidth = 2 * drag.r * V.s; c.strokeStyle = drag.add ? 'rgba(40,170,60,.45)' : 'rgba(220,40,40,.45)'; const [x, y] = toScr(...drag.stroke[0]); c.moveTo(x, y); drag.stroke.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); c.restore(); }
+  if (drag?.sambox && Math.abs(drag.sambox[2] - drag.sambox[0]) * V.s > 8) { c.save(); const [a, b] = toScr(drag.sambox[0], drag.sambox[1]), [e, f] = toScr(drag.sambox[2], drag.sambox[3]); c.setLineDash([5, 3]); c.strokeStyle = '#5b3fd9'; c.lineWidth = 1.5; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(123,92,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
+  if (S.sam?.points.length) { c.save(); S.sam.points.forEach((q, i) => { const [x, y] = toScr(...q); c.beginPath(); c.arc(x, y, 6, 0, 7); c.fillStyle = S.sam.labels[i] ? '#2fb84f' : '#e03a3a'; c.fill(); c.lineWidth = 2; c.strokeStyle = '#fff'; c.stroke(); c.fillStyle = '#fff'; c.font = 'bold 10px sans-serif'; c.fillText(S.sam.labels[i] ? '+' : '–', x - 3, y + 3.5); }); c.restore(); }
   if (drag?.rect) { c.save(); const [a, b] = toScr(drag.rect[0], drag.rect[1]), [e, f] = toScr(drag.rect[2], drag.rect[3]); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = drag.add ? 'rgba(40,170,60,.2)' : 'rgba(220,40,40,.2)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (drag?.box) { c.save(); const [a, b] = toScr(drag.box[0], drag.box[1]), [e, f] = toScr(drag.box[2], drag.box[3]); c.setLineDash([5, 3]); c.strokeStyle = '#000'; c.strokeRect(a, b, e - a, f - b); c.fillStyle = 'rgba(51,153,255,.12)'; c.fillRect(a, b, e - a, f - b); c.restore(); }
   if (mouse && S.tool === 'brush') { const [x, y] = toScr(...mouse); c.beginPath(); c.arc(x, y, Math.max(2, brushR() * V.s), 0, 7); c.strokeStyle = '#000'; c.lineWidth = 1; c.stroke(); c.strokeStyle = '#fff'; c.setLineDash([3, 3]); c.stroke(); }
-  hud.textContent = `${Math.round(V.s * V.dpr * 100)}%` + (mouse ? ` · ${Math.round(mouse[0])}, ${Math.round(mouse[1])} px · ${(mouse[0] / S.info.ppm).toFixed(1)}, ${(mouse[1] / S.info.ppm).toFixed(1)} mm` : '');
+  const ss = sheets.find(s => s.id === S.selSheet);
+  let info = '';
+  if (ss) { const b = bbox(ss.poly), w = b[2] - b[0], hh = b[3] - b[1]; info = ` · sheet ≈ ${(w / S.info.ppm).toFixed(0)} × ${(hh / S.info.ppm).toFixed(0)} mm · ${Math.round(w)} × ${Math.round(hh)} px · ${(w * hh * 4 / 1048576).toFixed(1)} MB RGBA`; }
+  hud.textContent = `${Math.round(V.s * V.dpr * 100)}%` + (mouse ? ` · ${Math.round(mouse[0])}, ${Math.round(mouse[1])} px · ${(mouse[0] / S.info.ppm).toFixed(1)}, ${(mouse[1] / S.info.ppm).toFixed(1)} mm` : '') + info;
 }
 const brushR = () => S.brushMM * S.info.ppm / 2;
 
@@ -605,6 +642,7 @@ function bindCanvas(stage) {
     if (tool === 'rect') { drag = { rect: [...pt, ...pt], add }; return; }
     if (tool === 'brush') { drag = { stroke: [rnd(pt)], r: brushR(), add }; draw(); return; }
     if (tool === 'wand') { wandAt(pt, add); return; }
+    if (tool === 'sam') { drag = { sambox: [...pt, ...pt], add, start: [sx, sy] }; return; }
     if (tool === 'box') { drag = { box: [...pt, ...pt] }; return; }
   });
   cv.addEventListener('pointermove', e => {
@@ -616,6 +654,8 @@ function bindCanvas(stage) {
     if (drag?.stroke) { const l = drag.stroke.at(-1); if (Math.hypot(pt[0] - l[0], pt[1] - l[1]) * V.s > 1.5) drag.stroke.push(rnd(pt)); draw(); return; }
     if (drag?.box) { drag.box[2] = pt[0]; drag.box[3] = pt[1]; draw(); return; }
     if (drag?.rect) { drag.rect[2] = pt[0]; drag.rect[3] = pt[1]; draw(); return; }
+    if (drag?.sambox) { drag.sambox[2] = pt[0]; drag.sambox[3] = pt[1]; draw(); return; }
+    measure(pt, sx, sy);
     if (S.tool === 'points') { const s = S.st?.sheets.find(x => x.id === S.selSheet); const k = s ? nearestVertex(s, sx, sy) : -1; if (k !== hoverV) { hoverV = k; } cv.style.cursor = k >= 0 ? (e.altKey ? 'not-allowed' : 'move') : 'default'; }
     draw();
   });
@@ -625,6 +665,11 @@ function bindCanvas(stage) {
     if (d.vertex != null) { afterEdit(); return; }
     if (d.lasso && d.lasso.length > 2) applyRegion({ kind: 'poly', pts: d.lasso }, d.add);
     if (d.stroke) applyRegion({ kind: 'stroke', pts: d.stroke, r: d.r }, d.add);
+    if (d.sambox) {
+      const b = [Math.min(d.sambox[0], d.sambox[2]), Math.min(d.sambox[1], d.sambox[3]), Math.max(d.sambox[0], d.sambox[2]), Math.max(d.sambox[1], d.sambox[3])].map(Math.round);
+      if ((b[2] - b[0]) * V.s > 8 && (b[3] - b[1]) * V.s > 8) detect(b, 'sam3');
+      else samClick([Math.round(d.sambox[0]), Math.round(d.sambox[1])], d.add);
+    }
     if (d.rect) {
       const [a, b, c2, d2] = [Math.min(d.rect[0], d.rect[2]), Math.min(d.rect[1], d.rect[3]), Math.max(d.rect[0], d.rect[2]), Math.max(d.rect[1], d.rect[3])].map(Math.round);
       if ((c2 - a) * V.s > 3 && (d2 - b) * V.s > 3) applyRegion({ kind: 'poly', pts: [[a, b], [c2, b], [c2, d2], [a, d2]] }, d.add);
@@ -636,7 +681,7 @@ function bindCanvas(stage) {
     draw();
   };
   cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
-  cv.addEventListener('pointerleave', () => { mouse = null; draw(); });
+  cv.addEventListener('pointerleave', () => { mouse = null; draw(); $('#dens').style.display = 'none'; $('#loupe').style.display = 'none'; });
   cv.addEventListener('dblclick', e => {
     const r = cv.getBoundingClientRect(), pt = toImg(e.clientX - r.left, e.clientY - r.top);
     if (S.tool === 'poly') { S.poly?.pop(); closePoly(); return; }
@@ -654,6 +699,52 @@ function bindCanvas(stage) {
     if (e.ctrlKey || e.metaKey || mouseWheel) zoomAt(Math.exp(-e.deltaY * (e.ctrlKey ? 0.01 : 0.0025)), sx, sy);
     else { V.ox -= e.deltaX; V.oy -= e.deltaY; viewChanged(); }
   }, { passive: false });
+}
+// densitometro: i valori veri del pixel (scansione a piena risoluzione), come li vede il taglio
+let measTimer = null, measAt = null, loupeImg = null;
+function measure(pt, sx, sy) {
+  measAt = { pt, sx, sy };
+  loupePlace();
+  if (measTimer) return;
+  measTimer = setTimeout(async () => {
+    measTimer = null;
+    const m = measAt; if (!m || !S.rel) return;
+    const [x, y] = m.pt.map(Math.floor), rel = S.rel;
+    const reqs = [api.get('pixel', { rel, x, y, r: S.densR }).catch(() => null)];
+    if (S.loupe) { const half = Math.round(180 / S.loupeZoom / 2); reqs.push(fetch(`/api/tile?${qs({ rel, x: x - half, y: y - half, w: 2 * half + 1, h: 2 * half + 1, out: (2 * half + 1) * S.loupeZoom })}`).then(async r => r.ok ? { bmp: await createImageBitmap(await r.blob()), box: r.headers.get('X-Box').split(',').map(Number), x, y } : null)); }
+    const [px, lo] = await Promise.all(reqs);
+    if (rel !== S.rel) return;
+    if (lo) { loupeImg = lo; loupeDraw(); }
+    const el = $('#dens'); if (!el || !px || px.x == null) return;
+    const lid = px.is_bg ? '<b style="color:#8a5a00">lid</b>' : '<b style="color:#1e6b2c">paper / ink</b>';
+    el.innerHTML = `<div class="dh">Densitometer <span>${S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' average' : 'single pixel'}</span></div>`
+      + `<div><span>RGB</span>${px.rgb.map(v => v.toFixed(0)).join(' · ')}</div>`
+      + `<div><span>L*a*b*</span>${px.lab.join(' · ')}</div>`
+      + `<div><span>vs lid</span>${px.bg_dist} <small>(lid if &lt; ${px.bg_tol})</small> ${lid}</div>`
+      + (px.alpha != null ? `<div><span>alpha</span>${px.alpha}</div>` : '')
+      + `<div class="sw"><i style="background:rgb(${px.rgb.join(',')})"></i><i style="background:${labCss(px.bg_lab)}"></i><small>pixel · lid</small></div>`;
+    el.style.display = 'block';
+  }, 70);
+}
+function labCss(l) { return `lab(${l[0]}% ${l[1]} ${l[2]})`; }
+function loupePlace() {
+  const lo = $('#loupe'); if (!lo) return;
+  if (!S.loupe || !measAt) { lo.style.display = 'none'; return; }
+  lo.style.display = 'block';
+  const W = cv.clientWidth, x = measAt.sx + 24 + 180 > W ? measAt.sx - 24 - 180 : measAt.sx + 24, y = Math.max(4, measAt.sy - 90);
+  lo.style.left = x + 'px'; lo.style.top = y + 'px';
+}
+function loupeDraw() {
+  const lo = $('#loupe'); if (!lo) return;
+  loupePlace(); if (!S.loupe || !loupeImg) return;
+  const c = lo.getContext('2d'), z = S.loupeZoom * 2, half = Math.round(180 / S.loupeZoom / 2);
+  c.imageSmoothingEnabled = false; c.fillStyle = '#888'; c.fillRect(0, 0, 360, 360);
+  const { bmp, box, x, y } = loupeImg;
+  c.drawImage(bmp, (box[0] - (x - half)) * z, (box[1] - (y - half)) * z, (box[2] - box[0]) * z, (box[3] - box[1]) * z);
+  // il pixel misurato al centro
+  c.strokeStyle = '#000'; c.lineWidth = 2; c.strokeRect(half * z - 1, half * z - 1, z + 2, z + 2);
+  c.strokeStyle = '#fff'; c.lineWidth = 1; c.strokeRect(half * z - 3, half * z - 3, z + 6, z + 6);
+  c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(0, 336, 360, 24); c.fillStyle = '#fff'; c.font = '12px "Segoe UI", Tahoma'; c.fillText(`${S.loupeZoom}:1 · real pixels · ${x}, ${y}`, 8, 352);
 }
 function applyRegion(op, add) {
   const ob = bbox(op.pts).map((v, i) => v + (i < 2 ? -1 : 1) * (op.r || 0));
@@ -687,6 +778,32 @@ async function wandAt(pt, add) {
   }
   commit(() => targets.slice(0, add ? 1 : targets.length).forEach(s => s.ops.push(op)));
 }
+async function samClick(pt, add) {
+  const eng = S.engines.find(e => e.id === 'sam3');
+  if (!eng?.available) return status('SAM 3 needs ~/sam3.pt');
+  // i clic si sommano finche' non si preme Invio (o si cambia strumento): stesso oggetto
+  if (!S.sam) S.sam = { points: [], labels: [], sheet: null };
+  S.sam.points.push(pt); S.sam.labels.push(add ? 1 : 0); draw();
+  const prm = Object.assign({}, S.engine === 'sam3' ? engParams() : {}, { points: S.sam.points, labels: S.sam.labels });
+  if (!prm.prompt) prm.prompt = (S.engines.find(e => e.id === 'sam3').params.find(p => p.id === 'prompt') || {}).default;
+  busy(true, 'SAM 3: “' + prm.prompt + '”' + (S.samLoaded ? '' : ' (loading the model, ~10 s)'));
+  try {
+    await flushSave();
+    const before = new Set(S.st.sheets.map(s => s.id));
+    const r = await api.post('detect', { rel: S.rel, engine: 'sam3', params: prm, replace: false });
+    S.samLoaded = true;
+    pushHist();
+    const prev = S.sam.sheet;
+    const fresh = r.state.sheets.filter(s => !before.has(s.id));
+    r.state.sheets = r.state.sheets.filter(s => s.id !== prev);
+    setState(r.state);
+    S.sam.sheet = fresh[0]?.id || null;
+    if (S.sam.sheet) S.selSheet = S.sam.sheet;
+    status(fresh.length ? `SAM 3: object selected (${S.sam.points.length} click${S.sam.points.length > 1 ? 's' : ''}). Enter = done.` : `SAM 3 found no “${prm.prompt}” under the click. Try another prompt in the Engine panel.`);
+    scheduleSave();
+  } catch (e) { alertDialog('SAM 3 failed', e.message); }
+  busy(false); renderSide(); draw();
+}
 function closePoly() {
   const p = S.poly; S.poly = null;
   if (p && p.length >= 3) commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: p, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
@@ -709,12 +826,14 @@ document.addEventListener('keydown', e => {
   if (mod && k === '0') { e.preventDefault(); return fit(); }
   if (mod && k === '1') { e.preventDefault(); return actual(); }
   if (mod) return;
-  const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', m: 'rect', l: 'lasso', k: 'lasso', w: 'wand', b: 'brush', e: 'brush', r: 'box' };
+  const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', m: 'rect', l: 'lasso', k: 'lasso', w: 'wand', b: 'brush', e: 'brush', r: 'box', s: 'sam' };
+  if (k === 'g') { S.loupe = !S.loupe; store('loupe', S.loupe ? '1' : '0'); return loupeDraw(); }
   const kl = k.toLowerCase();
   if (kl === 'x') return setMode(S.mode === 'add' ? 'sub' : 'add');
   if (tools[kl]) { if ('lb'.includes(kl)) setMode('add'); if ('ke'.includes(kl)) setMode('sub'); return setTool(tools[kl]); }
-  if (k === 'Escape') { if (S.poly) { S.poly = null; draw(); } else if (openMenu) closeMenu(); else if ($('.dlg-back')) $('.dlg-back').remove(); else if (S.selSheet) { S.selSheet = null; renderSide(); draw(); } else go('gallery'); return; }
+  if (k === 'Escape') { if (S.sam) { S.sam = null; draw(); } else if (S.poly) { S.poly = null; draw(); } else if (openMenu) closeMenu(); else if ($('.dlg-back')) $('.dlg-back').remove(); else if (S.selSheet) { S.selSheet = null; renderSide(); draw(); } else go('gallery'); return; }
   if (k === 'Enter' && S.poly) return closePoly();
+  if (k === 'Enter' && S.sam) { S.sam = null; status('SAM 3: next click starts a new object'); return draw(); }
   if (k === '+' || k === '=') return zoomBy(1.4);
   if (k === '-') return zoomBy(1 / 1.4);
   if (k === '[' || k === ']') { S.brushMM = Math.max(0.2, Math.min(10, S.brushMM * (k === ']' ? 1.25 : 0.8))); $('#bsz') && ($('#bsz').textContent = S.brushMM.toFixed(1) + ' mm'); return draw(); }

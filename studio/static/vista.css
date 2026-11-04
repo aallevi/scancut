@@ -272,3 +272,15 @@ input[type=checkbox], input[type=radio] { accent-color: #2a8ae0; }
 .nav::-webkit-scrollbar, .side::-webkit-scrollbar { width: 12px; }
 .tip { position: fixed; z-index: 60; padding: 2px 6px; background: linear-gradient(#fff, #e4e5f0); border: 1px solid #767676; border-radius: 2px;
   box-shadow: 1px 2px 3px rgba(0,0,0,.3); font-size: 11px; pointer-events: none; color: #4c4c4c; }
+
+/* densitometro e lente */
+.dens { position: absolute; right: 10px; top: 10px; display: none; min-width: 250px; padding: 6px 9px; font-size: 11.5px; pointer-events: none;
+  background: linear-gradient(#fff, #eef3f9); border: 1px solid #9fb2c8; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,.2); }
+.dens .dh { color: #1e3287; font-weight: 600; margin-bottom: 3px; }
+.dens .dh span { white-space: nowrap; font-weight: normal; color: #6a7a8c; margin-left: 6px; }
+.dens div span { display: inline-block; width: 52px; color: #6a7a8c; }
+.dens .sw { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.dens .sw i { width: 22px; height: 14px; border: 1px solid #777; }
+.stage canvas.loupe { position: absolute; inset: auto; width: 180px; height: 180px; display: none; pointer-events: none; border-radius: 50%;
+  border: 3px solid #fff; box-shadow: 0 0 0 1px #345, 0 4px 14px rgba(0,0,0,.45); background: #888; }
+.hist { width: 100%; height: 90px; border: 1px solid #c3d1e0; display: block; cursor: pointer; }

@@ -247,6 +247,13 @@ class Handler(BaseHTTPRequestHandler):
             if f < 1:
                 rgba = cv2.resize(rgba, (round(rgba.shape[1] * f), round(rgba.shape[0] * f)), interpolation=cv2.INTER_AREA)
             return self.img(rgba, 'PNG', compress_level=1)
+        if path == 'pixel':
+            return self.send(core.pixel(rel, float(q['x']), float(q['y']), int(q.get('r', 0))) or {})
+        if path == 'histogram':
+            sh = None
+            if q.get('id'):
+                sh = next((x for x in core.load_state(rel)['sheets'] if x['id'] == q['id']), None)
+            return self.send(core.histogram(rel, sh))
         if path == 'scanners':
             return self.send(scanners())
         self.send_error(404)

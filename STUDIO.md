@@ -79,6 +79,17 @@ POST `detect {rel, engine, params, box?, replace?}`, `state {state}` (version-ch
 
 ## Tools
 
+Inspection (read-only, from the full-resolution scan): densitometer (RGB, L*a*b*,
+distance from the lid colour the cut uses and its tolerance; single pixel, 3x3 or 5x5),
+loupe (G; 4/8/16:1, nearest-neighbour, real pixels), histogram (whole scan or the
+selected sheet, lid marker, linear/log), info bar (selected sheet mm, px, MB).
+Automatic/Classic take "Tolerance ×": 1 is the agent's own choice (identical cutouts).
+SAM 3 tool (S): click the object the prompt names, ⌥-click excludes, drag a box to
+search inside it, Enter starts a new object. SAM 3's interactive (click/box) mode in
+Ultralytics spreads over the whole bed on these scans, so clicks pick among the text
+prompt's results instead. Every SAM result gets a second pass on a crop around it and
+its final edge from the real pixels (wand against the local background, within 2 mm).
+
 Magic wand: like Photoshop's, on the 3x3-blurred scan, per-channel tolerance (the
 automatic cut uses ~13-15), contiguous or not. Stored as seed + tolerance, so export
 recomputes it at full resolution. Clicking paper with no sheet there makes a new sheet.

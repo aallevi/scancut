@@ -485,16 +485,21 @@ def crop_rgba(rgb, alpha):
     return rgba
 
 
-def cut_scan(path, ai=True, ppm=None):
+def cut_scan(path, ai=True, ppm=None, tol=None):
+    # tol: fattore sulle tolleranze del fondo e della bacchetta (lo studio lo regola a mano)
     rgb, icc, dpi, ppm = load(path, ppm)
     blur = cv2.GaussianBlur(rgb, (odd(0.5 * ppm), odd(0.5 * ppm)), 0)
     lab = cv2.cvtColor(blur, cv2.COLOR_RGB2LAB).astype(np.float32)
     col, T = background(lab)
+    if tol:
+        T *= tol
     d = np.linalg.norm((lab - col) * W_LAB, axis=2)
     bg = d < T
     # per la bacchetta: sfocatura di un pixel appena, toglie la grana ma non le fibre
     labw = cv2.cvtColor(cv2.GaussianBlur(rgb, (3, 3), 0), cv2.COLOR_RGB2LAB).astype(np.float32)
     colw, Tw = background(labw)
+    if tol:
+        Tw *= tol
     dw = np.linalg.norm((labw - colw) * W_LAB, axis=2)
     del labw
     # il fondo largo, senza fessure e righe di matita sottili

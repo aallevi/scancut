@@ -210,19 +210,25 @@ def tile(rel, x, y, w, h, out_w):
 
 # ---------------------------------------------------------------- motori
 
+# tolleranza del taglio automatico: 1 = quella che sceglie da solo (ritagli identici all'agente)
+TOL_PARAM = {'id': 'tol', 'label': 'Tolerance ×', 'type': 'number', 'default': 1.0, 'step': 0.05,
+             'hint': 'Multiplies the background and wand tolerance the cut picks by itself. Higher takes more lid away.'}
+
+
 def engines():
     out = [
         {'id': 'auto', 'name': 'Automatic (as the agent)', 'kind': 'builtin', 'available': True,
-         'note': 'Classic cut; Apple Vision too when the paper is close to the lid colour.'},
+         'note': 'Classic cut; Apple Vision too when the paper is close to the lid colour.', 'params': [TOL_PARAM]},
         {'id': 'classic', 'name': 'Classic (magic wand)', 'kind': 'builtin', 'available': True,
-         'note': 'Background colour, wand from outside, shadow pass. Keeps fibres and tears.'},
+         'note': 'Background colour, wand from outside, shadow pass. Keeps fibres and tears.', 'params': [TOL_PARAM]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
          'note': 'Finds what the prompt names. Runs on the Apple GPU via Ultralytics.', 'params': [
              {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper'},
              {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05},
-             {'id': 'refine', 'label': 'Refine edge with wand', 'type': 'bool', 'default': True}]},
+             {'id': 'hires', 'label': 'Second pass on each sheet', 'type': 'bool', 'default': True},
+             {'id': 'refine', 'label': 'Edge from real pixels', 'type': 'bool', 'default': True}]},
     ]
     for f in sorted(os.listdir(SCRIPTS)) if os.path.isdir(SCRIPTS) else []:
         if f.endswith('.py') and not f.startswith('_'):
@@ -274,13 +280,15 @@ def run_engine(rel, engine, params=None, box=None):
     _engine_lock.acquire()
     try:
         if engine in ('auto', 'classic'):
-            sheets, *_ = sc.cut_scan(sub, ai=(engine == 'auto'), ppm=ppm if copy else None)
+            t = float(params.get('tol') or 1.0)
+            sheets, *_ = sc.cut_scan(sub, ai=(engine == 'auto'), ppm=ppm if copy else None,
+                                     tol=None if abs(t - 1.0) < 1e-6 else t)
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sheets]
         elif engine == 'vision':
             srgb = np.asarray(Image.open(sub).convert('RGB')) if copy else rgb
             masks = [(y, x, *shape) for y, x, _, _, _, shape in sc.cut_scan_ai(sub, srgb, ppm)]
         elif engine == 'sam3':
-            masks = sam3_masks(sub, ppm, params, whole=bool(box))
+            masks = sam3_masks(sub, ppm, params, whole=bool(box), off=off)
         elif engine.startswith('script:'):
             masks = script_masks(engine[7:], sub, ppm, params)
         else:
@@ -403,38 +411,122 @@ def sam3_proc():
     return _sam
 
 
-def sam3_masks(path, ppm, params, whole=False):
-    out = os.path.join(DATA, 'cache', f'.sam-{os.getpid()}.npz')
-    req = {'mode': 'text', 'image': path, 'out': out, 'prompt': params.get('prompt') or 'sheet of paper',
-           'threshold': float(params.get('threshold', 0.4)), 'whole': whole}
+def sam3_call(req):
+    # una richiesta al processo SAM; le maschere tornano (n, H, W) alla risoluzione dell'immagine
+    global _sam_used
+    out = os.path.join(DATA, 'cache', f'.sam-{os.getpid()}-{threading.get_ident()}.npz')
+    req = dict(req, out=out)
     with _lock:
         p = sam3_proc()
         p.stdin.write(json.dumps(req) + '\n'); p.stdin.flush()
         line = p.stdout.readline()
-    global _sam_used
     _sam_used = time.time()
     if not line:
         raise RuntimeError('SAM 3 worker stopped (see errors in the terminal)')
     res = json.loads(line)
     if 'error' in res:
         raise RuntimeError('SAM 3: ' + res['error'])
-    z = np.load(out); os.remove(out)
-    full = z['masks']                                     # (n, H, W) bool
+    z = np.load(out)
+    masks = z['masks']
+    os.remove(out)
+    return masks, res.get('scores', [])
+
+
+def sam3_masks(path, ppm, params, whole=False, off=(0, 0)):
+    # 1) SAM sull'immagine intera: testo, oppure clic +/- e riquadro (params mode='prompt').
+    # 2) per ogni oggetto, di nuovo su un ritaglio intorno: SAM lavora a ~1008 px, sul
+    #    ritaglio vede il bordo molto piu' da vicino.
+    # 3) il bordo finale lo decidono i pixel veri (bacchetta sul fondo locale, entro 2 mm).
     rgb = np.asarray(Image.open(path).convert('RGB'))
+    H, W = rgb.shape[:2]
+    oy, ox = off
+    full, scores = sam3_call({'mode': 'text', 'image': path, 'prompt': params.get('prompt') or 'sheet of paper',
+                              'threshold': float(params.get('threshold', 0.4)), 'whole': whole})
+    if params.get('points'):
+        # clic: + tiene l'oggetto sotto il clic, - lo esclude. (I clic "interattivi" di SAM 3 in
+        # Ultralytics su queste scansioni si spandono su tutto il letto: si usa la ricerca per testo,
+        # che e' il suo punto forte, e il clic sceglie fra gli oggetti trovati)
+        pts = [(int(x - ox), int(y - oy), l) for (x, y), l in zip(params['points'], params.get('labels') or [1] * len(params['points']))]
+        def piece(m, x, y):
+            if not (0 <= x < W and 0 <= y < H) or not m[y, x]:
+                return None
+            n, lab_, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), 8)
+            return lab_ == lab_[y, x]
+        keep = []
+        for m in full:
+            pos = [piece(m, x, y) for x, y, l in pts if l == 1]
+            pos = [q for q in pos if q is not None]
+            if pos and not any(m[y, x] for x, y, l in pts if l == 0 and 0 <= x < W and 0 <= y < H):
+                keep.append(np.logical_or.reduce(pos))
+        # piu' oggetti sotto lo stesso clic (uno dentro l'altro): il piu' piccolo
+        full = sorted(keep, key=lambda m: m.sum())[:1]
     masks = []
     for m in full:
+        if not m.any():
+            continue
+        if params.get('hires', True):
+            m = sam3_second_pass(path, rgb, m, ppm, params)
         if params.get('refine', True):
             m = refine_with_wand(rgb, m, ppm)
         masks.extend(_crop_mask(m, np.zeros_like(m), ppm))
     return masks
 
 
+def sam3_second_pass(path, rgb, m, ppm, params):
+    H, W = rgb.shape[:2]
+    ys, xs = np.nonzero(m)
+    mg = int(8 * ppm)
+    x0, y0, x1, y1 = max(0, xs.min() - mg), max(0, ys.min() - mg), min(W, xs.max() + mg + 1), min(H, ys.max() + mg + 1)
+    if (x1 - x0) * (y1 - y0) > 0.8 * W * H:
+        return m                                   # gia' quasi tutta l'immagine: niente da guadagnare
+    crop = os.path.join(DATA, 'cache', f'.samcrop-{os.getpid()}-{threading.get_ident()}.png')
+    Image.fromarray(rgb[y0:y1, x0:x1]).save(crop)
+    try:
+        # la stessa frase sul ritaglio; si tiene l'oggetto che coincide di piu' con il primo
+        sub, _ = sam3_call({'mode': 'text', 'image': crop, 'prompt': params.get('prompt') or 'sheet of paper',
+                            'threshold': float(params.get('threshold', 0.4))})
+    finally:
+        os.remove(crop)
+    if not len(sub):
+        return m
+    mc = m[y0:y1, x0:x1]
+    best = max(sub, key=lambda q: (q & mc).sum() / max((q | mc).sum(), 1))
+    if not best.any():
+        return m
+    out = np.zeros_like(m)
+    out[y0:y1, x0:x1] = best
+    # se la seconda passata cambia di molto la forma, si tiene la prima
+    inter = (out & m).sum() / max((out | m).sum(), 1)
+    return out if inter > 0.9 else m
+
+
+def local_background(lab, m, ppm):
+    # il fondo vicino al foglio: l'anello fra 1.5 e 5 mm fuori dalla sagoma, sfocato, e per
+    # ogni pixel il colore del punto d'anello piu' vicino (coperchio aperto: il fondo sfuma)
+    outer = cv2.dilate(m.astype(np.uint8), sc.disk(5 * ppm)).astype(bool)
+    inner = cv2.dilate(m.astype(np.uint8), sc.disk(1.5 * ppm)).astype(bool)
+    ring = outer & ~inner
+    if ring.sum() < 100:
+        return None, None
+    _, lbl = cv2.distanceTransformWithLabels((~ring).astype(np.uint8), cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    ry, rx = np.nonzero(ring)
+    # le etichette dei pixel d'anello seguono l'ordine di scansione (riga per riga)
+    order = np.zeros(lbl.max() + 1, np.int64)
+    order[lbl[ry, rx]] = np.arange(len(ry))
+    smooth = cv2.blur(lab, (sc.odd(2 * ppm), sc.odd(2 * ppm)))
+    field = smooth[ry, rx][order[lbl]]
+    spread = np.linalg.norm((lab[ry, rx] - smooth[ry, rx]) * sc.W_LAB, axis=1)
+    return field, max(7.0, 1.5 * np.percentile(spread, 90) + 2)
+
+
 def refine_with_wand(rgb, m, ppm):
-    # SAM da' la zona giusta ma a bassa risoluzione: il bordo vero si prende dalla
-    # bacchetta del taglio classico, solo entro 2 mm dal bordo di SAM
+    # SAM da' la zona giusta; il bordo vero si prende dalla bacchetta, solo entro 2 mm dal
+    # bordo di SAM, contro il fondo di quel punto (non un colore solo per tutta la scansione)
     lab = cv2.cvtColor(cv2.GaussianBlur(rgb, (3, 3), 0), cv2.COLOR_RGB2LAB).astype(np.float32)
-    col, T = sc.background(lab)
-    d = np.linalg.norm((lab - col) * sc.W_LAB, axis=2)
+    field, T = local_background(lab, m, ppm)
+    if field is None:
+        return m
+    d = np.linalg.norm((lab - field) * sc.W_LAB, axis=2)
     band = int(2 * ppm)
     inner = cv2.erode(m.astype(np.uint8), sc.disk(band)).astype(bool)
     outer = cv2.dilate(m.astype(np.uint8), sc.disk(band)).astype(bool)
@@ -446,7 +538,7 @@ def refine_with_wand(rgb, m, ppm):
         return m
     keep = lab_m == 1 + st[1:, 4].argmax()
     # se la bacchetta scappa (carta color fondo) si tiene SAM
-    return keep if 0.85 < keep.sum() / max(m.sum(), 1) < 1.15 else m
+    return keep if 0.9 < keep.sum() / max(m.sum(), 1) < 1.1 else m
 
 
 # ---------------------------------------------------------------- stato dei ritocchi
@@ -654,6 +746,64 @@ def wand(rel, x, y, tol, contig=True):
     return {'kind': 'wand', 'seed': [int(x), int(y)], 'tol': int(tol), 'contig': bool(contig),
             'pts': [[int(xs.min()), int(ys.min())], [int(xs.max()) + 1, int(ys.max()) + 1]],
             'outline': outline, 'area': int(R.sum())}
+
+
+# ---------------------------------------------------------------- strumenti di misura
+
+_bg_cache = {}
+
+
+def bg_model(rel):
+    # il fondo come lo vede la bacchetta del taglio (copia sfocata 3x3)
+    k = file_key(rel)
+    if k not in _bg_cache:
+        lab = cv2.cvtColor(cv2.GaussianBlur(detect_rgb(rel), (3, 3), 0), cv2.COLOR_RGB2LAB).astype(np.float32)
+        col, T = sc.background(lab)
+        if len(_bg_cache) > 4:
+            _bg_cache.pop(next(iter(_bg_cache)))
+        _bg_cache[k] = (lab, col, T)
+    return _bg_cache[k]
+
+
+def lab_real(v):
+    # Lab di OpenCV a 8 bit (0-255) -> L* 0-100, a* b* intorno a 0
+    return [round(float(v[0]) * 100 / 255, 1), round(float(v[1]) - 128, 1), round(float(v[2]) - 128, 1)]
+
+
+def pixel(rel, x, y, r=0):
+    rgb = image(rel)[0]
+    H, W = rgb.shape[:2]
+    x, y = int(x), int(y)
+    if not (0 <= x < W and 0 <= y < H):
+        return None
+    sl = np.s_[max(0, y - r):y + r + 1, max(0, x - r):x + r + 1]
+    lab, col, T = bg_model(rel)
+    v = rgb[sl].reshape(-1, 3).mean(0)
+    lv = cv2.cvtColor(rgb[sl], cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float32).mean(0)
+    d = float(np.linalg.norm((lab[sl].reshape(-1, 3).mean(0) - col) * sc.W_LAB))
+    a = alpha(rel)
+    return {'x': x, 'y': y, 'r': r, 'rgb': [round(float(c), 1) for c in v], 'lab': lab_real(lv),
+            'bg_lab': lab_real(col), 'bg_dist': round(d, 1), 'bg_tol': round(float(T), 1), 'is_bg': d < T,
+            'alpha': None if a is None else int(a[y, x])}
+
+
+def histogram(rel, sheet=None):
+    rgb = image(rel)[0]
+    sel = None
+    if sheet:
+        y0, x0, M, _, _ = sheet_mask_cached(rel, sheet)
+        sel = (np.s_[y0:y0 + M.shape[0], x0:x0 + M.shape[1]], M)
+    px = rgb[sel[0]][sel[1]] if sel else rgb.reshape(-1, 3)
+    a = alpha(rel)
+    if a is not None and not sel:
+        px = px[a.reshape(-1) > 0]
+    L = cv2.cvtColor(px.reshape(-1, 1, 3), cv2.COLOR_RGB2LAB)[:, 0, 0]
+    out = {c: np.bincount(px[:, i], minlength=256).tolist() for i, c in enumerate('rgb')}
+    out['l'] = np.bincount(L, minlength=256).tolist()
+    _, col, T = bg_model(rel)
+    out['bg_l'] = float(col[0])
+    out['n'] = int(len(px))
+    return out
 
 
 _mask_cache = {}
