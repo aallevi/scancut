@@ -35,7 +35,9 @@ def main(weights):
     for line in sys.stdin:
         try:
             req = json.loads(line)
-            img = cv2.imread(req['image'], cv2.IMREAD_COLOR)      # BGR, come vuole Ultralytics
+            # BGR, come vuole Ultralytics; senza girare secondo l'EXIF (foto del telefono): lo studio
+            # lavora sui pixel come sono nel file, e le maschere devono avere la stessa forma
+            img = cv2.imread(req['image'], cv2.IMREAD_COLOR | cv2.IMREAD_IGNORE_ORIENTATION)
             if img is None:
                 raise ValueError('cannot read image')
             mode = req.get('mode', 'text')

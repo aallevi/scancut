@@ -921,7 +921,7 @@ def pixel(rel, x, y, r=0):
     d = float(np.linalg.norm((lab[sl].reshape(-1, 3).mean(0) - col) * sc.W_LAB))
     a = alpha(rel)
     return {'x': x, 'y': y, 'r': r, 'rgb': [round(float(c), 1) for c in v], 'lab': lab_real(lv),
-            'bg_lab': lab_real(col), 'bg_dist': round(d, 1), 'bg_tol': round(float(T), 1), 'is_bg': d < T,
+            'bg_lab': lab_real(col), 'bg_dist': round(d, 1), 'bg_tol': round(float(T), 1), 'is_bg': bool(d < T),
             'alpha': None if a is None else int(a[y, x])}
 
 
