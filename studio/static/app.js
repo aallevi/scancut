@@ -533,15 +533,19 @@ function sideEditor(side) {
   const list = h('div');
   (st?.sheets || []).forEach((s, i) => {
     const name = S.names[s.id];
-    list.append(h('div', { class: 'sheet' + (isSel(s.id) ? ' sel' : ''), onclick: e => {
-      if (e.metaKey || e.ctrlKey) toggleSel(s.id);
+    list.append(h('div', { class: 'sheet' + (isSel(s.id) ? ' sel' : ''), oncontextmenu: e => { e.preventDefault(); soloSheet(s.id); }, onclick: e => {
+      if (e.altKey) { soloSheet(s.id); renderSide(); draw(); return; }
+      if (e.metaKey) toggleSel(s.id);
       else if (e.shiftKey && S._primary) { const ids = st.sheets.map(x => x.id), a = ids.indexOf(S._primary), b = ids.indexOf(s.id); selectIds(ids.slice(Math.min(a, b), Math.max(a, b) + 1), true); S._primary = s.id; }
       else S.selSheet = s.id;
       renderSide(); draw();
     } },
-      h('input', { type: 'checkbox', checked: s.on !== false, title: 'Export this sheet', onclick: e => e.stopPropagation(), onchange: e => commit(() => { s.on = e.target.checked; }) }),
+      h('input', { type: 'checkbox', checked: s.on !== false, title: 'Export this sheet · ⌃-click or ⌥-click: only this one',
+        onclick: e => { e.stopPropagation(); if (e.ctrlKey) e.preventDefault(); else if (e.altKey) { e.preventDefault(); soloSheet(s.id); } },
+        oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); soloSheet(s.id); },
+        onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
-      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}`)),
+      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
@@ -556,9 +560,10 @@ function sideEditor(side) {
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Export off'),
       h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
       h('button', { class: 'btn small', disabled: !many.some(x => sheetEdited(x) && x.poly0), onclick: () => commit(() => many.forEach(x => { if (x.poly0) { x.poly = JSON.parse(JSON.stringify(x.poly0)); x.ops = []; } })) }, 'Undo their edits'),
+      h('button', { class: 'btn small', onclick: () => ocrSheets(many) }, 'Text (OCR)'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
     h('div', { class: 'row' }, h('label', {}, 'Label all'), h('input', { type: 'text', class: 'f', placeholder: 'same label on each', onchange: e => commit(() => many.forEach(x => x.label = e.target.value)) })),
-    h('div', { class: 'small muted' }, 'Lasso, rectangle, wand and brush in Cut mode act on all of them. ⌘-click toggles, ⇧-click adds a range, drag on empty space to box-select, ⌘A selects all.')));
+    h('div', { class: 'small muted' }, 'Lasso, rectangle, wand and brush in Cut mode act on all of them. ⌘-click toggles, ⇧-click adds a range, drag on empty space to box-select, ⌘A selects all. ⌃-click (or ⌥-click) one sheet: only that one is exported.')));
   side.append(group('Sheets', list, sel ? h('div', { style: { marginTop: '6px' } },
     h('div', { class: 'row' }, h('label', {}, 'Label'), h('input', { type: 'text', class: 'f', value: sel.label || '', placeholder: 'used by {label} in names',
       onchange: e => commit(() => { sel.label = e.target.value; }) })),
@@ -567,7 +572,12 @@ function sideEditor(side) {
       h('button', { class: 'btn small', title: 'Rotate 90° right, lossless', onclick: () => rotateSheets([sel], 90) }, '⟳ 90°'),
       info('Turns the cutout by 90° at export: pixels are moved, never resampled, so nothing is lost.'),
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
-      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete'))) : null,
+      h('button', { class: 'btn small', onclick: () => ocrSheets([sel]) }, 'Text (OCR)'),
+      h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
+    sel.ocr !== undefined ? h('div', { style: { marginTop: '6px' } },
+      h('div', { class: 'small muted' }, 'Text found (edit if needed; saved in the file description at export):'),
+      h('textarea', { rows: Math.min(8, Math.max(2, (sel.ocr || '').split('\n').length + 1)), style: { width: '100%' }, placeholder: '(no text found)',
+        onchange: e => commit(() => { sel.ocr = e.target.value; }) }, sel.ocr || '')) : null) : null,
     (st?.history || []).length ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'Earlier'),
       h('select', { class: 'f', onchange: e => { if (e.target.value !== '') restoreVersion(+e.target.value); } },
         h('option', { value: '' }, `${st.history.length} earlier version(s)…`),
@@ -720,7 +730,7 @@ function renderOptions() {
         h('div', { class: 'segs' }, [['add', 'Add'], ['sub', 'Erase']].map(([m, l]) => h('div', { class: 'seg' + ((S.mode === m || (m === 'add' && S.mode !== 'sub')) ? ' on' : ''), onclick: () => setMode(m) }, svg(MODE_ICONS[m]), h('span', {}, l))))),
       numSlider('Size', S.brushMM, 0.2, 20, 0.1, 'mm', v => { S.brushMM = v; draw(); }, TIPS.brush),
       hint(S.mode === 'sub' ? 'Paint over what should become transparent.' : 'Paint over paper the cut missed. [ and ] change the size.'));
-  } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; Delete removes.'));
+  } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; ⌃-click: export only that one; Delete removes.'));
   else if (t === 'hand') bar.append(hint('Drag to move around. Also: hold Space with any tool, or scroll with two fingers.'));
   else if (t === 'points') bar.append(hint('Drag the points of the selected sheet. Double-click an edge to add a point, ⌥-click a point to remove it.'));
   else if (t === 'poly') bar.append(hint('Click the corners of a new sheet; Enter (or double-click) closes it, Esc cancels.'));
@@ -919,8 +929,9 @@ function bindCanvas(stage) {
     const r = cv.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top, pt = toImg(sx, sy);
     const tool = spaceDown || e.button === 1 ? 'hand' : S.tool;
     if (tool === 'hand') { drag = { pan: [sx - V.ox, sy - V.oy] }; cv.style.cursor = 'grabbing'; return; }
+    if (e.ctrlKey && e.button === 0) return;           // ⌃-clic: ci pensa il menu contestuale (solo)
     if (tool === 'select') {
-      const s = sheetAt(pt), mod = e.shiftKey || e.metaKey || e.ctrlKey;
+      const s = sheetAt(pt), mod = e.shiftKey || e.metaKey;
       if (s) { if (mod) toggleSel(s.id); else if (!isSel(s.id)) S.selSheet = s.id; else S._primary = s.id; renderSide(); draw(); return; }
       // sul vuoto: riquadro di selezione (lo spostamento resta con Spazio, H o due dita)
       drag = { marq: [...pt, ...pt], add: mod };
@@ -991,6 +1002,11 @@ function bindCanvas(stage) {
     draw();
   };
   cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+  cv.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), s = sheetAt(toImg(e.clientX - r.left, e.clientY - r.top));
+    if (s) { soloSheet(s.id); renderSide(); draw(); }
+  });
   cv.addEventListener('pointerleave', () => { mouse = null; draw(); $('#dens').style.display = 'none'; $('#loupe').style.display = 'none'; });
   cv.addEventListener('dblclick', e => {
     const r = cv.getBoundingClientRect(), pt = toImg(e.clientX - r.left, e.clientY - r.top);
@@ -1126,6 +1142,24 @@ async function samClick(pt, add) {
     scheduleSave();
   } catch (e) { alertDialog('SAM 3 failed', e.message); }
   busy(false); renderSide(); draw();
+}
+function soloSheet(id) {
+  const sh = S.st.sheets, me = sh.find(x => x.id === id); if (!me) return;
+  const alreadySolo = me.on !== false && sh.every(x => x === me || x.on === false);
+  commit(() => sh.forEach(x => { x.on = alreadySolo ? true : x === me; }));
+  S.selSheet = id;
+  status(alreadySolo ? 'All sheets on again' : 'Only this sheet will be exported (⌃-click it again to turn all back on)');
+}
+async function ocrSheets(list) {
+  await flushSave();
+  busy(true, 'Reading text (Apple Vision)…');
+  try {
+    const r = await api.post('ocr_sheets', { rel: S.rel, ids: list.map(x => x.id) });
+    commit(() => list.forEach(x => { if (r[x.id] !== undefined) x.ocr = r[x.id]; }));
+    const n = Object.values(r).filter(Boolean).length;
+    status(n ? `Text found on ${n} sheet(s): it goes into the metadata at export` : 'No text found');
+  } catch (e) { alertDialog('Text (OCR)', e.message); }
+  busy(false); renderSide();
 }
 function deleteSelected() {
   const ids = new Set(S.selSet); if (!ids.size) return;

@@ -125,7 +125,7 @@ V select · H pan (or hold Space) · A edit points (double-click edge adds, ⌥-
 removes) · P polygon (Enter closes) · M rectangle · L lasso · W Magic Wand (options in the bar above the scan) · B brush ·
 K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the other) ·
 R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
-⇧/⌘-click or drag on empty space selects several sheets · ⌘A all · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
+⇧/⌘-click or drag on empty space selects several sheets · ⌃-click (or ⌥-click, right-click) a sheet: only that one is exported, again: all back on · Text (OCR) on the selected sheets reads their text into an editable box, written into the cutout's description at export · ⌘A all · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
 Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
 Address bar: every folder is clickable, ▸ lists its subfolders; back/forward with the round
 buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.

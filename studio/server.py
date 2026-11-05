@@ -376,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             if act == 'trash':
                 return self.send({'done': core.trash_files(rels)})
             return self.send({'error': 'unknown action'}, code=400)
+        if path == 'ocr_sheets':
+            return self.send(core.ocr_sheets(rel, b.get('ids') or []))
         if path == 'checked':
             return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':

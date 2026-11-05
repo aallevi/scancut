@@ -1270,7 +1270,9 @@ def export(rel, replace=None, log=print, subfolder=None):
                 moved = sc.unique(moved)
                 os.rename(out, moved)
             out = write_cutout(rgba, sc.unique(out), fmt, dpi, icc, src=abspath(rel), gray=is_gray(rel))
-            if s_.get('ocr_on_export'):
+            if sheets[sid].get('ocr'):
+                embed_text(out, sheets[sid]['ocr'])          # il testo letto (e corretto) nello studio
+            elif s_.get('ocr_on_export'):
                 try:
                     embed_text(out, ocr_text(out))
                 except Exception as e:
@@ -1352,6 +1354,25 @@ def embed_text(path, text):
                         f'-IPTC:Caption-Abstract={text[:2000]}', f'-IFD0:ImageDescription={text}', path],
                        capture_output=True, text=True, timeout=120)
     return r.returncode == 0
+
+
+def ocr_sheets(rel, ids):
+    # il testo dei fogli scelti, letto sul loro ritaglio (com'e' esportato, gia' raddrizzato e girato)
+    st = load_state(rel)
+    out = {}
+    for sh in st['sheets']:
+        if sh['id'] not in ids:
+            continue
+        res = cut_sheet(rel, sh)
+        if res is None:
+            continue
+        tmp = os.path.join(DATA, 'cache', f'.ocr-{sh["id"]}-{os.getpid()}.png')
+        Image.fromarray(res[0], 'RGBA').save(tmp)
+        try:
+            out[sh['id']] = ocr_text(tmp)
+        finally:
+            os.remove(tmp)
+    return out
 
 
 def ocr_files(rels, log=print):
