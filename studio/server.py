@@ -362,6 +362,20 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
             return self.send(core.save_state(st))
+        if path == 'cutouts':
+            # ritagli gia' salvati: girare (senza perdita), testo nei metadati, nel Cestino
+            rels, act = b.get('rels') or [], b.get('action')
+            for r in rels:
+                core.abspath(r)
+            if act == 'rotate':
+                return self.send({'done': core.rotate_files(rels, int(b.get('deg', 90)))})
+            if act == 'ocr':
+                return self.send({'done': core.ocr_files(rels)})
+            if act == 'trash':
+                return self.send({'done': core.trash_files(rels)})
+            return self.send({'error': 'unknown action'}, code=400)
+        if path == 'checked':
+            return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':
             core.sam3_unload()
             return self.send({'ok': True})

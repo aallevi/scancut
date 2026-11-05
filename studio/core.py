@@ -1000,6 +1000,7 @@ DEFAULT_SETTINGS = {
     'export_subfolder': 'extra',
     'verify_jxl': False,
     'keep_16bit': True,
+    'ocr_on_export': False,            # riconoscere il testo (Apple Vision) e scriverlo nei metadati di ogni ritaglio
     'it8_remind': True,                # ricordare di ricalibrare i colori (IT8)
     'it8_days': 90,                    # ogni quanti giorni
     'it8_last': 0,                     # ultima calibrazione (o inizio del conteggio)
@@ -1269,6 +1270,11 @@ def export(rel, replace=None, log=print, subfolder=None):
                 moved = sc.unique(moved)
                 os.rename(out, moved)
             out = write_cutout(rgba, sc.unique(out), fmt, dpi, icc, src=abspath(rel), gray=is_gray(rel))
+            if s_.get('ocr_on_export'):
+                try:
+                    embed_text(out, ocr_text(out))
+                except Exception as e:
+                    log(f'OCR: {e}')
             written.append({'id': sid, 'path': out, 'status': 'written', 'size': list(rgba.shape[1::-1]),
                             'tilt': round(ang, 2), 'rect': round(rect, 3), 'moved_old': moved})
             sc.log(f'studio: {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'
@@ -1306,6 +1312,146 @@ def export(rel, replace=None, log=print, subfolder=None):
     if settings().get('eagle'):
         eagle_add([w['path'] for w in written if w['status'] == 'written'], log)
     return written
+
+
+# ---------------------------------------------------------------- testo (OCR), ritagli gia' fatti, da controllare
+
+OCR = os.path.join(REPO, 'studio', 'ocr')
+
+
+def _readable(path):
+    # per Vision: un PNG che macOS sa leggere (il JPEG XL si decodifica prima)
+    if path.lower().endswith('.jxl'):
+        tmp = os.path.join(DATA, 'cache', f'.ocr-{os.getpid()}-{threading.get_ident()}.png')
+        subprocess.run(['djxl', path, tmp, '--quiet'], check=True, capture_output=True, timeout=600)
+        return tmp, True
+    return path, False
+
+
+def ocr_text(path):
+    # il testo riconosciuto, riga per riga dall'alto; '' se non c'e' testo
+    if not os.path.exists(OCR):
+        raise RuntimeError('OCR helper missing: swiftc -O studio/ocr.swift -o studio/ocr')
+    f, tmp = _readable(path)
+    try:
+        r = subprocess.run([OCR, f], capture_output=True, text=True, timeout=600)
+    finally:
+        if tmp and os.path.exists(f):
+            os.remove(f)
+    rows = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
+    rows = [x for x in rows if x.get('conf', 0) >= 0.3]
+    rows.sort(key=lambda x: (round(x['box'][1] / max(x['box'][3], 1)), x['box'][0]))
+    return '\n'.join(x['text'] for x in rows)
+
+
+def embed_text(path, text):
+    # nei campi descrizione che leggono tutti (XMP, IPTC, EXIF): i pixel non cambiano
+    if not text:
+        return False
+    r = subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', f'-XMP-dc:Description={text}',
+                        f'-IPTC:Caption-Abstract={text[:2000]}', f'-IFD0:ImageDescription={text}', path],
+                       capture_output=True, text=True, timeout=120)
+    return r.returncode == 0
+
+
+def ocr_files(rels, log=print):
+    out = []
+    for rel in rels:
+        p = abspath(rel)
+        t = ocr_text(p)
+        if t:
+            embed_text(p, t)
+        out.append({'rel': rel, 'text': t})
+        log(f'{rel}: ' + (f'{len(t.splitlines())} line(s) of text' if t else 'no text found'))
+    return out
+
+
+def _backup(path, stamp):
+    b = os.path.join(DATA, 'replaced', stamp, os.path.relpath(path, ROOT) if path.startswith(ROOT) else os.path.basename(path))
+    os.makedirs(os.path.dirname(b), exist_ok=True)
+    b = sc.unique(b)
+    shutil.copy2(path, b)
+    return b
+
+
+def rotate_files(rels, deg, log=print):
+    # ritagli gia' salvati, girati di 90 gradi senza perdita. La copia di prima resta in
+    # studio-data/replaced/, i metadati passano al file girato (misura e dimensioni giuste)
+    from . import png16
+    q = (int(deg) // 90) % 4
+    if not q:
+        return []
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    done = []
+    for rel in rels:
+        path = abspath(rel)
+        ext = os.path.splitext(path)[1].lower()
+        if ext not in ('.png', '.jxl'):
+            log(f'{rel}: only PNG and JPEG XL cutouts can be rotated here'); continue
+        back = _backup(path, stamp)
+        src, tmp = _readable(path)
+        try:
+            pim = Image.open(src)
+            dpi = (pim.info.get('dpi') or (0, 0))[0] or None
+            icc = pim.info.get('icc_profile')
+            m = cv2.imread(src, cv2.IMREAD_UNCHANGED)
+            if m.dtype == np.uint16:
+                arr = png16.read(src)
+                arr = np.ascontiguousarray(np.rot90(arr, k=-q))
+                png16.write(path + '.rot.png', arr, dpi, icc)
+            else:
+                pim.load()
+                pim.rotate(-90 * q, expand=True).save(path + '.rot.png', 'PNG', dpi=(dpi, dpi) if dpi else None,
+                                                    **({'icc_profile': icc} if icc else {}))
+        finally:
+            if tmp and os.path.exists(src):
+                os.remove(src)
+        if ext == '.jxl':
+            subprocess.run(['cjxl', path + '.rot.png', path + '.part', '-d', '0', '-e', '7', '--quiet'], check=True, capture_output=True, timeout=1800)
+            os.remove(path + '.rot.png')
+            os.replace(path + '.part', path)
+        else:
+            os.replace(path + '.rot.png', path)
+        w, h = Image.open(path).size if ext == '.png' else (None, None)
+        cmd = ['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', back, '-all:all', '-icc_profile', '-IFD0:Orientation#=1']
+        if w:
+            cmd += [f'-ExifIFD:ExifImageWidth={w}', f'-ExifIFD:ExifImageHeight={h}', f'-XMP-exif:PixelXDimension={w}', f'-XMP-exif:PixelYDimension={h}']
+        subprocess.run(cmd + [path], capture_output=True, timeout=120)
+        done.append(rel)
+        log(f'{rel}: rotated {90 * q}°, previous version kept in {os.path.relpath(back, ROOT)}')
+    return done
+
+
+def trash_files(rels, log=print):
+    # nel Cestino del Mac (si possono rimettere a posto), mai cancellati del tutto
+    trash = os.path.expanduser('~/.Trash')
+    done = []
+    for rel in rels:
+        path = abspath(rel)
+        if not os.path.isfile(path):
+            continue
+        dst = sc.unique(os.path.join(trash, os.path.basename(path)))
+        shutil.move(path, dst)
+        done.append(rel)
+        log(f'{rel} -> Trash')
+    return done
+
+
+def mark_checked(rels, log=print):
+    # "controllato": il collegamento in failed/ se ne va; l'originale resta in originals/
+    fail = os.path.join(ROOT, 'failed')
+    targets = set()
+    for rel in rels:
+        p = os.path.join(ROOT, rel)
+        targets.add(os.path.realpath(p))
+    done = []
+    for f in os.listdir(fail) if os.path.isdir(fail) else []:
+        lp = os.path.join(fail, f)
+        if os.path.islink(lp) and (os.path.realpath(lp) in targets or os.path.join('failed', f) in rels):
+            os.remove(lp)
+            done.append(f)
+            sc.log(f'studio: {f} checked, removed from failed/')
+    return done
 
 
 def eagle_add(paths, log=print):

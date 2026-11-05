@@ -448,6 +448,19 @@ function sideGallery(side) {
   } else {
     side.append(group('Folder', h('div', { class: 'muted' }, sel.length ? `${sel.length} scans selected.` : 'Select scans (⌘-click, ⇧-click) to run a batch, or double-click one to open it.')));
   }
+  const inCut = S.dir.startsWith('cut'), inFail = S.dir.startsWith('failed');
+  if (inCut) side.append(group('Cutouts',
+    h('div', { class: 'btns' },
+      h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate left, lossless', onclick: () => cutoutAction('rotate', sel, -90) }, '⟲ 90°'),
+      h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate right, lossless', onclick: () => cutoutAction('rotate', sel, 90) }, '⟳ 90°'),
+      h('button', { class: 'btn small', disabled: !sel.length, onclick: () => cutoutAction('ocr', sel) }, 'Text (OCR)'),
+      h('button', { class: 'btn small', disabled: !sel.length, onclick: () => cutoutAction('trash', sel) }, 'Move to Trash'),
+      info('Rotation moves pixels, never resamples; the previous file is kept in studio-data/replaced and the metadata (true size) is carried over. Text (OCR): Apple Vision reads any writing on the cutout and stores it in the file description (XMP, IPTC, EXIF), pixels untouched. Trash: the Mac Trash, so you can put files back.')),
+    h('div', { class: 'small muted', style: { marginTop: '4px' } }, sel.length ? `${sel.length} selected` : 'Select cutouts (⌘-click, ⇧-click, ⌘A).')));
+  if (inFail) side.append(group('To check',
+    h('div', { class: 'small muted' }, 'Scans land here when the agent could not cut them, or Apple Vision cut them with an odd shape. Open one, fix it, export; then mark it checked.'),
+    h('div', { class: 'btns' }, h('button', { class: 'btn default', disabled: !sel.length, onclick: () => markChecked(sel.map(i => i.rel)) }, '✓ Mark as checked'),
+      info('Removes it from To check. The scan itself stays in originals/; nothing is deleted.'))));
   side.append(group('Engine', engineChooser()),
     group('Batch',
       h('div', { class: 'btns' },
@@ -477,6 +490,25 @@ function drawHist(hc) {
   [['r', 'rgba(220,40,40,.8)'], ['g', 'rgba(30,160,60,.8)'], ['b', 'rgba(40,90,220,.8)']].forEach(([k, col]) => { path(histData[k]); c.strokeStyle = col; c.lineWidth = 1.5; c.stroke(); });
   const x = histData.bg_l / 255 * W; c.setLineDash([5, 4]); c.strokeStyle = '#b07d16'; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke(); c.setLineDash([]);
   c.fillStyle = '#555'; c.font = '20px "Segoe UI", Tahoma'; c.fillText(S.histLog ? 'log' : 'linear', W - 70, 24);
+}
+async function cutoutAction(action, items, deg) {
+  const rels = items.map(i => i.rel);
+  if (action === 'trash') {
+    const ok = await choose('Move to Trash', `Move ${rels.length} cutout(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. You can put them back from the Trash.', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
+    if (!ok) return;
+  }
+  status({ rotate: 'Rotating…', ocr: 'Reading text…', trash: 'Moving to Trash…' }[action], true);
+  try {
+    const r = await api.post('cutouts', { action, rels, deg });
+    if (action === 'ocr') alertDialog('Text found', h('pre', { class: 'log' }, r.done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n')));
+    status(`${r.done.length} cutout(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
+  } catch (e) { alertDialog('Cutouts', e.message); }
+  S.sel.clear(); await refreshItems(); renderSide();
+}
+async function markChecked(rels) {
+  const r = await api.post('checked', { rels });
+  status(`${r.done.length} scan(s) marked as checked`);
+  S.sel.clear(); await refreshItems(); const t = await api.get('tree'); S.tree = t.tree; renderNav(); renderSide();
 }
 function sheetEdited(s) { return s.ops.length || JSON.stringify(s.poly) !== JSON.stringify(s.poly0); }
 function sideEditor(side) {
@@ -540,7 +572,8 @@ function sideEditor(side) {
     h('div', { class: 'btns' },
       h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: () => doExport() }, 'Export'),
       h('button', { class: 'btn', disabled: !st?.sheets.some(s => s.on !== false), title: 'The same cutouts in a subfolder, e.g. to keep an odd but interesting cut next to the normal one', onclick: () => doExport(S.settings.export_subfolder || 'extra') }, `To ${S.settings.export_subfolder || 'extra'}/`),
-      h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder')),
+      h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder'),
+      S.rel.startsWith('failed/') ? h('button', { class: 'btn', onclick: () => markChecked([S.rel]) }, '✓ Checked') : null),
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
   side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
@@ -1319,6 +1352,7 @@ async function settingsDialog() {
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Engines and Claude'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Export'),
     field('export_format', 'Format', h('select', {}, [['png', 'PNG'], ['jxl', 'JPEG XL, lossless (smaller, keeps transparency)']].map(([v, l]) => h('option', { value: v, selected: s.export_format === v }, l))), 'JPEG XL is checked after writing: decoded back and compared pixel by pixel, else PNG is kept.'),
+    field('ocr_on_export', 'Text (OCR)', h('input', { type: 'checkbox', checked: s.ocr_on_export }), 'Read any writing on each cutout with Apple Vision (on this Mac) and store it in the file description. Adds a few seconds per cutout.'),
     field('verify_jxl', 'Check JPEG XL', h('input', { type: 'checkbox', checked: s.verify_jxl }), 'Decode every JPEG XL back and compare it pixel by pixel (cjxl -d 0 is lossless by design; this only guards against a tool bug). Slower.'),
     field('keep_16bit', 'Keep 16 bits', h('input', { type: 'checkbox', checked: s.keep_16bit }), 'Cutouts of 48-bit colour or 16-bit grey scans keep all 16 bits per channel (PNG or JPEG XL). Off: 8-bit cutouts.'),
     field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
@@ -1336,7 +1370,7 @@ async function settingsDialog() {
     const bf = {}; f.batch_folders.value.split('\n').forEach(l => { const m = l.split('='); if (m.length >= 2 && m[0].trim()) bf[m[0].trim()] = m.slice(1).join('=').trim(); });
     S.settings = await api.post('settings', { out_root: f.out_root.value.trim() || 'cut', template: f.template.value.trim() || '{batch}/{stem}{sheet}', batch_folders: bf,
       eagle: f.eagle.checked, eagle_folder: f.eagle_folder.value.trim(), export_format: f.export_format.value, export_existing: f.export_existing.value,
-      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, keep_16bit: f.keep_16bit.checked,
+      export_subfolder: f.export_subfolder.value.trim() || 'extra', autocut: f.autocut.checked, verify_jxl: f.verify_jxl.checked, keep_16bit: f.keep_16bit.checked, ocr_on_export: f.ocr_on_export.checked,
       it8_remind: f.it8_remind.checked, it8_days: Math.max(7, +f.it8_days.value || 90), compare_engines: f.compare_engines.value.split(',').map(x => x.trim()).filter(Boolean), claude_tools: f.claude_tools.value.trim() });
     if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); S.names = st.names || {}; renderSide(); }
   }, true], ['Cancel', () => true]]);
