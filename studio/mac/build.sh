@@ -51,6 +51,7 @@ EOF
 
 codesign --force --sign - "$TMP/Scan Studio.app"
 # la vecchia si toglie solo quando la nuova e' pronta (stesso posto: il Dock la ritrova)
+mkdir -p "${APP:h}"
 rm -rf "$APP"
 mv "$TMP/Scan Studio.app" "$APP"
 rm -rf "$TMP"
