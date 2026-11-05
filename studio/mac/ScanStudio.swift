@@ -232,7 +232,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "min": window.miniaturize(nil)
         case "max": (window as? StudioWindow)?.toggleMax()
         case "full": window.toggleFullScreen(nil)
-        case "close": window.performClose(nil)
+        // finestra senza cornice: performClose non fa niente (manca .closable), si chiude da qui
+        case "close": if windowShouldClose(window) { NSApp.terminate(nil) }
         default: break
         }
     }
