@@ -50,6 +50,10 @@ studio.py export "originals/sketchbook/sketchbook 4.png"   # saves the edited st
 - `script:<name>`: any `scripts/<name>.py` with `segment(rgb, ppm, params)` returning
   masks. Reloaded on every run.
 
+Each batch remembers the engine and settings (SAM prompt, threshold, tolerance) of its last
+export; opening a scan or folder of that batch selects them again. Nothing is learned or
+uploaded; SAM 3's weights never change. The agent keeps its own fixed cut.
+
 ## How edits work
 
 Each engine result is cached as exact masks (`studio-data/cache`). The editor shows a
@@ -91,7 +95,8 @@ or white lid (dark paper); those fill pixels are never saved.
 ## Data (`<root>/.scancut/studio-data/`, not in git)
 
 `state/` edit state per scan (JSON), `cache/` engine masks, `previews/`,
-`replaced/`, `models/` (SAM 3 downloaded from Add-ons), `settings.json`, `server.log`.
+`replaced/`, `models/` (SAM 3 downloaded from Add-ons), `settings.json`,
+`batch-memory.json` (engine per batch), `server.log`.
 
 ## Add-ons
 

@@ -1317,9 +1317,43 @@ def export(rel, replace=None, log=print, subfolder=None):
             os.remove(old)
     else:
         save_state(st)
+    if st.get('engine') and any(w['status'] == 'written' for w in written):
+        remember_batch(rel, st['engine'], st.get('params') or {})
     if settings().get('eagle'):
         eagle_add([w['path'] for w in written if w['status'] == 'written'], log)
     return written
+
+
+# ------------------------------------------------------------ ricordo per serie
+# il motore e le impostazioni dell'ultimo ritaglio esportato di ogni serie: la scansione
+# successiva della stessa serie parte da li'. Niente si impara, si ricorda solo la scelta.
+def batch_memory_path():
+    return os.path.join(DATA, 'batch-memory.json')
+
+
+def batch_memory():
+    try:
+        return json.load(open(batch_memory_path()))
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_batch(rel, engine, params):
+    mem = batch_memory()
+    b = batch_of(rel)
+    old = mem.get(b) or {}
+    same = old.get('engine') == engine and old.get('params') == params
+    mem[b] = {'engine': engine, 'params': params, 'time': time.time(),
+              'count': old.get('count', 0) + 1 if same else 1}
+    tmp = batch_memory_path() + '.part'
+    with open(tmp, 'w') as f:
+        json.dump(mem, f, indent=1)
+    os.replace(tmp, batch_memory_path())
+
+
+def remembered(rel):
+    b = batch_of(rel)
+    return {'batch': b, **(batch_memory().get(b) or {})}
 
 
 # ---------------------------------------------------------------- testo (OCR), ritagli gia' fatti, da controllare

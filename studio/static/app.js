@@ -280,8 +280,21 @@ async function go(view) {
   if (view === 'addons') renderAddons();
   renderSide();
 }
+// motore e impostazioni dell'ultimo export della stessa serie: si riprendono entrando nella serie
+// (una volta sola: se poi si sceglie un altro motore, resta quello)
+async function useRemembered(rel) {
+  const m = await api.get('remembered', { rel }).catch(() => null);
+  if (!m || m.batch === S.memBatch) return;
+  S.memBatch = m.batch;
+  const e = m.engine && S.engines.find(x => x.id === m.engine);
+  if (!e?.available) return;
+  S.engine = e.id; Object.assign(S.params, m.params || {});
+  status(`${m.batch}: ${e.name}${m.params?.prompt ? ` “${m.params.prompt}”` : ''}, as in your last export from this batch`);
+  renderSide(); if (S.view === 'editor') renderOptions();
+}
 async function openDir(rel) {
   remember('dir:' + rel);
+  if (/^originals\/[^/]+/.test(rel)) useRemembered(rel);
   S.dir = rel; S.sel.clear(); S.anchor = null;
   S.open.add(rel.split('/')[0]);
   S.items = await api.get('list', { dir: rel }).catch(e => (status(e.message), []));
@@ -650,6 +663,7 @@ let cv, ctx, hud, busyEl;
 async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
+  useRemembered(rel);
   S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; V.tile = V.mtile = null;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';

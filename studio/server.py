@@ -319,6 +319,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Box', f'{x0},{y0},{x1},{y1}')
             self.send_header('Content-Length', str(b.tell()))
             self.end_headers(); self.wfile.write(b.getvalue()); return
+        if path == 'remembered':
+            return self.send(core.remembered(rel))
         if path == 'engines':
             return self.send(core.engines())
         if path == 'state':
