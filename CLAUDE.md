@@ -1,29 +1,30 @@
-# Scans
+# scancut · Scan Studio
 
-Automatic cutting of scanned drawings. Antonio scans with Image Capture into
-`~/Scans/inbox`; a LaunchAgent runs `scancut.py`, which moves each scan to
-`originals/` and writes one transparent PNG per sheet to `cut/`. Antonio then
-imports the cutouts into Eagle and empties the folders by hand.
+Automatic cutting of scanned drawings. Scans land in `<root>/inbox` (default `~/Scans`);
+a LaunchAgent runs `scancut.py`, which moves each scan to `originals/` and writes one
+transparent PNG per sheet to `cut/`. Scan Studio (`studio.py`, `studio/`) is the window
+to check and fix the cuts, drive the scanner and run headless jobs (see STUDIO.md).
 
 ## Layout
 
 ```
-~/Scans/
-  inbox/                 scans arrive here; the script empties it
+<root>/                  default ~/Scans; the code can live anywhere
+  inbox/                 scans arrive here; the agent empties it
   originals/<batch>/     every scan, untouched (renamed only on collision)
   cut/<batch>/           cutouts: <stem>.png, or <stem> a.png, b.png ... per sheet
-  failed/                symlinks to originals that need a look
-  .scancut/              this repo
-    scancut.py           the whole pipeline (comments in Italian)
-    vision_mask.swift    Apple Vision helper; build: swiftc -O vision_mask.swift -o vision_mask
-    agent/scancut.plist.in   LaunchAgent template; install.sh --agent fills it in
-                             (Antonio's live one: ~/Library/LaunchAgents/com.antonioallevi.scancut.plist)
-    install.sh, requirements.txt, VERSION   public install (README.md); app via studio/mac/build.sh
-    studio.py, studio/   Scan Studio: Vista-style window + API + headless jobs (see STUDIO.md)
-    scripts/             user engines for the studio: segment(rgb, ppm, params) -> masks
-    done.tsv             ledger of cut originals: path inside originals/, size, mtime, result
-    log.txt, errors.txt  run log, launchd stderr
+  failed/                symlinks to originals that need a look ("To check")
+  .scancut/              run data: done.tsv, log.txt, errors.txt, lock, studio-data/
+<repo>/
+  scancut.py             the whole pipeline (comments in Italian)
+  vision_mask.swift      Apple Vision helper; build: swiftc -O vision_mask.swift -o vision_mask
+  studio.py, studio/     Scan Studio: Vista-style window + API + headless jobs
+  studio/mac/            native app (build.sh writes repo, Python and root into Info.plist)
+  scripts/               user engines for the studio: segment(rgb, ppm, params) -> masks
+  agent/scancut.plist.in LaunchAgent template, filled in by install.sh --agent
+  install.sh, requirements.txt, VERSION
 ```
+
+`done.tsv` is the ledger of cut originals: path inside originals/, size, mtime, result.
 
 Batch = file name minus the final number (after a space, `_`, `-`, or glued to
 letters; never after a dot, so dates stay whole). Image Capture restarts its
@@ -35,10 +36,11 @@ numbering each time it opens, so a taken name gets the next free number.
   `originals/` (hard link, no overwrite, then unlink). Byte-identical repeats are
   dropped. Non-images, odd names, corrupt files all still land in `originals/`.
 - **Never overwrite** an original or a cutout. Identical cutouts are not rewritten.
-- One run at a time (`.scancut/lock`). Do not run the script by hand while the
+- One run at a time (`<root>/.scancut/lock`). Do not run the script by hand while the
   agent may be running; use `launchctl kickstart` instead.
 - **Only real pixels.** Cutouts change transparency only: no filling, no colour
-  fixing, no synthetic edges. Antonio was explicit: "no fake pixels", keep it simple.
+  fixing, no synthetic edges. Tools that change pixels make separate copies, marked
+  as "fake pixels".
 
 ## Pipeline (per scan)
 
@@ -59,24 +61,26 @@ numbering each time it opens, so a taken name gets the next free number.
 
 ## Working on it
 
-- Discuss options with Antonio before big changes; Antonio chooses. Use they/them
-  for Antonio unless told otherwise.
-- Code comments in Italian; docs in English. Commit messages so far are Italian.
+- Discuss big pipeline changes before making them.
+- Code comments in Italian; docs in English; commit messages in Italian.
 - Test on **copies** with a scratch root: `python3 -I scancut.py <root>` takes the
   root as its argument. Compare old vs new on real scans and look at zoomed edges.
   Synthetic tests (rotating a scan by hand) mislead: they rotate the lid too.
-- Python: `/opt/miniconda3/bin/python3` (OpenCV, NumPy, Pillow).
+  `tools/make_test_scans.py` and `tools/make_demo_scans.py` make made-up scans.
+- Python: the repo's `.venv` (install.sh) or any Python with requirements.txt.
+  OpenCV stays on 4.x: 5.x rounds the deskew differently.
 - Redo a scan: delete its line in `done.tsv` (move old cutouts aside first, or
   identical ones are skipped and changed ones get ` (2)`).
 - The agent starts only when the inbox changes (WatchPaths; no timer, no run at
-  login) and runs as a background process (efficiency cores, low-priority I/O) to
-  keep the Mac cool. Leftover uncut originals wait for the next scan, or a kickstart.
-- Reload after editing the plist:
-  `launchctl unload ~/Library/LaunchAgents/com.antonioallevi.scancut.plist && launchctl load ...`
+  login) and runs as a background process (efficiency cores, low-priority I/O).
+  Leftover uncut originals wait for the next scan, or a kickstart.
+  `<root>/.scancut/autocut-off` makes it only file scans, without cutting.
+- Reload after editing the LaunchAgent:
+  `launchctl unload ~/Library/LaunchAgents/<label>.plist && launchctl load ...`
   (the script itself is re-read on every run, no reload needed).
 - Known limits: overlapping sheets stay one piece; same-colour sheets touching with
   no gap may stay one; white on white relies on Vision (grey card is better);
   coloured paper on the white lid keeps a ~1 px light edge.
 - Scan Studio shares the pipeline: `cut_scan` returns each sheet's mask as a 6th
   tuple item `(mask, holes, exact)`; untouched studio exports must stay byte-identical
-  to the agent's. Studio data lives in `.scancut/studio-data/` (gitignored).
+  to the agent's. Studio data lives in `<root>/.scancut/studio-data/` (not in git).
