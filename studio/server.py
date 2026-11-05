@@ -65,12 +65,17 @@ class Jobs:
 
     def do_preview(self, j, say):
         # anteprima del letto intero, veloce (75 dpi): per scegliere le aree
-        dev = j['args']['dev']
+        # con un'area: la stessa anteprima solo li', a 300 dpi, per piazzare l'area con precisione
+        dev, area = j['args']['dev'], j['args'].get('area')
         d = os.path.join(core.DATA, 'scanner'); os.makedirs(d, exist_ok=True)
         tif = os.path.join(d, 'preview.tif')
         def prog(p): j['pct'] = p
-        scanner.scan(dev, tif, 75, 'Color', progress=prog, cancelled=lambda: j['status'] == 'cancelled')
-        Image.open(tif).convert('RGB').save(os.path.join(d, 'preview.png'))
+        scanner.scan(dev, tif, 300 if area else 75, 'Color', area=tuple(area[:4]) if area else None,
+                     progress=prog, cancelled=lambda: j['status'] == 'cancelled')
+        Image.open(tif).convert('RGB').save(os.path.join(d, 'preview-area.png' if area else 'preview.png'))
+        if area:
+            with open(os.path.join(d, 'preview-area.json'), 'w') as f:
+                json.dump({'area': area[:4]}, f)
         os.remove(tif)
         j['done'] = 1
         say('preview ready')
@@ -85,8 +90,10 @@ class Jobs:
                 break
             out = next_scan_name(batch)
             def prog(p, k=k): j['pct'] = (k + p / 100) / len(areas) * 100
-            say(f'scanning {os.path.basename(out)} at {a["res"]} dpi, {a["mode"]}' + (f', area {area[2]:.0f} x {area[3]:.0f} mm' if area else ', whole bed'))
-            scanner.scan(a['dev'], out, int(a['res']), a['mode'], area=tuple(area) if area else None,
+            own = area[4] if area and len(area) > 4 and isinstance(area[4], dict) else {}
+            res, mode = int(own.get('res') or a['res']), own.get('mode') or a['mode']      # le impostazioni dell'area, se ne ha
+            say(f'scanning {os.path.basename(out)} at {res} dpi, {mode}' + (f', area {area[2]:.0f} x {area[3]:.0f} mm' if area else ', whole bed'))
+            scanner.scan(a['dev'], out, res, mode, area=tuple(area[:4]) if area else None,
                          progress=prog, cancelled=lambda: j['status'] == 'cancelled')
             say(f'  -> inbox/{os.path.basename(out)}')
             j['done'] += 1
@@ -321,6 +328,14 @@ class Handler(BaseHTTPRequestHandler):
             for d in devs:
                 d['options'] = scanner.options(d['id'])
             return self.send({'available': True, 'devices': devs})
+        if path == 'scanner_preview_area':
+            p = os.path.join(core.DATA, 'scanner', 'preview-area.png')
+            if q.get('meta'):
+                m = os.path.join(core.DATA, 'scanner', 'preview-area.json')
+                return self.send(json.load(open(m)) if os.path.exists(m) else {})
+            if not os.path.exists(p):
+                return self.send({'error': 'no area preview'}, code=404)
+            return self.send(open(p, 'rb').read(), 'image/png')
         if path == 'scanner_preview':
             p = os.path.join(core.DATA, 'scanner', 'preview.png')
             if not os.path.exists(p):
@@ -427,7 +442,18 @@ def idle_exit(after_s=75):
     threading.Thread(target=watch, daemon=True).start()
 
 
+def _on_term(*_):
+    # fermato dall'app del Dock (SIGTERM): prima le scansioni in corso, poi via
+    scanner._stop_all()
+    os._exit(0)
+
+
 def serve(root, port=PORT, ready=None):
+    import signal
+    try:
+        signal.signal(signal.SIGTERM, _on_term)
+    except ValueError:
+        pass                                    # non nel thread principale (modalita' app): ci pensa atexit
     global JOBS, PORT
     PORT = port
     core.set_root(root)

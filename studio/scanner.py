@@ -3,11 +3,48 @@
 # del letto intero e le scansioni delle aree scelte. Una scansione alla volta.
 # brew install sane-backends
 
-import os, re, shutil, subprocess, threading, time
+import os, re, shutil, signal, subprocess, threading, time, atexit
 
 SCANIMAGE = shutil.which('scanimage') or '/opt/homebrew/bin/scanimage'
-_busy = threading.Lock()
+_busy = threading.RLock()       # rientrante: il nuovo tentativo dopo aver tolto un orfano
 _cache = {}
+_running = set()              # le scansioni in corso: se lo studio si ferma, si fermano anche loro
+
+
+def _stop_all(*_):
+    # scanimage, mentre aspetta lo scanner, ignora la richiesta gentile: dopo 3 s si forza
+    for p in list(_running):
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+
+
+atexit.register(_stop_all)
+
+
+def clear_orphans(dev):
+    # una scansione rimasta da sola (lo studio che l'aveva lanciata non c'e' piu': genitore 1)
+    # tiene occupato lo scanner: si ferma. Solo scanimage di questo scanner, senza genitore
+    r = subprocess.run(['ps', '-axo', 'pid=,ppid=,command='], capture_output=True, text=True)
+    n = 0
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[1] == '1' and 'scanimage' in parts[2] and dev in parts[2]:
+            pid = int(parts[0])
+            try:
+                os.kill(pid, signal.SIGTERM); n += 1
+                for _ in range(30):                      # fino a 3 s per fermarsi da solo
+                    time.sleep(0.1)
+                    os.kill(pid, 0)
+                os.kill(pid, signal.SIGKILL)            # mentre aspetta lo scanner non sente la richiesta gentile
+            except OSError:
+                pass                                    # gia' finito
+    if n:
+        time.sleep(2)                                   # lo scanner si libera
+    return n
 
 
 def available():
@@ -54,7 +91,7 @@ def options(dev, refresh=False):
     return o
 
 
-def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled=lambda: False):
+def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled=lambda: False, _retry=2):
     # area: (sinistra, alto, larghezza, altezza) in mm; None = il letto intero.
     # Scrive out + '.part' e lo rinomina solo se la scansione e' completa.
     args = [SCANIMAGE, '-d', dev, '--format=tiff', '--resolution', str(int(resolution)), '--mode', mode, '-p']
@@ -65,6 +102,7 @@ def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled
     with _busy:
         with open(tmp, 'wb') as f:
             p = subprocess.Popen(args, stdout=f, stderr=subprocess.PIPE, text=True, bufsize=1)
+            _running.add(p)
             err = []
             buf = ''
             while True:
@@ -83,8 +121,15 @@ def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled
                 if cancelled():
                     p.terminate()
             p.wait()
+            _running.discard(p)
         if p.returncode != 0 or os.path.getsize(tmp) == 0:
             os.remove(tmp)
+            # scanner occupato da una scansione rimasta orfana, o ancora confuso da una interrotta:
+            # si libera, si aspetta che si riprenda, si riprova (al massimo due volte)
+            if _retry and not cancelled() and any(k in e for e in err for k in ('open of device', 'device I/O', 'Device busy')):
+                clear_orphans(dev)
+                time.sleep(5)
+                return scan(dev, out, resolution, mode, area, progress, cancelled, _retry=_retry - 1)
             raise RuntimeError('scan failed: ' + ' / '.join(err[-3:]) if err else f'scanimage exit {p.returncode}')
         os.replace(tmp, out)
     return out

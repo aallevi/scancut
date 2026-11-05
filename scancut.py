@@ -874,6 +874,42 @@ def to_failed(path, why):
     log(f'{name}: {why} -> failed/')
 
 
+# ---------------------------------------------------------------- 16 bit
+# Una scansione a 48 bit colore o 16 bit grigio: i bordi si cercano sulla vista a 8 bit,
+# i pixel del ritaglio vengono dall'originale a 16 bit (stessa sagoma, raddrizzo, taglio).
+
+def load16(path):
+    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    if m is None or m.dtype != np.uint16 or (m.ndim == 3 and m.shape[2] != 3):
+        return None
+    return cv2.cvtColor(m, cv2.COLOR_BGR2RGB) if m.ndim == 3 else m
+
+
+def dpi_to_ppm(dpi, arr):
+    return dpi / 25.4 if dpi else arr.shape[1] / 216.0
+
+
+def cut16(deep, y, x, m, hm, exact, rgba8, ppm):
+    c = deep[y:y + m.shape[0], x:x + m.shape[1]]
+    if c.ndim == 2:
+        c = np.dstack([c, c, c])
+    col = cutout(c, m, hm, ppm, exact=exact)[0][..., :3]
+    if col.shape[:2] != rgba8.shape[:2]:
+        return None
+    a16 = rgba8[..., 3].astype(np.uint16) * 257
+    col = col.copy(); col[a16 == 0] = 0
+    return np.dstack([col, a16])
+
+
+def write16(out, rgba16, dpi, icc, gray=False):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from studio import png16
+    arr = np.dstack([rgba16[..., 0], rgba16[..., 3]]) if gray else rgba16
+    prof = icc if icc and len(icc) > 20 and icc[16:20] == (b'GRAY' if gray else b'RGB ') else None
+    png16.write(out + '.part', arr, dpi, prof)
+    os.replace(out + '.part', out)
+
+
 def process(keep):
     name = os.path.basename(keep)
     stem, ext = os.path.splitext(name)
@@ -895,9 +931,17 @@ def process(keep):
         log(f'{name}: moved away from originals while being cut, cutouts not saved')
         return batch, -1
     od = os.path.join(CUT, batch); os.makedirs(od, exist_ok=True)
-    for j, (_, _, rgba, ang, rect, _) in enumerate(sheets):
+    deep = load16(keep)                       # scansione a 16 bit per canale, o None
+    for j, (y, x, rgba, ang, rect, (m, hm, ex)) in enumerate(sheets):
         suffix = '' if len(sheets) == 1 else ' ' + 'abcdefghijklmnopqrstuvwxyz'[j % 26]
         out = os.path.join(od, stem + suffix + '.png')
+        if deep is not None:
+            rgba16 = cut16(deep, y, x, m, hm, ex, rgba, dpi_to_ppm(dpi, deep))
+            if rgba16 is not None:
+                out = unique(out)
+                write16(out, rgba16, dpi, icc, gray=deep.ndim == 2)
+                log(f'  {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  16 bit  tilt {ang:+.2f}')
+                continue
         if same_png(out, rgba):
             log(f'  {os.path.relpath(out, ROOT)}  already there, identical'); continue
         out = unique(out)

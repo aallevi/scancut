@@ -1401,7 +1401,13 @@ async function renderScanners() {
   bedCanvas(bed);
   renderScanSide(side);
 }
-function loadPreview() { const im = new Image(); im.onload = () => { SC.img = im; drawBed(); }; im.onerror = () => { SC.img = null; drawBed(); }; im.src = '/api/scanner_preview?t=' + Date.now(); }
+function loadAreaPreview() {
+  api.get('scanner_preview_area', { meta: 1 }).then(m => {
+    if (!m.area) return;
+    const im = new Image(); im.onload = () => { SC.zoom = { img: im, area: m.area }; drawBed(); }; im.src = '/api/scanner_preview_area?t=' + Date.now();
+  }).catch(() => {});
+}
+function loadPreview() { const im = new Image(); im.onload = () => { SC.img = im; SC.zoom = null; drawBed(); }; im.onerror = () => { SC.img = null; drawBed(); }; im.src = '/api/scanner_preview?t=' + Date.now(); }
 function renderScanSide(side) {
   side = side || $('.scanside'); if (!side) return; side.innerHTML = '';
   const o = SC.dev?.options || {};
@@ -1416,14 +1422,28 @@ function renderScanSide(side) {
     h('div', { class: 'btns' }, h('button', { class: 'btn', disabled: running, onclick: () => startScanJob('preview') }, 'Preview whole bed'), info('A quick 75 dpi scan of the whole bed (about 15 s), to see where your sheets are and draw the areas to scan.'))));
   const list = h('div');
   SC.areas.forEach((a, i) => {
-    const px = [Math.round(a[2] / 25.4 * SC.res), Math.round(a[3] / 25.4 * SC.res)];
-    const mb = px[0] * px[1] * (SC.mode.startsWith('Gray') || SC.mode.includes('gray') ? 1 : 3) * (SC.mode.includes('48') || SC.mode.includes('16') ? 2 : 1) / 1048576;
+    const ar = (a[4] && a[4].res) || SC.res, am = (a[4] && a[4].mode) || SC.mode;
+    const px = [Math.round(a[2] / 25.4 * ar), Math.round(a[3] / 25.4 * ar)];
+    const mb = px[0] * px[1] * (am.startsWith('Gray') || am.includes('gray') ? 1 : 3) * (am.includes('48') || am.includes('16') ? 2 : 1) / 1048576;
+    const own = a[4] || {}, res = own.res || SC.res, mode = own.mode || SC.mode;
     list.append(h('div', { class: 'sheet' + (i === SC.sel ? ' sel' : ''), onclick: () => { SC.sel = i; drawBed(); renderScanSide(); } },
       h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }), h('span', {}),
-      h('div', { class: 'nm' }, `${a[2].toFixed(0)} × ${a[3].toFixed(0)} mm`, h('small', {}, `${px[0]} × ${px[1]} px · ${mb.toFixed(0)} MB`)),
+      h('div', { class: 'nm' }, `${a[2].toFixed(0)} × ${a[3].toFixed(0)} mm`, h('small', {}, `${px[0]} × ${px[1]} px · ${mb.toFixed(0)} MB${a[4] ? ` · own: ${res} dpi, ${mode}` : ''}`)),
       h('button', { class: 'btn small', title: 'Remove this area', onclick: e => { e.stopPropagation(); SC.areas.splice(i, 1); SC.sel = -1; drawBed(); renderScanSide(); } }, '✕')));
   });
   if (!SC.areas.length) list.append(h('div', { class: 'muted small' }, 'No areas: the whole bed is scanned. Drag on the bed to draw an area, or add a format:'));
+  const cur = SC.areas[SC.sel];
+  if (cur) {
+    const own = cur[4] || {};
+    const setOwn = (k, v) => { const o = Object.assign({}, cur[4] || {}); if (v) o[k] = v; else delete o[k]; if (Object.keys(o).length) cur[4] = o; else cur.length = 4; renderScanSide(); };
+    list.append(h('div', { class: 'multi' }, h('div', { class: 'mh' }, `Area ${SC.sel + 1}`),
+      h('div', { class: 'row' }, h('label', {}, 'Resolution'), h('select', { class: 'f', onchange: e => setOwn('res', +e.target.value || null) },
+        h('option', { value: '' }, `as below (${SC.res} dpi)`), (o.resolutions || []).map(r => h('option', { value: r, selected: own.res === r }, r + ' dpi')))),
+      h('div', { class: 'row' }, h('label', {}, 'Colour'), h('select', { class: 'f', onchange: e => setOwn('mode', e.target.value || null) },
+        h('option', { value: '' }, `as below (${SC.mode})`), (o.modes || []).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: own.mode === m }, m)))),
+      h('div', { class: 'btns' }, h('button', { class: 'btn small', disabled: running, onclick: () => startScanJob('preview', cur) }, 'Preview this area (300 dpi)'),
+        info('A quick sharper look at just this area (a few seconds), drawn in place on the bed, to put the edges exactly where you want them.'))));
+  }
   const sets = S.settings.frame_sets || {};
   side.append(group('Areas', list,
     h('div', { class: 'chips', style: { marginTop: '6px' } }, PRESETS.map(([n, w, hh]) => h('span', { class: 'chip', title: `Add a ${n} area at the top left of the bed`, onclick: () => addArea(w, hh) }, n))),
@@ -1474,9 +1494,9 @@ function saveFrameSet() {
   }, true], ['Cancel', () => true]]);
   setTimeout(() => inp.focus(), 0);
 }
-async function startScanJob(kind) {
+async function startScanJob(kind, area) {
   if (!SC.dev) return;
-  const body = kind === 'preview' ? { kind, dev: SC.dev.id } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
+  const body = kind === 'preview' ? { kind, dev: SC.dev.id, area: area ? area.slice(0, 4) : null } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
   SC.job = await api.post('jobs', body).catch(e => (alertDialog('Scanner', e.message), null));
   if (!SC.job) return;
   renderScanSide();
@@ -1484,7 +1504,7 @@ async function startScanJob(kind) {
     const j = await api.get('job', { id: SC.job.id }).catch(() => null); if (!j) return;
     SC.job = j; if (S.view === 'scanners') renderScanSide();
     if (['queued', 'running'].includes(j.status)) return setTimeout(tick, 500);
-    if (j.kind === 'preview' && j.status === 'done') loadPreview();
+    if (j.kind === 'preview' && j.status === 'done') { if (j.args.area) loadAreaPreview(); else loadPreview(); }
     if (j.kind === 'scan' && j.status === 'done') { status(`${j.done} scan(s) in the inbox`); setTimeout(() => api.get('tree').then(t => { S.tree = t.tree; renderNav(); }), 1500); }
   };
   tick();
@@ -1534,6 +1554,7 @@ function drawBed() {
   const X = v => bedV.ox + v * bedV.s, Y = v => bedV.oy + v * bedV.s;
   c.save(); c.shadowColor = 'rgba(0,0,0,.35)'; c.shadowBlur = 10; c.shadowOffsetY = 2; c.fillStyle = '#f4f4f2'; c.fillRect(X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s); c.restore();
   if (SC.img) c.drawImage(SC.img, X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s);
+  if (SC.zoom) { const z = SC.zoom.area; c.drawImage(SC.zoom.img, X(z[0]), Y(z[1]), z[2] * bedV.s, z[3] * bedV.s); }
   else { c.fillStyle = '#7a8796'; c.font = '13px "Segoe UI", Tahoma, sans-serif'; c.textAlign = 'center'; c.fillText('Press “Preview whole bed” to see what is on the scanner', X(o.width_mm / 2), Y(o.height_mm / 2)); c.textAlign = 'left'; }
   const areas = SC.areas;
   if (areas.length) { c.save(); c.beginPath(); c.rect(X(0), Y(0), o.width_mm * bedV.s, o.height_mm * bedV.s); areas.forEach(a => c.rect(X(a[0]), Y(a[1]), a[2] * bedV.s, a[3] * bedV.s)); c.fillStyle = 'rgba(20,30,45,.35)'; c.fill('evenodd'); c.restore(); }
