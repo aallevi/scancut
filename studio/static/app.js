@@ -506,6 +506,12 @@ async function cutoutAction(action, items, deg) {
   } catch (e) { alertDialog('Cutouts', e.message); }
   S.sel.clear(); await refreshItems(); renderSide();
 }
+async function rotateOpenFile(deg) {
+  await flushSave();
+  status('Rotating…', true);
+  try { await api.post('cutouts', { action: 'rotate', rels: [S.rel], deg }); status(`Rotated ${deg > 0 ? 'right' : 'left'} 90°`); openScan(S.rel); }
+  catch (e) { alertDialog('Rotate', e.message); }
+}
 async function markChecked(rels) {
   const r = await api.post('checked', { rels });
   status(`${r.done.length} scan(s) marked as checked`);
@@ -575,6 +581,11 @@ function sideEditor(side) {
       h('button', { class: 'btn', disabled: !st?.sheets.some(s => s.on !== false), title: 'The same cutouts in a subfolder, e.g. to keep an odd but interesting cut next to the normal one', onclick: () => doExport(S.settings.export_subfolder || 'extra') }, `To ${S.settings.export_subfolder || 'extra'}/`),
       h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder'),
       S.rel.startsWith('failed/') ? h('button', { class: 'btn', onclick: () => markChecked([S.rel]) }, '✓ Checked') : null),
+    // un ritaglio gia' salvato aperto qui: girare il file stesso (senza perdita)
+    S.rel.startsWith('cut/') && /\.(png|jxl)$/i.test(S.rel) ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'This file'),
+      h('button', { class: 'btn small', title: 'Rotate this cutout file left, lossless', onclick: () => rotateOpenFile(-90) }, '⟲ 90°'),
+      h('button', { class: 'btn small', title: 'Rotate this cutout file right, lossless', onclick: () => rotateOpenFile(90) }, '⟳ 90°'),
+      info('Rotates the saved file itself (pixels moved, never resampled). The previous version is kept in studio-data/replaced; metadata and true size carry over.')) : null,
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
   side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));

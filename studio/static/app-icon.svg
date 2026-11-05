@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- icona di Scan Studio: piastrella blu Vista lucida con lo scanner (scanner.svg) -->
+  <!-- icona di Scan Studio: piastrella blu Vista lucida, lo scanner visto di fronte (grafite,
+       luce verde nella fessura, tasti a destra) e un punto di luce sul bordo, a un terzo da sinistra -->
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#8fd0f7"/><stop offset=".48" stop-color="#2f8fd8"/><stop offset=".52" stop-color="#1a72c2"/><stop offset="1" stop-color="#0d4f99"/>
@@ -8,86 +9,78 @@
       <stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity=".05"/>
     </linearGradient>
     <radialGradient id="tileGlow" cx=".5" cy="1" r=".6"><stop offset="0" stop-color="#7fe8ff" stop-opacity=".55"/><stop offset="1" stop-color="#7fe8ff" stop-opacity="0"/></radialGradient>
-  </defs>
-  <rect x="84" y="84" width="856" height="856" rx="190" fill="url(#tile)"/>
-  <rect x="84" y="84" width="856" height="856" rx="190" fill="url(#tileGlow)"/>
-  <path d="M84 274 Q84 84 274 84 L750 84 Q940 84 940 274 L940 470 Q512 560 84 430 Z" fill="url(#tileHi)"/>
-  <rect x="86" y="86" width="852" height="852" rx="188" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="4"/>
-  <svg x="150" y="170" width="724" height="724" viewBox="100 190 820 820"><defs>
-    <linearGradient id="lidTop" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#5b6470"/><stop offset=".45" stop-color="#2c323b"/><stop offset="1" stop-color="#14181d"/>
+    <linearGradient id="lid" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#20262e"/><stop offset=".55" stop-color="#3c4550"/><stop offset="1" stop-color="#58626e"/>
     </linearGradient>
     <linearGradient id="lidShine" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".42" stop-color="#fff" stop-opacity=".0"/>
-      <stop offset=".5" stop-color="#fff" stop-opacity=".28"/><stop offset=".62" stop-color="#fff" stop-opacity=".0"/>
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".55" stop-color="#fff" stop-opacity="0"/>
+      <stop offset=".63" stop-color="#fff" stop-opacity=".22"/><stop offset=".72" stop-color="#fff" stop-opacity="0"/>
     </linearGradient>
     <linearGradient id="front" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3a414b"/><stop offset=".5" stop-color="#1b1f25"/><stop offset="1" stop-color="#0b0d10"/>
-    </linearGradient>
-    <linearGradient id="side" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#2a3038"/><stop offset="1" stop-color="#11141a"/>
+      <stop offset="0" stop-color="#2b3139"/><stop offset=".5" stop-color="#15191e"/><stop offset="1" stop-color="#090b0e"/>
     </linearGradient>
     <linearGradient id="green" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#7dff8f" stop-opacity="0"/><stop offset=".15" stop-color="#9dffb0"/><stop offset=".85" stop-color="#9dffb0"/><stop offset="1" stop-color="#7dff8f" stop-opacity="0"/>
-    </linearGradient>
-    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#e9ecef"/>
+      <stop offset="0" stop-color="#7dff8f" stop-opacity="0"/><stop offset=".1" stop-color="#a6ffb6"/><stop offset=".9" stop-color="#a6ffb6"/><stop offset="1" stop-color="#7dff8f" stop-opacity="0"/>
     </linearGradient>
     <radialGradient id="glow" cx=".5" cy=".5" r=".5">
-      <stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset=".18" stop-color="#e8f6ff" stop-opacity=".85"/>
-      <stop offset=".5" stop-color="#bfe6ff" stop-opacity=".25"/><stop offset="1" stop-color="#bfe6ff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#fff"/><stop offset=".18" stop-color="#eef8ff" stop-opacity=".85"/>
+      <stop offset=".5" stop-color="#c4e8ff" stop-opacity=".25"/><stop offset="1" stop-color="#c4e8ff" stop-opacity="0"/>
     </radialGradient>
     <linearGradient id="ray" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset=".5" stop-color="#fff" stop-opacity=".95"/><stop offset="1" stop-color="#fff" stop-opacity="0"/>
     </linearGradient>
-    <filter id="blur18"><feGaussianBlur stdDeviation="18"/></filter>
-    <filter id="blur3"><feGaussianBlur stdDeviation="3"/></filter>
-    <filter id="soft"><feGaussianBlur stdDeviation="1.2"/></filter>
+    <filter id="b16"><feGaussianBlur stdDeviation="16"/></filter>
+    <filter id="b3"><feGaussianBlur stdDeviation="3"/></filter>
+    <filter id="b1"><feGaussianBlur stdDeviation="1.5"/></filter>
+    <clipPath id="tileClip"><rect x="84" y="84" width="856" height="856" rx="190"/></clipPath>
   </defs>
 
-  <!-- ombra sul piano -->
-  <ellipse cx="555" cy="712" rx="330" ry="44" fill="#000" opacity=".32" filter="url(#blur18)"/>
+  <!-- piastrella -->
+  <rect x="84" y="84" width="856" height="856" rx="190" fill="url(#tile)"/>
+  <rect x="84" y="84" width="856" height="856" rx="190" fill="url(#tileGlow)"/>
+  <g clip-path="url(#tileClip)">
+    <!-- ombra dello scanner sul fondo -->
+    <ellipse cx="512" cy="640" rx="360" ry="34" fill="#00152e" opacity=".55" filter="url(#b16)"/>
 
-  <!-- il foglio che esce da sinistra, con un disegno a matita -->
-  <g transform="rotate(-8 300 560)">
-    <path d="M118 470 L470 418 L520 640 L168 694 Z" fill="url(#paper)" stroke="#c9ced4" stroke-width="2"/>
-    <g fill="none" stroke="#3c4148" stroke-width="5" stroke-linecap="round" opacity=".8">
-      <path d="M210 600 C230 520 300 500 330 540 S 380 600 420 520"/>
-      <path d="M240 610 C270 570 320 590 350 560"/>
-      <circle cx="300" cy="520" r="26"/>
+    <!-- coperchio, visto appena dall'alto -->
+    <path d="M238 440 L786 440 L842 506 L182 506 Z" fill="url(#lid)"/>
+    <path d="M238 440 L786 440 L842 506 L182 506 Z" fill="url(#lidShine)"/>
+    <path d="M238 440 L786 440" stroke="#6d7886" stroke-width="3"/>
+    <path d="M182 506 L842 506" stroke="#a7b3c1" stroke-width="3" opacity=".8"/>
+    <!-- la righina chiara della scritta sul coperchio -->
+    <path d="M470 468 h84" stroke="#c4ccd6" stroke-width="5" stroke-linecap="round" opacity=".45"/>
+
+    <!-- fessura con la luce verde di scansione -->
+    <rect x="182" y="506" width="660" height="10" fill="#07090b"/>
+    <path d="M200 511 H824" stroke="url(#green)" stroke-width="8" filter="url(#b1)"/>
+    <path d="M200 511 H824" stroke="#d6ffe0" stroke-width="2.5" opacity=".95"/>
+
+    <!-- fronte -->
+    <rect x="182" y="516" width="660" height="78" rx="6" fill="url(#front)"/>
+    <path d="M188 520 H836" stroke="#4b5560" stroke-width="2" opacity=".8"/>
+    <!-- tasti EZ a destra, con la lucina verde -->
+    <g fill="#3d4651" stroke="#0b0e12" stroke-width="2">
+      <rect x="652" y="542" width="34" height="24" rx="5"/><rect x="696" y="542" width="34" height="24" rx="5"/>
+      <rect x="740" y="542" width="34" height="24" rx="5"/><rect x="784" y="542" width="34" height="24" rx="5"/>
     </g>
+    <g fill="#9aa6b3" opacity=".9">
+      <rect x="663" y="551" width="12" height="6" rx="2"/><rect x="707" y="551" width="12" height="6" rx="2"/>
+      <rect x="751" y="551" width="12" height="6" rx="2"/><rect x="795" y="551" width="12" height="6" rx="2"/>
+    </g>
+    <circle cx="214" cy="555" r="6" fill="#6dff7c"/><circle cx="214" cy="555" r="12" fill="#6dff7c" opacity=".3" filter="url(#b3)"/>
   </g>
 
-  <!-- corpo: fianco sinistro, fronte, coperchio -->
-  <path d="M226 520 L226 566 L392 690 L392 644 Z" fill="url(#side)"/>
-  <path d="M392 644 L392 690 L872 586 L872 540 Z" fill="url(#front)"/>
-  <!-- luce verde di scansione lungo il bordo davanti -->
-  <path d="M410 652 L860 556" stroke="url(#green)" stroke-width="7" stroke-linecap="round" filter="url(#soft)"/>
-  <path d="M410 652 L860 556" stroke="#c9ffd4" stroke-width="2" stroke-linecap="round" opacity=".9"/>
-  <!-- coperchio -->
-  <path d="M226 520 L702 418 L872 540 L392 644 Z" fill="url(#lidTop)"/>
-  <path d="M226 520 L702 418 L872 540 L392 644 Z" fill="url(#lidShine)"/>
-  <!-- bordino lucido del coperchio -->
-  <path d="M226 520 L702 418 L872 540" fill="none" stroke="#9aa5b2" stroke-width="3" opacity=".7"/>
-  <path d="M392 644 L872 540" fill="none" stroke="#0a0c0f" stroke-width="3"/>
-  <!-- cerniere e tasti EZ a destra -->
-  <path d="M640 446 l40 -9 M560 463 l40 -9" stroke="#0e1115" stroke-width="7" stroke-linecap="round"/>
-  <g fill="#4a525d" stroke="#0c0f13" stroke-width="2">
-    <rect x="770" y="562" width="22" height="9" rx="3" transform="rotate(-12 781 566)"/>
-    <rect x="800" y="556" width="22" height="9" rx="3" transform="rotate(-12 811 560)"/>
-    <rect x="830" y="549" width="22" height="9" rx="3" transform="rotate(-12 841 553)"/>
-  </g>
-  <!-- "Canon"-free logo spot: una righina chiara come la scritta sul coperchio -->
-  <path d="M470 600 l90 -19" stroke="#c4ccd6" stroke-width="5" stroke-linecap="round" opacity=".55"/>
+  <!-- riflesso lucido della piastrella, sopra a tutto come il vetro -->
+  <path d="M84 274 Q84 84 274 84 L750 84 Q940 84 940 274 L940 420 Q512 500 84 400 Z" fill="url(#tileHi)" opacity=".85"/>
+  <rect x="86" y="86" width="852" height="852" rx="188" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width="4"/>
 
-  <!-- il punto di luce: in alto a sinistra, sul bordo del coperchio (un terzo dall'angolo) -->
-  <g transform="translate(386 486)">
-    <circle r="120" fill="url(#glow)"/>
-    <rect x="-210" y="-3" width="420" height="6" fill="url(#ray)" filter="url(#blur3)"/>
-    <rect x="-150" y="-3" width="300" height="6" fill="url(#ray)" transform="rotate(90)" filter="url(#blur3)" opacity=".9"/>
-    <rect x="-110" y="-2" width="220" height="4" fill="url(#ray)" transform="rotate(45)" opacity=".7"/>
-    <rect x="-110" y="-2" width="220" height="4" fill="url(#ray)" transform="rotate(-45)" opacity=".7"/>
+  <!-- il punto di luce: sul bordo del coperchio, a un terzo da sinistra -->
+  <g transform="translate(402 506)">
+    <circle r="130" fill="url(#glow)"/>
+    <rect x="-230" y="-3" width="460" height="6" fill="url(#ray)" filter="url(#b3)"/>
+    <rect x="-160" y="-3" width="320" height="6" fill="url(#ray)" transform="rotate(90)" filter="url(#b3)" opacity=".9"/>
+    <rect x="-115" y="-2" width="230" height="4" fill="url(#ray)" transform="rotate(45)" opacity=".7"/>
+    <rect x="-115" y="-2" width="230" height="4" fill="url(#ray)" transform="rotate(-45)" opacity=".7"/>
     <circle r="16" fill="#fff"/>
   </g>
-</svg>
 </svg>
