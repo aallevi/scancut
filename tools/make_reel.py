@@ -1,36 +1,37 @@
 # rifa il video di Scan Studio: voce (say), registrazioni dell interfaccia vera (tools/reel), didascalie di vetro (ffmpeg)
-# uso: avviare lo studio su una copia di prova (porta 8799), poi DEMO=<copia> python3 -I tools/make_reel.py
+# uso: scansioni inventate (tools/make_demo_scans.py) in una copia di prova, lo studio su quella (porta 8799),
+# poi DEMO=<copia> python3 -I tools/make_reel.py
 import os, subprocess, json, shutil, sys, time
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.expanduser('~/Scans/.scancut')
+REPO = os.path.dirname(HERE)
 REEL = os.path.join(REPO, 'tools', 'reel')
 FF = shutil.which('ffmpeg') or 'ffmpeg'
 FP = shutil.which('ffprobe') or 'ffprobe'
 W, H, FPS = 1280, 800, 12
 URL = 'http://127.0.0.1:8799/'
 VOICE, RATE = 'Fred', '172'
-SK = 'originals%2Fsk%2Fsk%201.jpg'
-CARD = 'originals%2Fcard%2Fcard%201.png'
+SK = 'originals%2Fsketchbook%2Fsketchbook%201.png'
+CARD = 'originals%2Fstudies%2Fstudies%201.png'
 
 # (name, url, caption, narration, js)
 SCENES = [
  ('gallery', URL, 'Scans land in a folder. Open one.',
   'Scans land in a folder. You open one.',
-  "(async()=>{await sleep(900); openDir('originals/sk'); await sleep(1600); const t=document.querySelector('.thumb'); t&&t.classList.add('sel'); await sleep(900); openScan('originals/sk/sk 1.jpg');})();"),
+  "(async()=>{await sleep(900); openDir('originals/sketchbook'); await sleep(1600); const t=document.querySelector('.thumb'); t&&t.classList.add('sel'); await sleep(900); openScan('originals/sketchbook/sketchbook 1.png');})();"),
  ('otsu', URL + '#' + SK, 'Pick a method. Here: Otsu threshold, edge from real pixels.',
   'Pick a method. Otsu threshold. Classic lid colour. Apple Vision. Or SAM 3 on the local GPU.',
   "(async()=>{await ready(); await sleep(500); S.engine='otsu'; renderSide(); await sleep(1200); detect(null,'otsu');})();"),
  ('loupe', URL + '#' + SK, 'Densitometer and loupe: the real values under the cursor.',
   'Only transparency changes. Nothing is painted. The densitometer and the loupe show the real values under the cursor.',
-  "(async()=>{await ready(); S.loupe=true; for(let i=0;i<6;i++){zoomAt(1.32,...toScr(820,1450)); await sleep(60);} await sleep(300); for(const p of [[840,1300],[812,1450],[790,1600]]){const [sx,sy]=toScr(...p); mouse=p; measure(p,sx,sy); await sleep(1100);} })();"),
+  "(async()=>{await ready(); S.loupe=true; for(let i=0;i<6;i++){zoomAt(1.32,...toScr(1290,1650)); await sleep(60);} await sleep(300); for(const p of [[1275,1600],[1250,1750],[1394,1697]]){const [sx,sy]=toScr(...p); mouse=p; measure(p,sx,sy); await sleep(1100);} })();"),
  ('wand', URL + '#' + SK, 'Magic Wand, Intersect, Contiguous off: only the ink inside the page.',
   'Magic wand. Intersect. Contiguous off. Only the ink inside the page.',
-  "(async()=>{await ready(); setTool('wand'); S.wandContig=false; S.wandTol=60; setMode('int'); S.selSheet=S.st.sheets[0].id; renderSide(); draw(); await sleep(1500); await wandAt([1188,900],'int'); await sleep(1500); cutoutDialog(S.st.sheets[0]);})();"),
+  "(async()=>{await ready(); setTool('wand'); S.wandContig=false; S.wandTol=60; setMode('int'); S.selSheet=S.st.sheets[0].id; renderSide(); draw(); await sleep(800); await wandAt([1394,1697],'int'); await sleep(500); cutoutDialog(S.st.sheets[0]);})();"),
  ('sam', URL + '#' + SK, 'SAM 3: a text prompt, then click the object you want.',
   'SAM 3. A text prompt. Click the object you want.',
-  "(async()=>{await ready(); S.engine='sam3'; S.params.prompt='sheet of paper'; renderSide(); setTool('sam'); await sleep(1300); samClick([1500,3000],true);})();"),
+  "(async()=>{await ready(); S.engine='sam3'; S.params.prompt='sheet of paper'; renderSide(); setTool('sam'); await sleep(1300); samClick([1275,1754],true);})();"),
  ('corner', URL + '#' + CARD, 'Format from a corner: an exact A5 from the bottom left. No detection. Batch it.',
   'Fixed formats from a corner. A5, bottom left. No detection. Batch it.',
   "(async()=>{await ready(); S.engine='corner'; S.params.format='A5'; renderSide(); await sleep(1300); detect(null,'corner'); await sleep(1800); cutoutDialog(S.st.sheets.at(-1));})();"),
@@ -140,6 +141,25 @@ def still_video(img, audio, out, seconds):
          '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', '-b:a', '128k', '-t', '%.2f' % seconds, out])
 
 
+def warm_up(demo):
+    # prima di registrare: anteprime, scanner e SAM 3 gia' pronti (le scene durano quanto la voce)
+    import urllib.request, urllib.parse
+    def get(path, **q):
+        return urllib.request.urlopen(URL + 'api/' + path + '?' + urllib.parse.urlencode(q), timeout=300).read()
+    def post(path, body):
+        r = urllib.request.Request(URL + 'api/' + path, json.dumps(body).encode(), {'X-Studio': '1', 'Content-Type': 'application/json'})
+        return urllib.request.urlopen(r, timeout=600).read()
+    rels = [urllib.parse.unquote(x) for x in (SK, CARD)]
+    for rel in rels:
+        get('preview', rel=rel); get('thumb', rel=rel); get('info', rel=rel)
+    get('scanners')
+    post('detect', {'rel': rels[0], 'engine': 'sam3', 'params': {'prompt': 'sheet of paper'}})
+    # lo stato fatto qui non deve comparire nel video
+    st = os.path.join(demo, '.scancut/studio-data/state')
+    shutil.rmtree(st, ignore_errors=True); os.makedirs(st)
+    print('warmed up')
+
+
 def main(only=None):
     work = os.path.join(HERE, 'work'); os.makedirs(work, exist_ok=True)
     if not only:
@@ -151,6 +171,8 @@ def main(only=None):
         os.makedirs(os.path.join(demo, '.scancut/studio-data/state'))
         sp = os.path.join(demo, '.scancut/studio-data/settings.json')
         if os.path.exists(sp): os.remove(sp)
+    if not only:
+        warm_up(os.environ['DEMO'])
     parts = []
     for i, (name, url, cap, nar, js) in enumerate(SCENES):
         if only and name not in only:

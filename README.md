@@ -6,6 +6,8 @@
 
 ![Scan Studio editor: three sheets found on a grey card](docs/images/editor.png)
 
+<p align="center"><a href="https://github.com/aallevi/scancut/releases/download/v0.9.0-beta/scan-studio-reel.mp4">▶ One-minute video tour (MP4)</a></p>
+
 I scan lots of drawings and sketchbook pages and wanted the paper out of the scan with its real
 edge: fibres, tears and punch holes included, nothing painted in. scancut does that automatically
 for every scan that lands in a folder. Scan Studio is the window around it, styled after Windows
