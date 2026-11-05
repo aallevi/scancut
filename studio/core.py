@@ -1461,6 +1461,8 @@ def _pixels(path):
     try:
         info = Image.open(src).info
         dpi = (info.get('dpi') or (0, 0))[0] or None
+        if dpi and dpi < 10:
+            dpi = None                     # il segnaposto "1 dpi" del decoder, non una misura
         icc = info.get('icc_profile')
         m = cv2.imread(src, cv2.IMREAD_UNCHANGED)
         if m is not None and m.dtype == np.uint16:
