@@ -454,6 +454,7 @@ function sideGallery(side) {
       h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate left, lossless', onclick: () => cutoutAction('rotate', sel, -90) }, '⟲ 90°'),
       h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate right, lossless', onclick: () => cutoutAction('rotate', sel, 90) }, '⟳ 90°'),
       h('button', { class: 'btn small', disabled: !sel.length, onclick: () => cutoutAction('ocr', sel) }, 'Text (OCR)'),
+      h('button', { class: 'btn small', disabled: sel.length < 2, title: 'One TIFF with a page per selected cutout, in name order', onclick: () => cutoutAction('merge', sel) }, 'Merge into multipage TIFF'),
       h('button', { class: 'btn small', disabled: !sel.length, onclick: () => cutoutAction('trash', sel) }, 'Move to Trash'),
       info('Rotation moves pixels, never resamples; the previous file is kept in studio-data/replaced and the metadata (true size) is carried over. Text (OCR): Apple Vision reads any writing on the cutout and stores it in the file description (XMP, IPTC, EXIF), pixels untouched. Trash: the Mac Trash, so you can put files back.')),
     h('div', { class: 'small muted', style: { marginTop: '4px' } }, sel.length ? `${sel.length} selected` : 'Select cutouts (⌘-click, ⇧-click, ⌘A).')));
@@ -492,16 +493,16 @@ function drawHist(hc) {
   c.fillStyle = '#555'; c.font = '20px "Segoe UI", Tahoma'; c.fillText(S.histLog ? 'log' : 'linear', W - 70, 24);
 }
 async function cutoutAction(action, items, deg) {
-  const rels = items.map(i => i.rel);
+  const rels = items.map(i => i.rel).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   if (action === 'trash') {
     const ok = await choose('Move to Trash', `Move ${rels.length} cutout(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. You can put them back from the Trash.', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
     if (!ok) return;
   }
-  status({ rotate: 'Rotating…', ocr: 'Reading text…', trash: 'Moving to Trash…' }[action], true);
+  status({ rotate: 'Rotating…', ocr: 'Reading text…', trash: 'Moving to Trash…', merge: 'Merging…' }[action], true);
   try {
     const r = await api.post('cutouts', { action, rels, deg });
     if (action === 'ocr') alertDialog('Text found', h('pre', { class: 'log' }, r.done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n')));
-    status(`${r.done.length} cutout(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
+    status(action === 'merge' ? `Merged into ${r.done[0]}` : `${r.done.length} cutout(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
   } catch (e) { alertDialog('Cutouts', e.message); }
   S.sel.clear(); await refreshItems(); renderSide();
 }

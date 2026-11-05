@@ -1454,6 +1454,59 @@ def mark_checked(rels, log=print):
     return done
 
 
+def _pixels(path):
+    # i pixel di un ritaglio come sono (8 o 16 bit, grigio o colore, con l'alfa), dpi e profilo
+    from . import png16
+    src, tmp = _readable(path)
+    try:
+        info = Image.open(src).info
+        dpi = (info.get('dpi') or (0, 0))[0] or None
+        icc = info.get('icc_profile')
+        m = cv2.imread(src, cv2.IMREAD_UNCHANGED)
+        if m is not None and m.dtype == np.uint16:
+            arr = png16.read(src)
+            if arr.ndim == 3 and arr.shape[2] == 2:
+                pass
+        else:
+            im = Image.open(src)
+            im = im.convert('LA' if im.mode in ('L', 'LA') else 'RGBA')
+            arr = np.asarray(im)
+    finally:
+        if tmp and os.path.exists(src):
+            os.remove(src)
+    if not dpi and shutil.which('exiftool'):
+        # il JPEG XL decodificato non porta la misura: si legge dai suoi metadati
+        r = subprocess.run(['exiftool', '-s3', '-n', '-IFD0:XResolution', '-XMP-tiff:XResolution', path], capture_output=True, text=True)
+        v = [x for x in r.stdout.split() if x.replace('.', '', 1).isdigit()]
+        dpi = float(v[0]) if v else None
+    return arr, dpi, icc
+
+
+def merge_tiff(rels, log=print):
+    # un TIFF a piu' pagine, una per ritaglio, nell'ordine dato: senza perdita (deflate), 16 bit
+    # se ci sono, trasparenza come alfa vera, misura (dpi) e profilo di ogni pagina, nome di origine
+    import tifffile
+    paths = [abspath(r) for r in rels]
+    first = paths[0]
+    out = sc.unique(os.path.join(os.path.dirname(first), os.path.splitext(os.path.basename(first))[0] + ' merged.tif'))
+    with tifffile.TiffWriter(out + '.part', bigtiff=False) as tw:
+        for p in paths:
+            arr, dpi, icc = _pixels(p)
+            ch = arr.shape[2] if arr.ndim == 3 else 1
+            extra = {}
+            if icc:
+                extra['iccprofile'] = icc
+            tw.write(arr, photometric='minisblack' if ch in (1, 2) else 'rgb',
+                     extrasamples=('unassalpha',) if ch in (2, 4) else None,
+                     compression='adobe_deflate', compressionargs={'level': 6}, predictor=True,
+                     resolution=(dpi, dpi) if dpi else None, resolutionunit='inch' if dpi else None,
+                     description=os.path.basename(p), software='Scan Studio', metadata=None, **extra)
+            log(f'  page: {os.path.basename(p)}  {arr.shape[1]}x{arr.shape[0]}  {arr.dtype}')
+    os.replace(out + '.part', out)
+    sc.log(f'studio: merged {len(paths)} cutouts into {os.path.relpath(out, ROOT)}')
+    return out
+
+
 def eagle_add(paths, log=print):
     # Eagle ascolta in locale sulla porta 41595
     import urllib.request

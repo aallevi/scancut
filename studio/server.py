@@ -371,6 +371,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'done': core.rotate_files(rels, int(b.get('deg', 90)))})
             if act == 'ocr':
                 return self.send({'done': core.ocr_files(rels)})
+            if act == 'merge':
+                return self.send({'done': [core.relpath(core.merge_tiff(rels))]})
             if act == 'trash':
                 return self.send({'done': core.trash_files(rels)})
             return self.send({'error': 'unknown action'}, code=400)
