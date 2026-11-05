@@ -402,3 +402,6 @@ html.native .window { overflow: hidden; }
 .dens .dh:hover .dtog { box-shadow: 0 0 5px rgba(120,200,255,.9); }
 .dens.collapsed { padding-bottom: 0; }
 .dens.collapsed .dc { display: none; }
+
+.orb.big { width: 84px; height: 84px; margin: 0 auto; cursor: default; }
+.orb.big svg { width: 38px; height: 38px; }

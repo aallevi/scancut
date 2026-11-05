@@ -72,7 +72,12 @@ def options(dev, refresh=False):
     key = 'opt:' + dev
     if key in _cache and not refresh:
         return _cache[key]
-    r = subprocess.run([SCANIMAGE, '-d', dev, '-A'], capture_output=True, text=True, timeout=60)
+    try:
+        r = subprocess.run([SCANIMAGE, '-d', dev, '-A'], capture_output=True, text=True, timeout=20)
+    except subprocess.TimeoutExpired:
+        return {'error': 'not responding'}             # bloccato: non si tiene a mente, si riprova
+    if r.returncode != 0:
+        return {'error': (r.stderr.strip().splitlines() or ['not responding'])[-1]}
     txt = r.stdout
     o = {'resolutions': [], 'modes': [], 'width_mm': 216.0, 'height_mm': 297.0}
     m = re.search(r'--resolution\s+(?:auto\|)?([\d|]+)dpi', txt)

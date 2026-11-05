@@ -1150,7 +1150,7 @@ function closePoly() {
   draw();
 }
 document.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea, select')) return;
+  if (e.target.closest?.('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
   if ((mod && k === '[') || (e.altKey && k === 'ArrowLeft')) { e.preventDefault(); return navBack(); }
@@ -1162,6 +1162,8 @@ document.addEventListener('keydown', e => {
     if (k === 'ArrowRight') step(1); if (k === 'ArrowLeft') step(-1);
     return;
   }
+  if (S.view === 'scanners' && k === ' ' && SC.spaceMode) { e.preventDefault(); return scanNextPage(); }
+  if (S.view === 'scanners' && k === 'Escape' && SC.timed) return stopTimed();
   if (S.view === 'scanners' && (k === 'Delete' || k === 'Backspace') && SC.sel >= 0) { SC.areas.splice(SC.sel, 1); SC.sel = -1; drawBed(); renderScanSide(); return; }
   if (S.view !== 'editor') return;
   if (k === ' ') { if (!spaceDown) { spaceDown = true; cv.style.cursor = 'grab'; } e.preventDefault(); return; }
@@ -1418,8 +1420,10 @@ async function renderScanners() {
   main.append(addressBar(null, null, 'Scanners'), h('div', { class: 'scanpage' }, bed, side));
   side.append(h('div', { class: 'group' }, h('div', { class: 'gh' }, 'Scanner'), h('div', { class: 'muted' }, 'Looking for scanners…')));
   if (!SC.devs) {
-    const r = await api.get('scanners').catch(e => ({ error: e.message }));
-    if (S.view !== 'scanners') return;
+    const r = await api.get('scanners', SC.retry ? { refresh: 1 } : undefined).catch(e => ({ error: e.message, available: true, devices: [] }));
+    SC.retry = true;
+    // nel frattempo la pagina puo' essere stata ridisegnata: questa e' vecchia, non tocca niente
+    if (S.view !== 'scanners' || !bed.isConnected) return;
     if (!r.available) {
       side.innerHTML = '';
       side.append(group('Scanner driver', h('div', {}, 'Scanning needs SANE, the open-source scanner driver (the only one that gives the LiDE 400 its 48-bit mode on the Mac).'),
@@ -1432,6 +1436,7 @@ async function renderScanners() {
     SC.res = S.settings.scan_res || 600; SC.mode = S.settings.scan_mode || 'Color'; SC.batch = S.settings.scan_batch || 'scan';
     loadPreview();
   }
+  if (!bed.isConnected) return;
   bedCanvas(bed);
   renderScanSide(side);
 }
@@ -1445,6 +1450,12 @@ function loadPreview() { const im = new Image(); im.onload = () => { SC.img = im
 function renderScanSide(side) {
   side = side || $('.scanside'); if (!side) return; side.innerHTML = '';
   const o = SC.dev?.options || {};
+  if (SC.dev && o.error) {
+    side.append(group('Scanner', h('div', { style: { color: '#b03030' } }, `${SC.dev.name} is connected but not responding (${o.error}).`),
+      h('div', { class: 'small', style: { margin: '6px 0' } }, 'This happens after a scan was cut off halfway. Unplug the scanner’s USB cable for about 10 seconds, plug it back in, then:'),
+      h('button', { class: 'btn default', onclick: () => { SC.devs = null; renderScanners(); } }, 'Look again')));
+    return;
+  }
   if (!SC.devs.length) {
     side.append(group('Scanner', h('div', { class: 'muted' }, 'No scanner found. Plug in the LiDE 400, switch it on, then '), h('button', { class: 'btn', onclick: () => { SC.devs = null; renderScanners(); } }, 'Look again')));
     return;
@@ -1501,6 +1512,16 @@ function renderScanSide(side) {
       info('Scans are named “<batch> <number>.tif” and go to the inbox; the agent moves them to originals/<batch>/ and cuts them, like your Image Capture scans.')),
     h('div', { class: 'small muted', id: 'nextname' }, '')));
   nextName();
+  SC.every = SC.every || 15;
+  side.append(group('Session',
+    h('div', { class: 'small muted' }, 'For many pages by hand: put a page on the bed, scan, swap, repeat. Every scan gets the next number in the batch.'),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (anywhere on this page) to scan the next page with the current areas and settings.')),
+    SC.spaceMode ? h('div', { style: { textAlign: 'center', margin: '8px 0' } },
+      h('div', { class: 'orb big', title: 'Scan the next page (Space)', onclick: scanNextPage }, svg(I.orb_cut)), h('div', { class: 'small muted' }, 'Space · next page')) : null,
+    h('div', { class: 'row' }, h('label', {}, 'Every'), h('input', { type: 'number', min: 3, max: 600, step: 1, value: SC.every, class: 'f', onchange: e => { SC.every = Math.max(3, +e.target.value || 15); } }), h('span', { class: 'muted' }, 's'),
+      SC.timed ? h('button', { class: 'btn', onclick: stopTimed }, 'Stop') : h('button', { class: 'btn', disabled: running, onclick: startTimed }, 'Start timed'),
+      info('Timed scanning: a countdown with three beeps, then a scan, again and again, so you can swap pages without touching the Mac. Stop or Esc ends it.')),
+    h('div', { class: 'small' }, `Pages this session: ${SC.pages || 0}`)));
   const pct = running ? Math.round(SC.job.pct || 0) : 0;
   side.append(group('Scan',
     h('div', { class: 'btns' }, h('button', { class: 'btn default', style: { minWidth: '140px', height: '28px' }, disabled: running, onclick: () => startScanJob('scan') },
@@ -1532,17 +1553,49 @@ async function startScanJob(kind, area) {
   if (!SC.dev) return;
   const body = kind === 'preview' ? { kind, dev: SC.dev.id, area: area ? area.slice(0, 4) : null } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
   SC.job = await api.post('jobs', body).catch(e => (alertDialog('Scanner', e.message), null));
-  if (!SC.job) return;
+  if (!SC.job) return null;
   renderScanSide();
-  const tick = async () => {
-    const j = await api.get('job', { id: SC.job.id }).catch(() => null); if (!j) return;
-    SC.job = j; if (S.view === 'scanners') renderScanSide();
-    if (['queued', 'running'].includes(j.status)) return setTimeout(tick, 500);
-    if (j.kind === 'preview' && j.status === 'done') { if (j.args.area) loadAreaPreview(); else loadPreview(); }
-    if (j.kind === 'scan' && j.status === 'done') { status(`${j.done} scan(s) in the inbox`); setTimeout(() => api.get('tree').then(t => { S.tree = t.tree; renderNav(); }), 1500); }
-  };
-  tick();
+  return new Promise(resolve => {
+    const tick = async () => {
+      const j = await api.get('job', { id: SC.job.id }).catch(() => null); if (!j) return resolve(null);
+      SC.job = j; if (S.view === 'scanners') renderScanSide();
+      if (['queued', 'running'].includes(j.status)) return setTimeout(tick, 500);
+      if (j.kind === 'preview' && j.status === 'done') { if (j.args.area) loadAreaPreview(); else loadPreview(); }
+      if (j.kind === 'scan' && j.status === 'done') { SC.pages = (SC.pages || 0) + j.done; status(`${j.done} scan(s) in the inbox`); setTimeout(() => api.get('tree').then(t => { S.tree = t.tree; renderNav(); }), 1500); }
+      resolve(j);
+    };
+    tick();
+  });
 }
+// sessione pagina per pagina: Spazio per la prossima, o a tempo con il conto alla rovescia
+let beepCtx = null;
+function beep(f = 880, ms = 90) {
+  try {
+    beepCtx = beepCtx || new AudioContext();
+    const o = beepCtx.createOscillator(), g = beepCtx.createGain();
+    o.frequency.value = f; g.gain.value = 0.06; o.connect(g); g.connect(beepCtx.destination); o.start(); o.stop(beepCtx.currentTime + ms / 1000);
+  } catch (e) {}
+}
+async function scanNextPage() {
+  if (!SC.dev || (SC.job && ['queued', 'running'].includes(SC.job.status))) return;
+  await startScanJob('scan');
+}
+async function startTimed() {
+  SC.timed = true; renderScanSide();
+  while (SC.timed && S.view === 'scanners') {
+    for (let t = SC.every; t > 0 && SC.timed; t--) {
+      SC.countdown = t; drawBed();
+      if (t <= 3) beep(t === 1 ? 1320 : 880);
+      await new Promise(r => setTimeout(r, 1000));
+    }
+    SC.countdown = 0; drawBed();
+    if (!SC.timed) break;
+    const j = await startScanJob('scan');
+    if (!j || j.status !== 'done') { SC.timed = false; break; }
+  }
+  SC.timed = false; SC.countdown = 0; drawBed(); renderScanSide();
+}
+function stopTimed() { SC.timed = false; SC.countdown = 0; drawBed(); renderScanSide(); }
 let bedcv, bedctx, bedV = { s: 1, ox: 0, oy: 0 }, bedDrag = null;
 function bedCanvas(wrap) {
   bedcv = h('canvas'); wrap.append(bedcv); bedctx = bedcv.getContext('2d');
@@ -1600,6 +1653,13 @@ function drawBed() {
     if (i === SC.sel) [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([cx, cy]) => { c.fillStyle = '#fff'; c.strokeStyle = '#000'; c.lineWidth = 1; c.fillRect(X(a[0] + cx * a[2]) - 4, Y(a[1] + cy * a[3]) - 4, 8, 8); c.strokeRect(X(a[0] + cx * a[2]) - 4, Y(a[1] + cy * a[3]) - 4, 8, 8); });
     c.restore();
   });
+  if (SC.countdown) {
+    const r2 = bedcv.parentElement.getBoundingClientRect(), cx = r2.width / 2, cy = r2.height / 2;
+    c.save(); c.fillStyle = 'rgba(16,40,64,.55)'; c.beginPath(); c.roundRect(cx - 150, cy - 90, 300, 180, 14); c.fill();
+    c.strokeStyle = 'rgba(255,255,255,.6)'; c.lineWidth = 2; c.stroke();
+    c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = '600 72px "Segoe UI", Tahoma, sans-serif'; c.fillText(String(SC.countdown), cx, cy + 20);
+    c.font = '15px "Segoe UI", Tahoma, sans-serif'; c.fillText('next page · Esc stops', cx, cy + 62); c.restore();
+  }
   if (bedDrag?.box) { const b = bedDrag.box; c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.fillStyle = 'rgba(51,153,255,.15)'; c.fillRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.restore(); }
 }
 function renderScripts() {

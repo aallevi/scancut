@@ -326,7 +326,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'available': False, 'devices': []})
             devs = scanner.devices(refresh=q.get('refresh') == '1')
             for d in devs:
-                d['options'] = scanner.options(d['id'])
+                d['options'] = scanner.options(d['id'], refresh=q.get('refresh') == '1')
             return self.send({'available': True, 'devices': devs})
         if path == 'scanner_preview_area':
             p = os.path.join(core.DATA, 'scanner', 'preview-area.png')
