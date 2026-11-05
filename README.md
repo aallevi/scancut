@@ -4,14 +4,13 @@
 
 <p align="center">Cuts scanned drawings out of flatbed scans, one transparent PNG per sheet, and gives you a window to check and fix every edge.<br><b>Beta 0.9</b> · macOS</p>
 
-![Scan Studio editor: three sheets found on a grey card](docs/images/editor.png)
+![Scan Studio editor: seven notebook pages cut from one scan](docs/images/editor.png)
 
 <p align="center"><a href="https://github.com/aallevi/scancut/releases/download/v0.9.0-beta/scan-studio-reel.mp4">▶ One-minute video tour (MP4)</a></p>
 
 I scan lots of drawings and sketchbook pages and wanted the paper out of the scan with its real
 edge: fibres, tears and punch holes included, nothing painted in. scancut does that automatically
-for every scan that lands in a folder. Scan Studio is the window around it, styled after Windows
-Vista: you can see what was cut, fix it by hand or with an AI model, and drive the scanner.
+for every scan that lands in a folder. Scan Studio is the window around it: you can see what was cut, fix it by hand or with an AI model, and drive the scanner.
 
 ## Features
 
