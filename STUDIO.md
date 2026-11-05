@@ -1,6 +1,6 @@
 # Scan Studio
 
-A Vista-style window to see, compare and fix the cutouts, plus headless jobs.
+A window to see, compare and fix the cutouts, plus headless jobs.
 Same engine as the agent (`scancut.py`), same rules: originals are never touched,
 cutouts are never overwritten, only real pixels.
 
@@ -18,13 +18,13 @@ python3 -I studio.py serve        # server only, http://127.0.0.1:8765
 From the Dock: `~/Applications/Scan Studio.app`, a native Swift app (`studio/mac/ScanStudio.swift`,
 built and ad-hoc signed by `studio/mac/build.sh`, which writes the code folder, the Python and
 the scans root into its Info.plist; rebuild after changing the Swift file, the icon or those
-paths, pages and Python are read live). One WebKit window with no macOS frame: the Vista
-frame's buttons minimise to the Dock, zoom and close for real. It starts `studio.py serve`
+paths, pages and Python are read live). One WebKit window with no macOS frame: the window
+frame buttons minimise to the Dock, zoom and close for real. It starts `studio.py serve`
 as a child (or uses one already running) and stops it on quit, after saving pending edits.
 Dock click brings the window back; ⌘Q quits; View > Reload; Web Inspector via right-click.
 
 From a terminal, without the app: the window uses pywebview when installed (`pip install pywebview`: frameless, the
-Vista caption buttons work); otherwise Chrome/Edge in app mode, otherwise the browser.
+caption buttons work); otherwise Chrome/Edge in app mode, otherwise the browser.
 
 ## Headless
 

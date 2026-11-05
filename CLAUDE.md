@@ -17,7 +17,7 @@ to check and fix the cuts, drive the scanner and run headless jobs (see STUDIO.m
 <repo>/
   scancut.py             the whole pipeline (comments in Italian)
   vision_mask.swift      Apple Vision helper; build: swiftc -O vision_mask.swift -o vision_mask
-  studio.py, studio/     Scan Studio: Vista-style window + API + headless jobs
+  studio.py, studio/     Scan Studio: window + API + headless jobs
   studio/mac/            native app (build.sh writes repo, Python and root into Info.plist)
   scripts/               user engines for the studio: segment(rgb, ppm, params) -> masks
   agent/scancut.plist.in LaunchAgent template, filled in by install.sh --agent
