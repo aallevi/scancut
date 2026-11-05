@@ -81,8 +81,10 @@ def listing(rel):
     for f in sorted(os.listdir(d), key=str.lower):
         p = os.path.join(d, f)
         if os.path.isdir(p) and not f.startswith('.'):
-            out.append({'rel': relpath(p), 'name': f, 'dir': True,
-                        'count': sum(1 for g in os.listdir(p) if is_image(g))})
+            imgs = sorted((g for g in os.listdir(p) if is_image(g)), key=str.lower)
+            # le prime due scansioni, da mostrare dentro l'icona della cartella come in Vista
+            out.append({'rel': relpath(p), 'name': f, 'dir': True, 'count': len(imgs),
+                        'peek': [relpath(os.path.join(p, g)) for g in imgs[:2]]})
             continue
         if not is_image(f) or not os.path.exists(p):
             continue

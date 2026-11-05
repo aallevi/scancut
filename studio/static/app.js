@@ -338,6 +338,18 @@ function addressBar(dir, file, right) {
 const visibleItems = () => S.items.filter(i => !i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
 function selectAll() { visibleItems().forEach(i => S.sel.add(i.rel)); }
 
+// cartella grande con dentro le prime scansioni, infilate tra il dorso e l'aletta
+function folderTile(peek = []) {
+  const flap = '<path d="M12 13.5';
+  const pages = peek.slice(0, 2).reverse().map((rel, i, a) => {
+    const k = a.length - 1 - i, x = 25 + k * 4, y = 12 + k * 3, rot = k ? 4 : -2;
+    const src = `/api/thumb?${qs({ rel, size: 256 })}&v=${PREV_V}`.replace(/&/g, '&amp;');
+    return `<g transform="rotate(${rot} ${x + 11} ${y + 18})"><rect x="${x}" y="${y}" width="22" height="34" fill="#fff" stroke="#c9c2b2" stroke-width=".5"/>`
+      + `<image href="${src}" x="${x + 1}" y="${y + 1}" width="20" height="32" preserveAspectRatio="xMidYMid slice"/></g>`;
+  }).join('');
+  return I.folderBig.replace(flap, pages + flap).replace('class="ico"', 'width="96" height="96"');
+}
+
 function renderGallery() {
   const main = $('#main'); main.innerHTML = '';
   const items = visibleItems();
@@ -346,7 +358,7 @@ function renderGallery() {
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
   sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: () => { S.selDir = null; openDir(c.rel); },
     onclick: () => { S.selDir = c.rel; S.sel.clear(); renderGallery(); renderSide(); renderCmdbar(); } },
-    h('div', { class: 'pic', html: I.folderBig.replace('class="ico"', 'width="96" height="96"') }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
+    h('div', { class: 'pic', html: folderTile(c.peek) }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
   if (!items.length && !sub.length) grid.append(h('div', { class: 'empty' }, S.items.length ? 'No scans match the search.' : 'This folder is empty.'));
   items.forEach((it, idx) => {
     const badges = [];
