@@ -1,20 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- the inbox agent: install.sh --agent fills in the paths and loads it -->
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.antonioallevi.scancut</string>
+  <key>Label</key><string>@LABEL@</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/miniconda3/bin/python3</string>
+    <string>@PYTHON@</string>
     <string>-I</string>
-    <string>~/Scans/.scancut/scancut.py</string>
+    <string>@REPO@/scancut.py</string>
+    <string>@ROOT@</string>
   </array>
-  <key>WatchPaths</key><array><string>~/Scans/inbox</string></array>
+  <key>WatchPaths</key><array><string>@ROOT@/inbox</string></array>
   <key>ProcessType</key><string>Background</string>
   <key>LowPriorityIO</key><true/>
   <key>LowPriorityBackgroundIO</key><true/>
   <key>Nice</key><integer>5</integer>
   <key>StandardOutPath</key><string>/dev/null</string>
-  <key>StandardErrorPath</key><string>~/Scans/.scancut/errors.txt</string>
+  <key>StandardErrorPath</key><string>@ROOT@/.scancut/errors.txt</string>
 </dict>
 </plist>

@@ -1,7 +1,7 @@
 # server locale dello studio: l'interfaccia (static/) e un'API JSON che usano
 # anche i lavori senza finestra e Claude. Solo 127.0.0.1.
 
-import os, io, json, time, threading, traceback, subprocess, uuid, queue, urllib.parse, shutil
+import os, io, sys, json, time, threading, traceback, subprocess, uuid, queue, urllib.parse, shutil
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
@@ -28,7 +28,8 @@ class Jobs:
         return j
 
     def public(self, j):
-        return {k: v for k, v in j.items() if k != 'proc'}
+        # il token di Hugging Face non esce mai dal server
+        return {k: ({a: v for a, v in j['args'].items() if a != 'token'} if k == 'args' else v) for k, v in j.items() if k != 'proc'}
 
     def loop(self):
         while True:
@@ -100,14 +101,42 @@ class Jobs:
         core.save_settings({'scan_device': a['dev'], 'scan_res': int(a['res']), 'scan_mode': a['mode'], 'scan_batch': batch})
 
     def do_install(self, j, say):
-        # i driver: SANE con Homebrew (niente sudo)
-        brew = shutil.which('brew') or '/opt/homebrew/bin/brew'
-        what = {'sane': 'sane-backends', 'jxl': 'jpeg-xl'}[j['args'].get('what', 'sane')]
-        p = subprocess.Popen([brew, 'install', what], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        for line in p.stdout:
-            say(line.rstrip())
-        if p.wait() != 0:
-            raise RuntimeError(f'brew install {what} failed')
+        # i componenti aggiuntivi (pagina Add-ons): Homebrew, pip, swiftc, o il modello da Hugging Face.
+        # Niente sudo; solo comandi fissi, il nome arriva da una lista chiusa
+        what = j['args'].get('what', 'sane')
+        repo = core.REPO
+        if what in ('sane', 'exiftool', 'jxl'):
+            cmds = [[core.brew() or 'brew', 'install', {'sane': 'sane-backends', 'exiftool': 'exiftool', 'jxl': 'jpeg-xl'}[what]]]
+        elif what == 'ultralytics':
+            cmds = [[sys.executable, '-m', 'pip', 'install', '--upgrade', 'ultralytics']]
+        elif what == 'helpers':
+            cmds = [['swiftc', '-O', os.path.join(repo, 'vision_mask.swift'), '-o', os.path.join(repo, 'vision_mask')],
+                    ['swiftc', '-O', os.path.join(repo, 'studio', 'ocr.swift'), '-o', os.path.join(repo, 'studio', 'ocr')]]
+        elif what == 'sam3':
+            os.makedirs(core.models_dir(), exist_ok=True)
+            code = ('import sys\n'
+                    'from huggingface_hub import hf_hub_download\n'
+                    'p = hf_hub_download("facebook/sam3", "sam3.pt", local_dir=sys.argv[1])\n'
+                    'print("saved", p)\n')
+            cmds = ([] if core.has_module('huggingface_hub') else [[sys.executable, '-m', 'pip', 'install', 'huggingface_hub']]) + \
+                   [[sys.executable, '-c', code, core.models_dir()]]
+        else:
+            raise ValueError(f'unknown add-on {what}')
+        env = dict(os.environ, PATH=os.environ.get('PATH', '') + ':/opt/homebrew/bin:/usr/local/bin', HF_HUB_DISABLE_PROGRESS_BARS='1')
+        if j['args'].get('token'):
+            env['HF_TOKEN'] = j['args']['token']           # nell'ambiente, non sulla riga di comando
+        for cmd in cmds:
+            say('$ ' + ' '.join(os.path.basename(c) if i == 0 else c for i, c in enumerate(cmd[:4])) + (' …' if len(cmd) > 4 else ''))
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            j['proc'] = p
+            out = []
+            for line in p.stdout:
+                out.append(line.rstrip()); say(line.rstrip())
+            if p.wait() != 0:
+                if what == 'sam3' and any(k in ' '.join(out) for k in ('401', '403', 'Gated', 'gated', 'awaiting', 'authenticated')):
+                    raise RuntimeError('Hugging Face refused: request access on huggingface.co/facebook/sam3, '
+                                       'wait for Meta’s approval, then paste a read token (or run “hf auth login”).')
+                raise RuntimeError(f'{os.path.basename(cmd[0])} failed (exit {p.returncode})')
         j['done'] = 1
 
     def do_export(self, j, say):
@@ -120,7 +149,7 @@ class Jobs:
         # Claude Code senza finestra, nella cartella del progetto (legge CLAUDE.md e STUDIO.md)
         a = j['args']
         s = core.settings()
-        ctx = (f'[Scan Studio] You are inside Antonio\'s Scan Studio. Scans root: {core.ROOT}. '
+        ctx = (f'[Scan Studio] You are inside the user\'s Scan Studio. Scans root: {core.ROOT}. '
                f'Studio API: http://127.0.0.1:{PORT} (see STUDIO.md). '
                + (f'Current scan: {a["rel"]} (edit state: {core.state_path(a["rel"])}). ' if a.get('rel') else '')
                + 'Keep answers short; the reply is shown in a small panel.\n\n')
@@ -237,7 +266,9 @@ class Handler(BaseHTTPRequestHandler):
         if rel:
             core.abspath(rel)          # fuori dalla radice: errore
         if path == 'ping':
-            return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999})
+            return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999, 'version': core.VERSION})
+        if path == 'addons':
+            return self.send(core.addons())
         if path == 'tree':
             return self.send({'root': core.ROOT, 'tree': core.tree()})
         if path == 'list':
@@ -419,11 +450,18 @@ class Handler(BaseHTTPRequestHandler):
                 pid = studio_chrome_pid()
                 if pid:
                     subprocess.run([os.path.join(os.path.dirname(__file__), 'appctl'), 'hide', str(pid)], timeout=10)
+            elif what == 'sam3page':
+                subprocess.run(['open', 'https://huggingface.co/facebook/sam3'])
+            elif what == 'hftokens':
+                subprocess.run(['open', 'https://huggingface.co/settings/tokens'])
             elif what == 'scripts':
                 os.makedirs(core.SCRIPTS, exist_ok=True)
                 subprocess.run(['open', core.SCRIPTS])
             elif what == 'kick':
-                subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/com.antonioallevi.scancut'])
+                label = core.agent_label()
+                if not label:
+                    raise ValueError('the inbox agent is not installed (./install.sh --agent)')
+                subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/{label}'])
             return self.send({'ok': True})
         self.send_error(404)
 

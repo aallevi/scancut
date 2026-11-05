@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: pip }
+      - run: pip install -r requirements.txt
+      - name: Swift helpers and app
+        run: |
+          swiftc -O vision_mask.swift -o vision_mask
+          swiftc -O studio/ocr.swift -o studio/ocr
+          APP_DIR=$RUNNER_TEMP PYTHON=$(which python3) zsh studio/mac/build.sh
+      - name: Python and JavaScript parse
+        run: |
+          python -m compileall -q scancut.py studio.py studio scripts tools
+          node --check studio/static/app.js
+      - name: Cut made-up scans
+        run: |
+          R=$RUNNER_TEMP/scans; mkdir -p $R/inbox $R/.scancut
+          (cd $R/inbox && python -I $GITHUB_WORKSPACE/tools/make_test_scans.py && python -I $GITHUB_WORKSPACE/tools/make_demo_scans.py)
+          python -I scancut.py $R
+          cat $R/.scancut/log.txt
+          test "$(ls $R/inbox | wc -l)" -eq 0
+          test "$(find $R/cut -name '*.png' | wc -l)" -ge 7
+      - name: Studio server answers
+        run: |
+          python -I studio.py serve --root $RUNNER_TEMP/scans --port 8799 & sleep 4
+          curl -sf http://127.0.0.1:8799/api/ping
+          curl -sf http://127.0.0.1:8799/api/engines >/dev/null
+          curl -sf http://127.0.0.1:8799/api/addons >/dev/null

@@ -41,6 +41,7 @@ const CMP_COLORS = { auto: '#00a2ff', classic: '#ff7a00', vision: '#d100d1', sam
 
 // ------------------------------------------------------------ icone (stile Vista, piccole)
 const I = {
+  addon: '<svg class="ico" viewBox="0 0 16 16"><defs><linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9f0ff"/><stop offset="1" stop-color="#5aa7e6"/></linearGradient></defs><path d="M2 5.5h3.2a1.6 1.6 0 1 1 3.2 0H11.5v3a1.6 1.6 0 1 1 0 3.2V14.5H2z" fill="url(#ag)" stroke="#2f6aa8"/></svg>',
   folder: '<svg class="ico" viewBox="0 0 16 16"><defs><linearGradient id="fg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff2b0"/><stop offset="1" stop-color="#e8b33c"/></linearGradient></defs><path d="M1 4h5l1.5 1.5H15v8.5H1z" fill="url(#fg)" stroke="#b07d16"/><path d="M1.5 7h13.5" stroke="#fff" opacity=".7"/></svg>',
   pics: '<svg class="ico" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1" fill="#e9f4ff" stroke="#3a6ea5"/><path d="M3 12l3.5-4 2.5 3 2-2 2.5 3z" fill="#2fa84f"/><circle cx="11" cy="5.5" r="1.4" fill="#ffc83d"/></svg>',
   cut: '<svg class="ico" viewBox="0 0 16 16"><circle cx="4" cy="12" r="2.3" fill="none" stroke="#c03030" stroke-width="1.4"/><circle cx="12" cy="12" r="2.3" fill="none" stroke="#c03030" stroke-width="1.4"/><path d="M5.5 10.5L12 2M10.5 10.5L4 2" stroke="#555" stroke-width="1.3"/></svg>',
@@ -187,7 +188,7 @@ function renderCmdbar() {
     ] }),
     cmd('SAM 3', null, { icon: I.t_sam, title: 'Meta Segment Anything 3: find objects by name', menu: () => {
       const sam = S.engines.find(e => e.id === 'sam3'), ok = sam?.available, p = samParams().prompt;
-      if (!ok) return [{ label: 'SAM 3 needs ~/sam3.pt', disabled: true }];
+      if (!ok) return [{ label: 'SAM 3 is not installed', disabled: true }, { label: 'Add-ons…', do: () => go('addons'), note: 'Ultralytics and the model, two steps.' }];
       return [
         { label: `Prompt: “${p}”…`, do: samPromptDialog },
         ...samChoices().map(c => ({ label: '   ' + c.text, title: c.note, check: p === c.text, do: () => { S.params.prompt = c.text; renderSide(); status(c.note); } })),
@@ -260,13 +261,14 @@ function renderNav() {
     node('Jobs', I.jobs, 'v:jobs', { sel: S.view === 'jobs', onclick: () => go('jobs'), count: S.jobs.filter(j => j.status === 'running' || j.status === 'queued').length || null }),
     node('Scanners', I.scanner, 'v:scanners', { sel: S.view === 'scanners', onclick: () => go('scanners') }),
     node('Scripts', I.script, 'v:scripts', { sel: S.view === 'scripts', onclick: () => go('scripts') }),
+    node('Add-ons', I.addon, 'v:addons', { sel: S.view === 'addons', onclick: () => go('addons') }),
     node('Settings', I.gear, 'v:settings', { onclick: settingsDialog }),
-  ));
+  ), S.version ? h('div', { class: 'small muted', style: { padding: '14px 10px 4px' } }, `Scan Studio ${S.version.replace('-', ' ')}`) : null);
 }
 
 // ------------------------------------------------------------ viste
 async function go(view) {
-  if (['jobs', 'scanners', 'scripts'].includes(view)) remember('view:' + view);
+  if (['jobs', 'scanners', 'scripts', 'addons'].includes(view)) remember('view:' + view);
   if (S.view === 'editor' && view !== 'editor') leaveEditor();
   S.view = view;
   renderCmdbar(); renderNav(); renderNavbar();
@@ -274,6 +276,7 @@ async function go(view) {
   if (view === 'jobs') renderJobs();
   if (view === 'scanners') renderScanners();
   if (view === 'scripts') renderScripts();
+  if (view === 'addons') renderAddons();
   renderSide();
 }
 async function openDir(rel) {
@@ -386,7 +389,7 @@ function engineChooser() {
   for (const e of S.engines) {
     box.append(h('label', { class: 'radio' + (e.available ? '' : ' dis'), title: e.note },
       h('input', { type: 'radio', name: 'eng', checked: S.engine === e.id, disabled: !e.available, onchange: () => { S.engine = e.id; renderSide(); } }),
-      h('div', {}, h('div', { class: 'rn' }, e.name), h('div', { class: 'rd' }, e.available ? e.note : (e.id === 'sam3' ? 'Needs ~/sam3.pt (the file DigitalSreeni Image Annotator uses).' : 'Not available.')))));
+      h('div', {}, h('div', { class: 'rn' }, e.name), h('div', { class: 'rd' }, e.available ? e.note : (e.id === 'sam3' || e.id === 'vision' ? 'Not installed: see Add-ons.' : 'Not available.')))));
   }
   const e = S.engines.find(x => x.id === S.engine);
   for (const p of e?.params || []) {
@@ -1119,7 +1122,7 @@ async function wandAt(pt, mode) {
 }
 async function samClick(pt, add) {
   const eng = S.engines.find(e => e.id === 'sam3');
-  if (!eng?.available) return status('SAM 3 needs ~/sam3.pt');
+  if (!eng?.available) return status('SAM 3 is not installed: see Add-ons');
   // i clic si sommano finche' non si preme Invio (o si cambia strumento): stesso oggetto
   if (!S.sam) S.sam = { points: [], labels: [], sheet: null };
   S.sam.points.push(pt); S.sam.labels.push(add ? 1 : 0); draw();
@@ -1708,6 +1711,55 @@ function drawBed() {
   }
   if (bedDrag?.box) { const b = bedDrag.box; c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.fillStyle = 'rgba(51,153,255,.15)'; c.fillRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.restore(); }
 }
+// ------------------------------------------------------------ componenti aggiuntivi
+const ADD = { list: null, jobs: {}, err: {}, token: '' };
+async function renderAddons(refresh = true) {
+  const main = $('#main');
+  if (refresh || !ADD.list) ADD.list = await api.get('addons').catch(e => (status(e.message), []));
+  if (S.view !== 'addons') return;
+  main.innerHTML = '';
+  const row = a => {
+    const job = ADD.jobs[a.id];
+    const pill = h('span', { class: 'pill ' + (a.ok ? 'ok' : 'no') }, a.ok ? (a.id === 'sam3' ? '✓ Found' : '✓ Installed') : 'Not installed');
+    const btn = job ? h('button', { class: 'btn', disabled: true }, 'Installing…')
+      : a.id === 'sam3' || (a.ok && a.id !== 'helpers') ? null
+      : h('button', { class: 'btn' + (a.ok ? '' : ' default'), disabled: !!a.blocked, onclick: () => installAddon(a.id) }, a.ok ? 'Rebuild' : 'Install');
+    return h('div', { class: 'addon' },
+      h('div', { class: 'addon-main' },
+        h('div', {}, h('b', {}, a.name), ' ', pill),
+        h('div', {}, a.ok && a.path ? 'Meta’s segmentation model.' : a.line),
+        a.path ? h('div', { class: 'small muted' }, a.path) : h('code', { class: 'small muted' }, a.cmd),
+        a.blocked ? h('div', { class: 'small warn' }, a.blocked) : null,
+        ADD.err[a.id] ? h('div', { class: 'small warn' }, ADD.err[a.id]) : null,
+        a.id === 'sam3' && !a.ok ? h('div', { class: 'addon-steps' },
+          h('div', {}, '1. ', h('a', { href: '#', onclick: e => { e.preventDefault(); api.post('open', { what: 'sam3page' }); } }, 'Request access on Hugging Face'), ' (free account; Meta approves it).'),
+          h('div', {}, '2. ', h('a', { href: '#', onclick: e => { e.preventDefault(); api.post('open', { what: 'hftokens' }); } }, 'Create a read token'), ', paste it, download. Not stored.'),
+          h('div', { class: 'row' }, h('input', { class: 'f', type: 'password', placeholder: 'hf_… (or leave empty after “hf auth login”)', value: ADD.token, oninput: e => { ADD.token = e.target.value; } }),
+            job ? h('button', { class: 'btn', disabled: true }, 'Downloading…')
+              : h('button', { class: 'btn default', onclick: () => installAddon('sam3', { token: ADD.token }) }, 'Download'))) : null),
+      btn);
+  };
+  const groups = [['Tools', ADD.list.filter(a => !a.group)], ['SAM 3', ADD.list.filter(a => a.group === 'SAM 3')]];
+  main.append(addressBar(null, null, 'Add-ons'), h('div', { style: { padding: '14px', overflow: 'auto', maxWidth: '780px' } },
+    h('div', { class: 'muted', style: { marginBottom: '10px' } }, 'Optional. Cutting works without any of these.'),
+    ...groups.map(([t, l], i) => h('div', { class: 'group', style: { margin: i ? '16px 0 0' : 0 } }, h('div', { class: 'gh' }, t), l.map(row)))));
+}
+async function installAddon(id, extra = {}) {
+  delete ADD.err[id];
+  const j = await api.post('jobs', { kind: 'install', what: id, ...extra });
+  ADD.jobs[id] = j.id; renderAddons(false);
+  for (;;) {
+    await new Promise(r => setTimeout(r, 1000));
+    const x = await api.get('job', { id: j.id });
+    if (['queued', 'running'].includes(x.status)) continue;
+    delete ADD.jobs[id];
+    if (x.status !== 'done') ADD.err[id] = (x.log.filter(l => l.startsWith('ERROR')).pop() || 'Failed: see Jobs').replace(/^ERROR \w+: /, '');
+    if (id === 'sam3' && x.status === 'done') ADD.token = '';
+    S.engines = await api.get('engines');
+    status(x.status === 'done' ? 'Installed' : 'Install failed');
+    return renderAddons();
+  }
+}
 function renderScripts() {
   const main = $('#main'); main.innerHTML = '';
   const scripts = S.engines.filter(e => e.kind === 'script');
@@ -1726,7 +1778,7 @@ function renderScripts() {
 function toggleChat() {
   const d = $('#drawer');
   if (d.classList.toggle('on') && !d.firstChild) {
-    const log = h('div', { class: 'chatlog' }, h('div', { class: 'muted small' }, 'Claude Code runs headless in .scancut and can read this scan, its edit state and the studio API. Try: "why is the left edge of sheet b ragged?" or "detect all scans in sketchbook with classic and export them".'));
+    const log = h('div', { class: 'chatlog' }, h('div', { class: 'muted small' }, 'Claude Code runs headless in the project folder and can read this scan, its edit state and the studio API. Try: "why is the left edge of sheet b ragged?" or "detect all scans in sketchbook with classic and export them".'));
     const inp = h('textarea', { rows: 2, class: 'f', placeholder: 'Ask Claude…', onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
     const cont = h('input', { type: 'checkbox', checked: true, title: 'Continue the same conversation' });
     const send = async () => {
@@ -1808,6 +1860,7 @@ async function it8Reminder() {
 (async function init() {
   renderCmdbar(); renderNavbar();
   const [t, engines, settings] = await Promise.all([api.get('tree'), api.get('engines'), api.get('settings')]);
+  api.get('ping').then(p => { S.version = p.version; renderNav(); }).catch(() => {});
   S.root = t.root; S.tree = t.tree; S.engines = engines; S.settings = settings;
   renderNav();
   const hash = decodeURIComponent(location.hash.slice(1));

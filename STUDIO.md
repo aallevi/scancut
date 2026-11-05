@@ -7,14 +7,18 @@ cutouts are never overwritten, only real pixels.
 ## Start
 
 ```
-/opt/miniconda3/bin/python3 -I studio.py              # window (root ~/Scans)
-/opt/miniconda3/bin/python3 -I studio.py serve        # server only, http://127.0.0.1:8765
-... studio.py --root <copy>                           # work on a scratch copy
+python3 -I studio.py              # window (root ~/Scans)
+python3 -I studio.py serve        # server only, http://127.0.0.1:8765
+... studio.py --root <copy>       # work on a scratch copy
 ```
 
+(`python3` = the project's `.venv/bin/python3` after `./install.sh`, or any Python with
+`requirements.txt`.)
+
 From the Dock: `~/Applications/Scan Studio.app`, a native Swift app (`studio/mac/ScanStudio.swift`,
-built and ad-hoc signed by `studio/mac/build.sh`; rebuild after changing the Swift file or the
-icon, pages and Python are read live). One WebKit window with no macOS frame: the Vista
+built and ad-hoc signed by `studio/mac/build.sh`, which writes the code folder, the Python and
+the scans root into its Info.plist; rebuild after changing the Swift file, the icon or those
+paths, pages and Python are read live). One WebKit window with no macOS frame: the Vista
 frame's buttons minimise to the Dock, zoom and close for real. It starts `studio.py serve`
 as a child (or uses one already running) and stops it on quit, after saving pending edits.
 Dock click brings the window back; ⌘Q quits; View > Reload; Web Inspector via right-click.
@@ -27,16 +31,18 @@ Vista caption buttons work); otherwise Chrome/Edge in app mode, otherwise the br
 ```
 studio.py engines
 studio.py detect originals/sketchbook --engine classic [--export]
-studio.py detect "originals/notes/notes 4.png" --engine sam3 --prompt "drawing"
-studio.py export "originals/notes/notes 4.png"          # saves the edited state
+studio.py detect "originals/sketchbook/sketchbook 4.png" --engine sam3 --prompt "drawing"
+studio.py export "originals/sketchbook/sketchbook 4.png"   # saves the edited state
 ```
 
 ## Engines
 
 - `auto`: exactly what the agent does. `classic`: same without the Vision fallback.
 - `vision`: Apple Vision (`vision_mask`).
-- `sam3`: Meta SAM 3, read straight from `~/sam3.pt` by Ultralytics (the same way
-  DigitalSreeni Image Annotator does it), in its own process (`studio/sam3_worker.py`)
+- `sam3`: Meta SAM 3, `sam3.pt` read straight by Ultralytics (the same way
+  DigitalSreeni Image Annotator does it). Found in Settings' `sam3_weights`, else
+  `studio-data/models/`, `~`, `~/Downloads` or the Hugging Face cache; Add-ons installs both.
+  Runs in its own process (`studio/sam3_worker.py`)
   on the Apple GPU. First run loads ~3.4 GB (~10 s). Text prompt now; the worker also
   takes clicks (+/-) and boxes (`mode: 'prompt'`) for the coming SAM tool.
   "Refine edge with wand" keeps SAM's region but takes the real edge from the
@@ -85,7 +91,14 @@ or white lid (dark paper); those fill pixels are never saved.
 ## Data (`<root>/.scancut/studio-data/`, not in git)
 
 `state/` edit state per scan (JSON), `cache/` engine masks, `previews/`,
-`replaced/`, `settings.json`.
+`replaced/`, `models/` (SAM 3 downloaded from Add-ons), `settings.json`, `server.log`.
+
+## Add-ons
+
+`GET addons` lists the optional parts with their state; `jobs {kind: install, what}` installs one:
+`helpers` (swiftc), `sane` / `exiftool` / `jxl` (Homebrew), `ultralytics` (pip into the studio's
+Python), `sam3` (Hugging Face download; `token` goes to the child's environment, never into job
+listings). Only these fixed commands run.
 
 ## API (127.0.0.1 only; POSTs need header `X-Studio: 1`)
 
@@ -130,11 +143,11 @@ Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
 Address bar: every folder is clickable, ▸ lists its subfolders; back/forward with the round
 buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
 
-## Milestone 2 (next)
+## Scanner
 
-Drive the scanner directly (ImageCaptureCore helper, like `vision_mask.swift`):
-overview scan, scan area, DPI/colour, several scanners, scan into a batch.
-The LiDE 400 is registered as `Canon_LiDE_400` (eSCL over USB).
+Through SANE (`scanimage`, `studio/scanner.py`): the scanner's real resolutions and modes,
+preview of the bed, scan areas (each with its own settings), 48-bit colour, sessions (Space =
+next page, or timed). Scans go to the inbox like any other. Tested with a Canon LiDE 400.
 
 ## Testing (for Claude)
 
@@ -143,6 +156,7 @@ The LiDE 400 is registered as `Canon_LiDE_400` (eSCL over USB).
   `tools/snap "http://127.0.0.1:8799/#originals%2F<file>" out.png 1400 880 <wait-s> [script.js]`;
   the JS runs after load (studio globals like `S`, `openScan`, `detect` are reachable), page
   errors are printed. Read the PNG to check.
+- Made-up drawings for screenshots: `tools/make_demo_scans.py` (in an empty inbox).
 - Pipeline changes: run the HEAD copy and the new `scancut.py` on the same inbox in two
   scratch roots and `cmp` every cutout (`tools/make_test_scans.py` makes made-up scans for this).
 

@@ -19,3 +19,4 @@ tools/reel
 tools/work/
 media/
 studio/ocr
+.venv/

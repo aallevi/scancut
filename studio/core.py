@@ -14,7 +14,10 @@ import scancut as sc  # noqa: E402
 
 Image.MAX_IMAGE_PIXELS = None
 SCRIPTS = os.path.join(REPO, 'scripts')
-SAM3_WEIGHTS = os.path.expanduser('~/sam3.pt')   # letto da Ultralytics cosi' com'e'
+try:
+    VERSION = open(os.path.join(REPO, 'VERSION')).read().strip()
+except OSError:
+    VERSION = '?'
 
 ROOT = DATA = None
 _lock = threading.RLock()
@@ -311,7 +314,7 @@ def engines():
               'hint': 'The corner of the scan (as you see it on screen) where the sheet sits.'}]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
-        {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': os.path.exists(SAM3_WEIGHTS),
+        {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': bool(sam3_weights()) and has_module('ultralytics'),
          'note': 'Finds what the prompt names. Runs on the Apple GPU via Ultralytics.', 'params': [
              {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper', 'choices': SAM_PROMPTS,
               'hint': 'A short English noun phrase naming what to cut out. SAM 3 finds every object that matches. '
@@ -521,7 +524,7 @@ def sam3_proc():
     global _sam, _sam_used
     _sam_used = time.time()
     if _sam is None or _sam.poll() is not None:
-        _sam = subprocess.Popen([sys.executable, '-I', os.path.join(REPO, 'studio', 'sam3_worker.py'), SAM3_WEIGHTS],
+        _sam = subprocess.Popen([sys.executable, '-I', os.path.join(REPO, 'studio', 'sam3_worker.py'), sam3_weights()],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
     return _sam
 
@@ -992,7 +995,7 @@ DEFAULT_SETTINGS = {
     'batch_folders': {},               # lotto -> cartella diversa
     'eagle': False,                    # aggiungere anche a Eagle (API locale)
     'eagle_folder': '',
-    'claude_tools': 'Read,Bash(curl -s http://127.0.0.1:*),Bash(/opt/miniconda3/bin/python3 -I studio.py:*)',
+    'claude_tools': f'Read,Bash(curl -s http://127.0.0.1:*),Bash({sys.executable} -I studio.py:*)',
     'compare_engines': ['classic', 'vision'],
     'scan_device': '', 'scan_res': 600, 'scan_mode': 'Color', 'scan_batch': 'scan',
     'export_format': 'png',            # png | jxl (JPEG XL senza perdita, con la trasparenza)
@@ -1004,7 +1007,8 @@ DEFAULT_SETTINGS = {
     'it8_remind': True,                # ricordare di ricalibrare i colori (IT8)
     'it8_days': 90,                    # ogni quanti giorni
     'it8_last': 0,                     # ultima calibrazione (o inizio del conteggio)
-    'it8_snooze': 0,                   # rimandato fino a                # scansioni a 48/16 bit: i ritagli tengono i 16 bit               # rileggere ogni JPEG XL e confrontarlo pixel per pixel (piu' lento)       # "Export to subfolder": i ritagli in <cartella>/<questo>/
+    'it8_snooze': 0,                   # rimandato fino a
+    'sam3_weights': '',                # sam3.pt scelto a mano (vuoto: si cerca nei posti soliti)
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
 }
 
@@ -1545,3 +1549,70 @@ def eagle_add(paths, log=print):
         urllib.request.urlopen(req, timeout=5).read()
     except Exception as e:
         log(f'Eagle: not reached ({e})')
+
+
+# ---------------------------------------------------------------- componenti aggiuntivi
+# Quello che non serve per ritagliare ma lo studio sa usare: si installa dalla pagina Add-ons.
+
+def has_module(name):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def brew():
+    return shutil.which('brew') or next((b for b in ('/opt/homebrew/bin/brew', '/usr/local/bin/brew') if os.path.exists(b)), None)
+
+
+def tool(name):
+    # i programmi di Homebrew anche quando l'app parte dal Dock (PATH corto)
+    return shutil.which(name) or next((p for p in (f'/opt/homebrew/bin/{name}', f'/usr/local/bin/{name}') if os.path.exists(p)), None)
+
+
+def models_dir():
+    return os.path.join(DATA, 'models')
+
+
+def sam3_weights():
+    # il file dei pesi: quello scelto, o il primo trovato dove si scarica di solito
+    import glob
+    s = settings().get('sam3_weights')
+    cands = ([s] if s else []) + [os.path.join(models_dir(), 'sam3.pt'), os.path.expanduser('~/sam3.pt'),
+                                  os.path.expanduser('~/Downloads/sam3.pt')]
+    cands += sorted(glob.glob(os.path.expanduser('~/.cache/huggingface/hub/models--facebook--sam3/snapshots/*/sam3.pt')))
+    return next((c for c in cands if os.path.isfile(c) and os.path.getsize(c) > 1e9), None)
+
+
+def agent_label():
+    # l'agente della cartella d'arrivo, com'e' installato su questo Mac
+    import glob
+    for f in sorted(glob.glob(os.path.expanduser('~/Library/LaunchAgents/*scancut*.plist'))):
+        return os.path.basename(f)[:-6]
+    return None
+
+
+def addons():
+    from . import scanner
+    b = bool(brew())
+    nobrew = None if b else 'Needs Homebrew (brew.sh)'
+    w = sam3_weights()
+    return [
+        {'id': 'helpers', 'name': 'Apple Vision helpers', 'ok': os.path.exists(sc.VISION) and os.path.exists(OCR),
+         'line': 'The Vision engine and text recognition (OCR).',
+         'cmd': 'swiftc vision_mask.swift · studio/ocr.swift',
+         'blocked': None if shutil.which('swiftc') else 'Needs the Xcode command-line tools: xcode-select --install'},
+        {'id': 'sane', 'name': 'Scanner driver (SANE)', 'ok': scanner.available(),
+         'line': 'Scanning from the studio: scan areas, sessions, 48-bit colour.', 'cmd': 'brew install sane-backends', 'blocked': nobrew},
+        {'id': 'exiftool', 'name': 'ExifTool', 'ok': bool(tool('exiftool')),
+         'line': 'Carries resolution, colour profile and text into exported files.', 'cmd': 'brew install exiftool', 'blocked': nobrew},
+        {'id': 'jxl', 'name': 'JPEG XL', 'ok': bool(tool('cjxl')),
+         'line': 'Lossless .jxl export.', 'cmd': 'brew install jpeg-xl', 'blocked': nobrew},
+        {'id': 'ultralytics', 'name': 'Ultralytics', 'ok': has_module('ultralytics'), 'group': 'SAM 3',
+         'line': 'Runs SAM 3 on the Apple GPU. About 1 GB with PyTorch.',
+         'cmd': f'{os.path.basename(sys.executable)} -m pip install ultralytics', 'blocked': None},
+        {'id': 'sam3', 'name': 'SAM 3 model', 'ok': bool(w), 'group': 'SAM 3', 'path': w,
+         'line': 'Meta’s model, 3.5 GB, licence-gated. Download it here, or drop sam3.pt in Downloads.',
+         'cmd': 'hf download facebook/sam3 sam3.pt', 'link': 'https://huggingface.co/facebook/sam3', 'blocked': None},
+    ]

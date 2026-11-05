@@ -6,8 +6,14 @@ import AppKit
 import WebKit
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path
-let repo = home + "/Scans/.scancut"
-let python = "/opt/miniconda3/bin/python3"
+// dove stanno il codice, il Python e le scansioni: li scrive build.sh nell'Info.plist
+func conf(_ key: String, _ fallback: String) -> String {
+    (Bundle.main.object(forInfoDictionaryKey: key) as? String).flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+}
+let repo = conf("ScanStudioRepo", home + "/Scans/.scancut")
+let python = conf("ScanStudioPython", "/usr/bin/python3")
+let scansRoot = conf("ScanStudioRoot", home + "/Scans")
+let logDir = scansRoot + "/.scancut/studio-data"
 let port = 8765
 let base = URL(string: "http://127.0.0.1:\(port)/")!
 
@@ -41,7 +47,6 @@ let RADIUS: CGFloat = 10       // come la cornice disegnata dalla pagina (vista.
 func frameMask(_ size: NSSize) -> NSImage {
     // rettangolo con gli angoli in alto arrotondati (coordinate di AppKit: l'alto e' maxY)
     let img = NSImage(size: size, flipped: false) { r in
-        let p = NSBezierPath()
         NSColor.black.setFill(); NSBezierPath(roundedRect: r, xRadius: RADIUS, yRadius: RADIUS).fill(); return true
     }
     img.capInsets = NSEdgeInsets(top: RADIUS + 1, left: RADIUS + 1, bottom: RADIUS + 1, right: RADIUS + 1)
@@ -118,9 +123,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             if !self.ping() {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: python)
-                p.arguments = ["-I", repo + "/studio.py", "serve", "--port", "\(port)"]
+                p.arguments = ["-I", repo + "/studio.py", "serve", "--port", "\(port)", "--root", scansRoot]
                 p.currentDirectoryURL = URL(fileURLWithPath: repo)
-                let logDir = repo + "/studio-data"
                 try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
                 let log = logDir + "/server.log"
                 if !FileManager.default.fileExists(atPath: log) { FileManager.default.createFile(atPath: log, contents: nil) }
@@ -332,7 +336,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
     static let errorPage = """
     <html><body style="margin:0;height:100vh;display:grid;place-items:center;background:#0b3a52;
     font:13px 'Segoe UI',Tahoma,sans-serif;color:#fff;text-align:center">
-    <div>Scan Studio could not start.<br><br>See ~/Scans/.scancut/studio-data/server.log</div></body></html>
+    <div>Scan Studio could not start.<br><br>See \(logDir)/server.log</div></body></html>
     """
 }
 

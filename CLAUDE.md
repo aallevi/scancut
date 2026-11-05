@@ -16,7 +16,9 @@ imports the cutouts into Eagle and empties the folders by hand.
   .scancut/              this repo
     scancut.py           the whole pipeline (comments in Italian)
     vision_mask.swift    Apple Vision helper; build: swiftc -O vision_mask.swift -o vision_mask
-    com.antonioallevi.scancut.plist   copy of ~/Library/LaunchAgents/ (the live one)
+    agent/scancut.plist.in   LaunchAgent template; install.sh --agent fills it in
+                             (Antonio's live one: ~/Library/LaunchAgents/com.antonioallevi.scancut.plist)
+    install.sh, requirements.txt, VERSION   public install (README.md); app via studio/mac/build.sh
     studio.py, studio/   Scan Studio: Vista-style window + API + headless jobs (see STUDIO.md)
     scripts/             user engines for the studio: segment(rgb, ppm, params) -> masks
     done.tsv             ledger of cut originals: path inside originals/, size, mtime, result

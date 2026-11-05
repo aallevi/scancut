@@ -6,8 +6,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.expanduser('~/Scans/.scancut')
 REEL = os.path.join(REPO, 'tools', 'reel')
-FF = '/opt/miniconda3/bin/ffmpeg'
-FP = '/opt/miniconda3/bin/ffprobe'
+FF = shutil.which('ffmpeg') or 'ffmpeg'
+FP = shutil.which('ffprobe') or 'ffprobe'
 W, H, FPS = 1280, 800, 12
 URL = 'http://127.0.0.1:8799/'
 VOICE, RATE = 'Fred', '172'
