@@ -21,9 +21,12 @@ except OSError:
 
 ROOT = DATA = None
 
-# partito dal Dock il PATH e' quello corto di macOS: exiftool, cjxl, djxl stanno in Homebrew
+# partito dal Dock il PATH e' quello corto di macOS: exiftool, cjxl, djxl stanno in Homebrew,
+# claude (Chiedi a Claude) nei posti dove lo mette il suo installatore
 _path = os.environ.get('PATH', '').split(':')
-os.environ['PATH'] = ':'.join(_path + [d for d in ('/opt/homebrew/bin', '/usr/local/bin') if d not in _path])
+_more = ['/opt/homebrew/bin', '/usr/local/bin', os.path.expanduser('~/.local/bin'), os.path.expanduser('~/.claude/local'),
+         os.path.expanduser('~/.npm-global/bin')]
+os.environ['PATH'] = ':'.join(_path + [d for d in _more if d not in _path])
 _lock = threading.RLock()
 _engine_lock = threading.Lock()   # un motore alla volta (file temporanei, memoria)
 

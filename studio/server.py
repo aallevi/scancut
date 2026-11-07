@@ -186,11 +186,14 @@ class Jobs:
                f'Studio API: http://127.0.0.1:{PORT} (see STUDIO.md). '
                + (f'Current scan: {a["rel"]} (edit state: {core.state_path(a["rel"])}). ' if a.get('rel') else '')
                + 'Keep answers short; the reply is shown in a small panel.\n\n')
-        cmd = ['claude', '-p', ctx + a['message'], '--output-format', 'stream-json', '--verbose',
+        exe = shutil.which('claude')
+        if not exe:
+            raise RuntimeError('Claude Code not found: install it (claude.com/claude-code), then reopen the studio')
+        cmd = [exe, '-p', ctx + a['message'], '--output-format', 'stream-json', '--verbose',
                '--allowedTools', s['claude_tools']]
         if a.get('resume') and self.claude_session:
             cmd += ['--resume', self.claude_session]
-        p = subprocess.Popen(cmd, cwd=core.REPO, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        p = subprocess.Popen(cmd, cwd=core.REPO, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         j['proc'] = p
         for line in p.stdout:
             try:
