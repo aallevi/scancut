@@ -38,6 +38,12 @@ numbering each time it opens, so a taken name gets the next free number.
 - **Never overwrite** an original or a cutout. Identical cutouts are not rewritten.
 - One run at a time (`<root>/.scancut/lock`). Do not run the script by hand while the
   agent may be running; use `launchctl kickstart` instead.
+- **One source for every characteristic (library).** Each characteristic of a part (outline, edits,
+  holes, rotation, label, order, colour, included in the cut, text and secondary areas) is stored once;
+  the studio sheet, the cut file (pixels, name, metadata), the text pane, the side-by-side view and the
+  library views are representations of it. A change made in any of them changes the source and all
+  the others follow (re-cut, rename, metadata), with the previous files kept as history. No exceptions:
+  a new characteristic or view is wired to the source before it is shown. Files of parts are "cuts".
 - **Only real pixels.** Cutouts change transparency only: no filling, no colour
   fixing, no synthetic edges. Tools that change pixels make separate copies, marked
   as "fake pixels".

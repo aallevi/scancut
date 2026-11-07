@@ -7,6 +7,7 @@ import numpy as np, cv2
 from PIL import Image
 
 from . import core, scanner, assistant
+from .library import bridge
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 PORT = 8765
@@ -34,7 +35,7 @@ class Jobs:
         return j
 
     # domande, download e testo dei fogli non aspettano in coda dietro un batch (e viceversa)
-    BESIDE = ('help', 'claude', 'install', 'ocr_sheets', 'read')
+    BESIDE = ('help', 'claude', 'install', 'ocr_sheets', 'read', 'readcuts')
 
     def track(self, kind, **args):
         # un'operazione fatta subito (Detect, SAM, Export dall'editor...) compare lo stesso fra i lavori
@@ -93,10 +94,13 @@ class Jobs:
                 n = len(st['sheets'])
                 say(f'{rel}: {n} sheet(s) with {a.get("engine", "auto")} in {meta.get("seconds")}s')
                 j['done'] += 1
+                bridge._safe(bridge.sync_rel, rel)
                 if a.get('export') and n:
                     j['current'] = os.path.basename(rel) + ' · export'
-                    for w in core.export(rel, log=say):
+                    ws = core.export(rel, log=say)
+                    for w in ws:
                         say(f'  {w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
+                    bridge._safe(bridge.on_export, rel, ws)
             except Exception as e:
                 say(f'{rel}: ERROR {e}')
             j['done'] = start + (2 if a.get('export') else 1)
@@ -251,6 +255,22 @@ class Jobs:
                 say(f'{rel}: ERROR {e}')
             j['done'] += 1
 
+    def do_readcuts(self, j, say):
+        # il testo di molti ritagli, uno alla volta (barra vera)
+        lib = bridge.library(create=False)
+        def prog(k, n, name):
+            j['pct'] = k / n * 100; j['current'] = name
+        j['result'] = bridge.read_cutouts(lib, j['args']['uuids'], prog, log=say)
+        j['done'] = 1
+
+    def do_libimport(self, j, say):
+        # la cartella delle scansioni nella libreria (originali referenziati, fogli, testo)
+        lib = bridge.library(create=True)
+        def prog(k, n, name):
+            j['pct'] = k / n * 100; j['current'] = name
+        r = bridge.import_root(lib, prog, log=say)
+        j['result'] = r; j['done'] = 1
+
     def do_help(self, j, say):
         # l'assistente locale: la risposta cresce mentre il modello scrive (j['result'])
         a = j['args']
@@ -274,8 +294,10 @@ class Jobs:
             if j['status'] == 'cancelled':
                 break
             j['current'] = os.path.basename(rel)
-            for w in core.export(rel, log=say):
-                say(f'{w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
+            w = core.export(rel, log=say)
+            for x in w:
+                say(f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}')
+            bridge._safe(bridge.on_export, rel, w)
             j['done'] += 1
 
     def do_claude(self, j, say):
@@ -411,7 +433,8 @@ class Handler(BaseHTTPRequestHandler):
         if rel:
             core.abspath(rel)          # fuori dalla radice: errore
         if path == 'ping':
-            return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999, 'version': core.VERSION})
+            return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999, 'version': core.VERSION,
+                              'build': BUILD[0], 'dev': '--dev' in sys.argv})
         if path == 'addons':
             return self.send(core.addons() + assistant.addon_rows())
         if path == 'tree':
@@ -466,6 +489,29 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers(); self.wfile.write(b.getvalue()); return
         if path == 'search':
             return self.send(assistant.search(q.get('q', '')))
+        if path == 'library':
+            lib = bridge.library(create=False)
+            return self.send(dict(bridge.info(lib), exists=True) if lib else {'exists': False, 'path': bridge.library_path()})
+        if path == 'library/items':
+            lib = bridge.library(create=False)
+            return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None) if lib else [])
+        if path == 'library/series':
+            lib = bridge.library(create=False)
+            return self.send(bridge.series_list(lib) if lib else [])
+        if path == 'library/item':
+            r = bridge.item_detail(bridge.library(create=False), q['uuid'])
+            return self.send(r) if r else self.send({'error': 'no such item'}, code=404)
+        if path == 'library/texts':
+            lib = bridge.library(create=False)
+            return self.send(bridge.text_list(lib, q.get('q') or None) if lib else [])
+        if path == 'library/cutouts':
+            lib = bridge.library(create=False)
+            return self.send(bridge.cutout_list(lib) if lib else [])
+        if path == 'library/texts_for':
+            lib = bridge.library(create=False)
+            return self.send(bridge.texts_for_rel(lib, rel) if lib else [])
+        if path == 'library/editors':
+            return self.send(bridge.editors())
         if path == 'read_cached':
             return self.send({'text': core.read_cached(rel)})
         if path == 'helptopic':
@@ -546,6 +592,7 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS.track(kind, rel=rel, engine=e, box=b.get('box')) as j:
                 st, meta = core.detect(rel, e, b.get('params') or {}, b.get('box'), replace=b.get('replace', True))
                 j['log'].append(f'{len(st["sheets"])} sheet(s)')
+            bridge.sync_async(bridge.sync_rel, rel)
             return self.send({'state': st, 'meta': {k: v for k, v in meta.items() if k != 'sheets'}})
         if path == 'state':
             st = b['state']
@@ -553,14 +600,18 @@ class Handler(BaseHTTPRequestHandler):
             if cur.get('version', 0) != st.get('version', 0):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
-            return self.send(core.save_state(st))
+            saved = core.save_state(st)
+            bridge.sync_async(bridge.sync_rel, st['rel'])          # la libreria segue lo studio
+            return self.send(saved)
         if path == 'cutouts':
             # ritagli gia' salvati: girare (senza perdita), testo nei metadati, nel Cestino
             rels, act = b.get('rels') or [], b.get('action')
             for r in rels:
                 core.abspath(r)
             if act == 'rotate':
-                return self.send({'done': core.rotate_files(rels, int(b.get('deg', 90)))})
+                done = core.rotate_files(rels, int(b.get('deg', 90)))
+                bridge._safe(bridge.on_cutouts_rotated, done, int(b.get('deg', 90)))     # la rotazione e' della zona
+                return self.send({'done': done})
             if act == 'ocr':
                 return self.send({'done': core.ocr_files(rels)})
             if act == 'merge':
@@ -574,6 +625,17 @@ class Handler(BaseHTTPRequestHandler):
                 text = core.ocr_box(rel, b['box'])
                 j['log'].append(f'{len(text.splitlines())} line(s)' if text else 'no text')
             return self.send({'text': text, 'engine': eng})
+        if path == 'library/correct':
+            lib = bridge.library(create=False)
+            bridge.correct_text(lib, int(b['reading']), str(b['text']))
+            return self.send({'ok': True})
+        if path == 'library/edit_in':
+            lib = bridge.library(create=False)
+            with JOBS.track('edit_in', rel=None, engine=None) as j:
+                work = bridge.edit_in(lib, b['asset'], b['app'])
+                j['current'] = os.path.basename(work)
+                j['log'].append(f'opened in {b["app"]}: saving there adds a new version to the library')
+            return self.send({'work': work})
         if path == 'save_text':
             # il testo letto in un file Markdown accanto ai ritagli, mai sopra uno che c'e' gia'
             names = core.out_names(rel)
@@ -602,12 +664,13 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS.track('export', rel=rel) as j:
                 w = core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
                 j['log'] += [f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}' for x in w]
+            bridge.sync_async(bridge.on_export, rel, w)
             return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'help', 'pull', 'preview', 'scan', 'install'):
+            if kind not in ('readcuts', 'libimport', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'help', 'pull', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':
@@ -694,7 +757,34 @@ def _on_term(*_):
     os._exit(0)
 
 
-def serve(root, port=PORT, ready=None):
+BUILD = ['']
+
+
+def code_stamp():
+    # quando e' cambiato per l'ultima volta il codice (Python e pagine)
+    base = os.path.dirname(os.path.abspath(__file__))
+    files = [os.path.join(d, f) for d, _, fs in os.walk(base) for f in fs if f.endswith(('.py', '.js', '.css', '.html'))]
+    return str(max((os.path.getmtime(f) for f in files), default=0))
+
+
+def dev_reload():
+    # anteprima: Python cambiato -> il server si riavvia (aspetta che i lavori finiscano); le pagine
+    # si ricaricano da sole (vedono /api/ping cambiare)
+    base = os.path.dirname(os.path.abspath(__file__))
+    def py_stamp():
+        return max(os.path.getmtime(os.path.join(d, f)) for d, _, fs in os.walk(base) for f in fs if f.endswith('.py'))
+    start = py_stamp()
+    def loop():
+        while True:
+            time.sleep(1.5)
+            BUILD[0] = code_stamp()
+            if py_stamp() != start and not any(j['status'] in ('running', 'queued') for j in JOBS.jobs.values()):
+                time.sleep(0.5)
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+    threading.Thread(target=loop, daemon=True).start()
+
+
+def serve(root, port=PORT, ready=None, dev=False):
     import signal
     try:
         signal.signal(signal.SIGTERM, _on_term)
@@ -704,6 +794,12 @@ def serve(root, port=PORT, ready=None):
     PORT = port
     core.set_root(root)
     JOBS = Jobs()
+    BUILD[0] = code_stamp()
+    if dev:
+        dev_reload()
+    lib = bridge.library(create=False)
+    if lib:
+        bridge.start_watch(lib)                 # le copie aperte in Affinity & co. da prima: si guardano ancora
     httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     httpd.daemon_threads = True
     if ready:

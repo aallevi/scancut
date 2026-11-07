@@ -56,6 +56,7 @@ def main():
     ap.add_argument('paths', nargs='*')
     ap.add_argument('--root', default='~/Scans')
     ap.add_argument('--port', type=int, default=8765)
+    ap.add_argument('--dev', action='store_true', help='anteprima: si riavvia da solo quando il codice cambia')
     ap.add_argument('--engine', default='auto')
     ap.add_argument('--prompt', help='SAM 3 text prompt')
     ap.add_argument('--export', action='store_true')
@@ -80,7 +81,7 @@ def main():
     url = f'http://127.0.0.1:{a.port}/'
     if a.cmd == 'serve':
         print(f'Scan Studio on {url}  (root {core.ROOT})', flush=True)
-        server.serve(a.root, a.port)
+        server.serve(a.root, a.port, dev=a.dev)
         return
     # gia' aperto (un'altra finestra, o il server a mano): basta una finestra nuova
     import urllib.request

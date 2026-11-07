@@ -829,6 +829,10 @@ def holes_outline(h, ppm, y=0, x=0):
             for c in cnts if len(c) >= 3]
 
 
+# il colore di un pezzo: dato quando nasce, poi e' suo (studio, libreria, vista del testo)
+SHEET_COLORS = ['#3399ff', '#ff8c1a', '#2fb84f', '#c84ad0', '#e0b600', '#14b8c4', '#ff4d5e', '#7a6cff']
+
+
 def detect(rel, engine, params=None, box=None, replace=True):
     # gira un motore e mette i suoi fogli nello stato (al posto dei vecchi, o in aggiunta)
     key = run_engine(rel, engine, params, box)
@@ -852,6 +856,7 @@ def detect(rel, engine, params=None, box=None, replace=True):
         if len(poly) < 3:
             continue
         st['sheets'].append({'id': f's{n0 + i + 1}', 'src': [key, i], 'engine': engine, 'poly0': poly,
+                             'color': SHEET_COLORS[(len(st['sheets'])) % len(SHEET_COLORS)],
                              'poly': poly, 'ops': [], 'on': True, 'label': '',
                              'holes': holes_outline(s['h'], ppm, s['y'], s['x'])})
     order_sheets(st, ppm)

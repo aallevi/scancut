@@ -36,6 +36,8 @@ function store(k, v) { try { if (v === undefined) return localStorage.getItem('s
 const PREV_V = 2;      // alzare quando cambia il formato delle anteprime (2: PNG con trasparenza)
 const bgCss = () => ({ white: '#fff', grey: '#8a8d91', dark: '#262a30', checker: 'repeating-conic-gradient(#e6e6e6 0% 25%, #fbfbfb 0% 50%) 0 0 / 16px 16px' }[S.bg] || 'linear-gradient(#eef4fb, #d6e4f3)');
 const fmtSize = b => b > 1 << 20 ? (b / (1 << 20)).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
+// il colore e' del pezzo (salvato con lui); quello per posizione solo se non ne ha ancora uno
+const sheetColor = (sh, i) => sh?.color || COLORS[i % COLORS.length];
 const COLORS = ['#3399ff', '#ff8c1a', '#2fb84f', '#c84ad0', '#e0b600', '#14b8c4', '#ff4d5e', '#7a6cff'];
 const CMP_COLORS = { auto: '#00a2ff', classic: '#ff7a00', vision: '#d100d1', sam3: '#00b050' };
 
@@ -223,15 +225,15 @@ function renderCmdbar() {
         { label: ed ? 'Read the whole scan' : `Read the whole document${S.sel.size > 1 ? 's' : ''} (${S.sel.size})`, disabled: ed ? false : !S.sel.size, do: () => ed ? readWholeScan() : readDocs([...S.sel]), note: 'Every word on the page, shown in a reader. Originals are never changed.' },
         { label: `Read into the cutout files (${cuts.length})`, disabled: ed || !cuts.length, do: () => readDocs(cuts, true), note: 'Also writes the text into each file’s description (XMP, IPTC, EXIF).' },
         '-',
-        { label: 'Read text automatically at export', check: !!S.settings?.ocr_on_export, do: async () => { S.settings = await api.post('settings', { ocr_on_export: !S.settings.ocr_on_export }); } },
+        { label: 'Read text automatically when cutting', check: !!S.settings?.ocr_on_export, do: async () => { S.settings = await api.post('settings', { ocr_on_export: !S.settings.ocr_on_export }); } },
         { label: 'Where the text is stored…', do: () => openHelp('where is the OCR text stored') },
       ];
     } }),
-    cmd('Export', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Save the cutouts (⌘S)' }),
+    cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cutouts of the parts (⌘S). After that they follow every change of their part.' }),
     cmd('Batch', null, { menu: () => [
       { label: `Detect selected (${S.sel.size}) with ${engName(S.engine)}`, disabled: !S.sel.size, do: () => batch(false) },
-      { label: `Detect and export selected (${S.sel.size})`, disabled: !S.sel.size, do: () => batch(true) },
-      { label: 'Detect and export whole folder', do: () => { selectAll(); batch(true); } },
+      { label: `Detect and cut selected (${S.sel.size})`, disabled: !S.sel.size, do: () => batch(true) },
+      { label: 'Detect and cut whole folder', do: () => { selectAll(); batch(true); } },
       '-', { label: 'Jobs…', do: () => go('jobs') },
     ] }),
     cmd('Scripts', null, { menu: () => [
@@ -250,6 +252,212 @@ function renderCmdbar() {
     searchBox(),
   );
 }
+// ------------------------------------------------------------ libreria (catalogo): oggetti, viste, zone, testo
+// Ramo `library`: accanto alle cartelle. Ogni oggetto ha le sue viste (file: originale, retro, copie
+// ritoccate in Affinity & co.), le zone (fogli, aree) con il loro testo, e la sua storia.
+const LIB = { info: null, items: [], q: '', sel: null, detail: null, editors: null, mode: store('libmode') || 'objects', cut: null,
+  sort: store('libsort') || 'added', dpi: store('libdpi') || '', picks: new Set() };
+// ordinare e filtrare per risoluzione: dpi del file, o pixel
+const LIB_SORTS = { added: 'Newest', name: 'Name', dpi: 'Resolution (dpi)', px: 'Pixel size' };
+function libArrange(list) {
+  const lo = { '': 0, '300': 300, '600': 600, '1200': 1200 }[LIB.dpi] ?? 0, under = LIB.dpi === '<300';
+  let out = list.filter(x => under ? (x.dpi || 0) < 299 : (x.dpi || 0) >= lo - 1);
+  const key = { added: x => -(Date.parse(x.added || x.date || 0) || 0), name: x => (x.title || x.name || '').toLowerCase(),
+    dpi: x => -(x.dpi || 0), px: x => -((x.width || 0) * (x.height || 0)) }[LIB.sort];
+  return out.slice().sort((a, b) => { const p = key(a), q = key(b); return p < q ? -1 : p > q ? 1 : 0; });
+}
+function libSortBar() {
+  return h('span', { class: 'libsort' },
+    h('select', { title: 'Sort', onchange: e => { LIB.sort = e.target.value; store('libsort', LIB.sort); libLoad(); } }, Object.entries(LIB_SORTS).map(([k, l]) => h('option', { value: k, selected: LIB.sort === k }, l))),
+    h('select', { title: 'Filter by resolution', onchange: e => { LIB.dpi = e.target.value; store('libdpi', LIB.dpi); libLoad(); } },
+      [['', 'Any dpi'], ['300', '≥ 300 dpi'], ['600', '≥ 600 dpi'], ['1200', '≥ 1200 dpi'], ['<300', '< 300 dpi']].map(([v, l]) => h('option', { value: v, selected: LIB.dpi === v }, l))));
+}
+function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.series = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
+async function renderLibrary() {
+  const main = $('#main'); main.innerHTML = '';
+  LIB.info = await api.get('library').catch(() => null);
+  LIB.seriesList = await api.get('library/series').catch(() => []); renderNav();
+  if (S.view !== 'library') return;
+  const head = h('div', { class: 'libhead' });
+  main.append(addressBar(null, null, 'Library'), head);
+  if (!LIB.info?.exists) {
+    head.append(h('div', { class: 'libempty' },
+      h('div', { class: 'big' }, 'No library yet'),
+      h('div', { class: 'muted' }, `A library is an archive of your scans: each object with its views, selections, text and history, searchable. Originals stay where they are. It will be created at ${LIB.info?.path || ''}.`),
+      h('button', { class: 'btn default', onclick: libImport }, 'Create it from the scans folder')));
+    return renderSide();
+  }
+  const search = h('input', { class: 'search', placeholder: LIB.mode === 'texts' ? 'Search the texts…' : 'Search the library (text, titles, labels)…', value: LIB.q,
+    oninput: e => { LIB.q = e.target.value; clearTimeout(LIB.t); LIB.t = setTimeout(libLoad, 200); } });
+  head.append(h('div', { class: 'libbar' }, h('b', {}, LIB.info.name),
+    h('span', { class: 'muted' }, ` · ${LIB.info.items} objects · ${LIB.info.cutouts} cutouts · ${LIB.info.texts} texts · ${LIB.info.edits} edited copies`),
+    h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
+    LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cutouts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
+    h('button', { class: 'btn small', title: 'Add new scans from the scans folder (nothing is copied, nothing duplicated)', onclick: libImport }, 'Update from folder')));
+  main.append(h('div', { class: 'gallery libgrid', id: 'libgrid' }));
+  libLoad();
+}
+async function libLoad() {
+  if (LIB.mode === 'cutouts') return libLoadCutouts();
+  if (LIB.mode === 'texts') return libLoadTexts();
+  LIB.items = libArrange(await api.get('library/items', Object.assign(LIB.q ? { q: LIB.q } : {}, LIB.series ? { series: LIB.series } : {})).catch(() => []));
+  const g = $('#libgrid'); if (!g) return;
+  g.innerHTML = '';
+  if (!LIB.items.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'Empty.'));
+  for (const it of LIB.items) g.append(h('div', { class: 'thumb' + (LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
+      onclick: () => libSelect(it.uuid), ondblclick: e => libOpen(it.uuid, e) },
+    h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
+      it.files > 1 ? h('span', { class: 'badge edit', title: `${it.files} files (views, edited copies)` }, `${it.files} ▣`) : null),
+    h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
+    h('div', { class: 'cap' }, it.title || '(untitled)', h('small', {}, [it.date, it.regions ? `${it.regions} sel.` : ''].filter(Boolean).join(' · ')))));
+}
+// ritagli: ognuno con i testi che mostra (gli stessi della sua zona sulla scansione)
+async function libLoadCutouts() {
+  let list = await api.get('library/cutouts').catch(() => []);
+  if (LIB.q) { const q = LIB.q.toLowerCase(); list = list.filter(c => (c.name + ' ' + c.title + ' ' + c.texts.map(t => t.plain).join(' ')).toLowerCase().includes(q)); }
+  LIB.cuts = list = libArrange(list);
+  libReadLabel();
+  const g = $('#libgrid'); if (!g) return;
+  g.innerHTML = '';
+  if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'No cutouts yet: export from the editor.'));
+  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cutout)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e) },
+    h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
+    h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
+    h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')))));
+}
+// scegliere piu' ritagli: ⌘-clic aggiunge o toglie, ⇧-clic un tratto, clic solo uno
+function libPickCut(e, c) {
+  const i = LIB.cuts.indexOf(c);
+  if (e.shiftKey && LIB.anchor != null) { const [a, b] = [Math.min(LIB.anchor, i), Math.max(LIB.anchor, i)]; if (!e.metaKey) LIB.picks.clear(); LIB.cuts.slice(a, b + 1).forEach(x => LIB.picks.add(x.uuid)); }
+  else if (e.metaKey || e.ctrlKey) { LIB.picks.has(c.uuid) ? LIB.picks.delete(c.uuid) : LIB.picks.add(c.uuid); LIB.anchor = i; }
+  else { LIB.picks = new Set([c.uuid]); LIB.anchor = i; }
+  $$('#libgrid .thumb').forEach((el, k) => el.classList.toggle('sel', LIB.picks.has(LIB.cuts[k]?.uuid)));
+  libReadLabel();
+  libSelectCut(c, true);
+}
+function libReadLabel() { const b = $('#libread'); if (b) b.textContent = LIB.picks.size ? `Read text (${LIB.picks.size})` : `Read text (all ${LIB.cuts?.length || 0})`; }
+async function libReadCuts() {
+  const uuids = LIB.picks.size ? [...LIB.picks] : (LIB.cuts || []).map(c => c.uuid);
+  if (!uuids.length) return;
+  const j = await api.post('jobs', { kind: 'readcuts', uuids }); pollJobs();
+  status(`Reading ${uuids.length} cutout(s) with ${ocrName()}… (see Jobs)`);
+  let x = j;
+  while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 900)); x = await api.get('job', { id: j.id }); }
+  status(x.status === 'done' ? `Read ${x.result.length} cutout(s)` : 'Reading failed: see Jobs');
+  if (S.view === 'library') { libLoad(); if (LIB.cut) libSelectCut((LIB.cuts || []).find(c => c.uuid === LIB.cut) || {}, true); }
+}
+async function libSelectCut(c, keepPicks) {
+  if (!c?.uuid) return;
+  LIB.cut = c.uuid; LIB.sel = c.item; LIB.detail = await api.get('library/item', { uuid: c.item }).catch(() => null);
+  if (!LIB.editors) LIB.editors = await api.get('library/editors').catch(() => []);
+  if (!keepPicks) $$('#libgrid .thumb').forEach((el, i) => el.classList.toggle('sel', LIB.cuts[i]?.uuid === c.uuid));
+  renderSide();
+}
+// testi: ognuno una cosa a se', con la sua zona sulla scansione e i ritagli che lo mostrano
+LIB.hideEmpty = store('libhideempty') !== '0';          // "no text found": nascosti, finche' non si vuole vederli
+async function libLoadTexts() {
+  const all = await api.get('library/texts', LIB.q ? { q: LIB.q } : {}).catch(() => []);
+  const list = LIB.hideEmpty ? all.filter(t => (t.plain || '').trim()) : all;
+  const g = $('#libgrid'); if (!g) return;
+  g.className = 'libtexts'; g.innerHTML = '';
+  const hidden = all.length - list.length;
+  g.append(h('label', { class: 'small muted libfilter' }, h('input', { type: 'checkbox', checked: LIB.hideEmpty, onchange: e => { LIB.hideEmpty = e.target.checked; store('libhideempty', LIB.hideEmpty ? '1' : '0'); libLoadTexts(); } }),
+    ` Hide “no text found”${hidden ? ` (${hidden} hidden)` : ''}`));
+  if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : all.length ? 'Only empty texts here.' : 'No texts yet: read some in the editor (Text pane).'));
+  for (const t of list) g.append(h('div', { class: 'ltext' + (LIB.sel === t.item ? ' sel' : ''), style: { borderLeftColor: t.region?.color || '#8a96a6' },
+      title: 'Click: go to its object · double-click: open its scan with this part', onclick: () => libGoItem(t.item, t.region?.uuid), ondblclick: e => libOpenPart(t, e) },
+    h('div', { class: 'lth' }, h('b', {}, t.title || '(untitled)'), h('span', { class: 'muted' }, ' › ' + (t.whole ? 'whole scan' : t.region.label)),
+      h('span', { class: 'muted small', style: { marginLeft: 'auto' } }, `${t.model || t.engine}${t.version ? ` · corrected ×${t.version}` : ''} · ${new Date(t.at).toLocaleDateString()}`)),
+    h('div', { class: 'ltbody' },
+      h('div', { class: 'mtext', html: t.plain ? mdToHtml(t.plain, null) : '<p class="mnone">no text found</p>' }),
+      t.cutouts.length ? h('div', { class: 'ltcuts' }, ...t.cutouts.map(c => c.rel ? h('img', { title: c.name + ' (shows this text) · double-click opens it', ondblclick: e => { e.stopPropagation(); openLoc('scan:' + c.rel, e); }, src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss() } }) : null))
+        : h('div', { class: 'small muted' }, 'No cutout yet.'))));
+}
+// da un testo al suo oggetto (Oggetti, scelto e in vista, la sua zona evidenziata)
+async function libGoItem(item, regionUuid) {
+  LIB.mode = 'objects'; store('libmode', 'objects'); LIB.hilite = regionUuid || null;
+  await renderLibrary(); renderNav();
+  await libSelect(item);
+  $$('#libgrid .thumb')[LIB.items.findIndex(i => i.uuid === item)]?.scrollIntoView({ block: 'center' });
+  $(`#side [data-region="${regionUuid}"]`)?.scrollIntoView({ block: 'center' });
+}
+// doppio clic su un testo: la sua scansione nell'editor, con quella zona scelta e il pannello Testo
+async function libOpenPart(t, e) {
+  const rel = t.region?.studio_rel;
+  if (!rel) return libGoItem(t.item);
+  await openLoc('scan:' + rel, e);
+  if (t.region.studio_id && S.st?.sheets.some(x => x.id === t.region.studio_id)) { selectIds([t.region.studio_id]); renderSide(); draw(); }
+  toggleTextPane(true);
+}
+async function libRefresh() { if (S.view === 'library' && LIB.sel) { LIB.detail = await api.get('library/item', { uuid: LIB.sel }).catch(() => LIB.detail); renderSide(); } }
+async function libSelect(uuid) {
+  LIB.sel = uuid; LIB.detail = await api.get('library/item', { uuid }).catch(() => null);
+  if (!LIB.editors) LIB.editors = await api.get('library/editors').catch(() => []);
+  $$('#libgrid .thumb').forEach((el, i) => el.classList.toggle('sel', LIB.items[i]?.uuid === uuid));
+  renderSide();
+}
+function libOpen(uuid, e) {
+  const d = LIB.sel === uuid ? LIB.detail : null;
+  const a = d?.assets.find(x => x.rel) || null;
+  if (a) openLoc('scan:' + a.rel, e); else libSelect(uuid);
+}
+async function libImport() {
+  const j = await api.post('jobs', { kind: 'libimport' }); pollJobs();
+  status('Building the library from the scans folder… (see Jobs)');
+  let x = j;
+  while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 600)); x = await api.get('job', { id: j.id }); }
+  status(x.status === 'done' ? `Library: ${x.result.files} originals, ${x.result.new_items} new` : 'Import failed: see Jobs');
+  if (S.view === 'library') renderLibrary();
+}
+async function libEditIn(asset, app) {
+  try { await api.post('library/edit_in', { asset: asset.uuid, app }); status(`Opened in ${app}: each time you save there, the library keeps it as a new version`); }
+  catch (e) { alertDialog('Edit in', e.message); }
+}
+function sideLibrary(side) {
+  const d = LIB.detail;
+  const c = LIB.mode === 'cutouts' && LIB.cut ? (LIB.cuts || []).find(x => x.uuid === LIB.cut) : null;
+  if (c) {
+    side.append(group(c.name,
+      c.rel ? h('div', { style: { textAlign: 'center' } }, h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 512 })}&v=${PREV_V}`, style: { maxWidth: '100%', maxHeight: '260px', background: bgCss() } })) : null,
+      h('div', { class: 'small muted' }, `${c.width} × ${c.height} px${c.dpi ? ` · ${Math.round(c.dpi)} dpi` : ''} · ${c.sha256.slice(0, 12)}…`),
+      h('div', { class: 'small' }, 'From ', h('a', { href: '#', onclick: e => { e.preventDefault(); libMode('objects'); libSelect(c.item); } }, c.title), c.region ? h('span', {}, ' › ', h('span', { class: 'sw', style: { display: 'inline-block', width: '9px', height: '9px', background: c.region.color, marginRight: '4px' } }), c.region.label) : null)),
+      group(`Texts (${c.texts.length})`, ...(c.texts.length ? c.texts.map(t => h('div', { class: 'libregion', style: { borderLeftColor: c.region?.color || '#ccc' } },
+        h('div', { class: 'small lrtext' }, t.plain || '(no text found)'), h('div', { class: 'small muted' }, `${t.model || t.engine}${t.corrected_version ? ` · corrected ×${t.corrected_version}` : ''}${t.earlier ? ` · ${t.earlier} earlier reading(s) kept` : ''}`)))
+        : [h('div', { class: 'small muted' }, 'No text read for this part yet.')])),
+      group('Actions', h('div', { class: 'btns' },
+        c.rel ? h('button', { class: 'btn small default', title: 'Opens this cutout in the editor', onclick: e => openLoc('scan:' + c.rel, e) }, 'Open cutout') : null,
+        h('button', { class: 'btn small', title: 'Opens the scan it was cut from', onclick: async e => { await libSelect(c.item); libOpen(c.item, e); } }, 'Open its scan'),
+        ...(LIB.editors || []).slice(0, 2).map(app => h('button', { class: 'btn small', onclick: () => libEditIn(c, app) }, `Edit in ${app}`)),
+        c.rel ? h('button', { class: 'btn small', onclick: () => api.post('open', { what: 'finder', rel: c.rel }) }, 'Show in Finder') : null)));
+    return;
+  }
+  if (!d) return side.append(group('Library', h('div', { class: 'muted' }, 'Select an object. Double-click opens it in the editor.')));
+  const it = d.item;
+  const roleName = { view: 'View', front: 'Front', back: 'Back', detail: 'Detail', edit: 'Edited copy', cutout: 'Cutout' };
+  side.append(group(it.title || '(untitled)',
+    h('div', { class: 'small muted' }, [it.kind, it.date, it.batch].filter(Boolean).join(' · ')),
+    h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens here; ⌘-click: in a new tab', onclick: e => libOpen(it.uuid, e) }, 'Open'))),
+    group(`Files (${d.assets.length})`, ...d.assets.map(a => h('div', { class: 'libasset' },
+      a.rel ? h('img', { src: `/api/thumb?${qs({ rel: a.rel, size: 256 })}&v=${PREV_V}` }) : h('div', { class: 'noimg' }),
+      h('div', { class: 'f' }, h('b', {}, roleName[a.role] || a.role), a.made_with ? h('span', { class: 'muted' }, ` · ${a.made_with}`) : null,
+        h('div', { class: 'small muted' }, `${a.width || '?'} × ${a.height || '?'} px${a.dpi ? ` · ${Math.round(a.dpi)} dpi` : ''} · ${a.bits || 8} bit · ${fmtSize(a.size)}`),
+        h('div', { class: 'small muted', title: 'SHA-256: the file is always this one (fixity)' }, `${a.storage} · ${a.sha256.slice(0, 12)}…`),
+        h('div', { class: 'btns' }, ...(LIB.editors || []).slice(0, 3).map(app => h('button', { class: 'btn small', title: `A lossless working copy opens in ${app}; every save comes back here as a new version. The file itself never changes.`, onclick: () => libEditIn(a, app) }, `Edit in ${app}`)),
+          a.rel ? h('button', { class: 'btn small', onclick: e => openLoc('scan:' + a.rel, e) }, 'Cut / read') : null))))),
+    group(`Selections (${d.regions.length})`, ...(d.regions.length ? d.regions.map((g, i) => h('div', { class: 'libregion' + (LIB.hilite === g.uuid ? ' hilite' : ''), 'data-region': g.uuid, style: { borderLeftColor: g.color || COLORS[i % COLORS.length] } },
+      h('div', { class: 'lrh' }, h('span', { class: 'sw', style: { background: g.color || COLORS[i % COLORS.length] } }), h('b', {}, g.label || `${g.kind} ${i + 1}`),
+        g.export_on ? null : h('span', { class: 'muted small' }, ' · not exported')),
+      // il ritaglio di questa zona e il suo testo, insieme
+      h('div', { class: 'lrbody' },
+        g.cutout?.rel ? h('img', { class: 'lrcut', title: g.cutout.name, src: `/api/thumb?${qs({ rel: g.cutout.rel, size: 256 })}&v=${PREV_V}&t=${encodeURIComponent(g.cutout.at)}`, style: { background: bgCss() } })
+          : h('div', { class: 'lrcut none', title: 'Not exported yet' }, 'no cutout'),
+        h('div', { class: 'f' },
+          g.cutout ? h('div', { class: 'small muted' }, g.cutout.name) : null,
+          g.text ? h('div', { class: 'small lrtext' }, g.text.plain.slice(0, 400) + (g.text.plain.length > 400 ? '…' : '')) : h('div', { class: 'small muted' }, 'No text read.'),
+          g.text ? h('div', { class: 'small muted' }, `${g.text.model || g.text.engine}${g.text.corrected_version ? ` · corrected ×${g.text.corrected_version}` : ''}`) : null)))) : [h('div', { class: 'small muted' }, 'None yet: open it and Detect.')])),
+    group('History', ...d.events.slice(0, 12).map(e => h('div', { class: 'small' }, h('span', { class: e.outcome === 'ok' ? 'muted' : 'warn' }, new Date(e.at).toLocaleString() + ' · '), e.type))));
+}
+
 // ------------------------------------------------------------ ricerca
 // scansioni e ritagli di tutte le cartelle, etichette e testo letto, argomenti d'aiuto; Invio apre il
 // primo risultato, e le ultime righe chiedono all'assistente o a Claude. Nella galleria filtra anche.
@@ -311,7 +519,16 @@ function renderNavTree() {
       kids: t.children.map(c => node(c.name, I.folder, c.rel, { count: c.count, sel: (S.view === 'gallery' || S.view === 'editor') && S.dir === c.rel, onclick: () => openDir(c.rel) })),
     }));
   }
-  nav.append(h('h4', {}, 'Scans'), tree, h('h4', {}, 'Studio'), h('div', { class: 'tree' },
+  nav.append(h('h4', {}, 'Library'), h('div', { class: 'tree' },
+      node('Objects', I.pics, 'v:library', { sel: S.view === 'library' && LIB.mode === 'objects', onclick: () => libMode('objects') }),
+      node('Cutouts', I.cut, 'v:library-cutouts', { sel: S.view === 'library' && LIB.mode === 'cutouts', onclick: () => libMode('cutouts') }),
+      node('Texts', I.script, 'v:library-texts', { sel: S.view === 'library' && LIB.mode === 'texts', onclick: () => libMode('texts') })),
+    // le serie vengono dal catalogo (non dalle cartelle)
+    (LIB.seriesList || []).length ? h('h4', {}, 'Series') : null,
+    (LIB.seriesList || []).length ? h('div', { class: 'tree' }, ...LIB.seriesList.filter(x => x.items).map(x =>
+      node(x.name || 'No series', I.folder, 'series:' + (x.uuid || 'none'), { count: x.items, sel: S.view === 'library' && LIB.mode === 'objects' && LIB.series === (x.uuid || 'none'),
+        onclick: () => { LIB.series = (LIB.series === (x.uuid || 'none')) ? null : (x.uuid || 'none'); LIB.mode = 'objects'; store('libmode', 'objects'); if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); } }))) : null,
+    h('h4', {}, 'Scans'), tree, h('h4', {}, 'Studio'), h('div', { class: 'tree' },
     node('Jobs', I.jobs, 'v:jobs', { sel: S.view === 'jobs', onclick: () => go('jobs'), count: '' }),
     node('Scanners', I.scanner, 'v:scanners', { sel: S.view === 'scanners', onclick: () => go('scanners') }),
     node('Scripts', I.script, 'v:scripts', { sel: S.view === 'scripts', onclick: () => go('scripts') }),
@@ -322,7 +539,7 @@ function renderNavTree() {
 
 // ------------------------------------------------------------ viste
 async function go(view) {
-  if (['jobs', 'scanners', 'scripts', 'addons'].includes(view)) remember('view:' + view);
+  if (['jobs', 'scanners', 'scripts', 'addons', 'library'].includes(view)) remember('view:' + view);
   if (S.view === 'editor' && view !== 'editor') leaveEditor();
   S.view = view;
   renderCmdbar(); renderNav(); renderNavbar();
@@ -331,6 +548,7 @@ async function go(view) {
   if (view === 'scanners') renderScanners();
   if (view === 'scripts') renderScripts();
   if (view === 'addons') renderAddons();
+  if (view === 'library') renderLibrary();
   renderSide();
 }
 // motore e impostazioni dell'ultimo export della stessa serie: si riprendono entrando nella serie
@@ -377,7 +595,7 @@ function tabLabel(loc) {
   const [kind, ...rest] = (loc || '').split(':'), arg = rest.join(':');
   if (kind === 'scan') return arg.split('/').pop();
   if (kind === 'dir') return TOP_NAMES[arg] || arg.split('/').pop();
-  return { jobs: 'Jobs', scanners: 'Scanners', scripts: 'Scripts', addons: 'Add-ons', gallery: 'Scans' }[arg] || arg || 'New tab';
+  return { jobs: 'Jobs', scanners: 'Scanners', scripts: 'Scripts', addons: 'Add-ons', gallery: 'Scans', library: 'Library' }[arg] || arg || 'New tab';
 }
 function tabsSave() { store('tabs', JSON.stringify({ list: TABS.list.map(t => t.loc), i: TABS.i })); }
 function renderTabs() {
@@ -445,6 +663,14 @@ async function closeTab(i) {
 }
 // ⌘-clic o rotellina: in una scheda nuova
 const wantsTab = e => e && (e.button === 1 || e.metaKey);
+// aprire qualcosa: clic = nella scheda di adesso (con indietro/avanti), ⌘-clic = in una scheda nuova
+async function openLoc(loc, e) {
+  if (wantsTab(e)) return newTab(loc);
+  const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
+  if (kind === 'scan') return openScan(arg);
+  if (kind === 'dir') return openDir(arg);
+  return go(arg);
+}
 function tabMenu(el, loc, here) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }]); }
 async function navBack() { if (!S.navBack.length) return; S.navFwd.push(S._here); await goLoc(S.navBack.pop()); }
 async function navFwd() { if (!S.navFwd.length) return; S.navBack.push(S._here); await goLoc(S.navFwd.pop()); }
@@ -567,6 +793,12 @@ function renderTextPane() {
   } }, h('option', { value: S.settings?.ocr_engine || 'vision' }, ocrName()));
   ocrReaders().then(list => { reader.innerHTML = ''; [...list, { value: '__more', label: 'More readers… (Add-ons)' }].forEach(r => reader.append(h('option', { value: r.value, selected: r.value === (S.settings?.ocr_engine || 'vision') }, r.label))); });
   const boxes = S.boxTexts[S.rel] || [];
+  const lib = (S.libTexts || []).map(t => h('div', { class: 'tblock', style: { borderLeft: `4px solid ${t.color}` } },
+    h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: t.color } }), h('b', {}, t.title), h('small', {}, '› ' + t.region),
+      h('small', { style: { marginLeft: 'auto' } }, `${t.model}${t.version ? ` · corrected ×${t.version}` : ''}`)),
+    h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
+      onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cutouts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
+    t.item ? h('div', { class: 'small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); LIB.mode = 'objects'; go('library').then(() => libSelect(t.item)); } }, 'Show in the library')) : null));
   pane.append(
     h('div', { class: 'tph' }, h('b', {}, 'Text'),
       h('label', { class: 'small', style: { marginLeft: '12px' }, title: 'A second view the size of the scan: each text where it is on the page, in its sheet’s colour' }, h('input', { type: 'checkbox', checked: S.textView, onchange: e => toggleTextView(e.target.checked) }), ' Side by side'),
@@ -577,6 +809,8 @@ function renderTextPane() {
       h('button', { class: 'btn small', disabled: !sheets.length, onclick: () => ocrSheets(sheets) }, `Read all (${sheets.length})`),
       h('button', { class: 'btn small' + (S.tool === 'text' ? ' on' : ''), title: 'Drag a box over any writing (T)', onclick: () => setTool('text') }, '▭ Read a box'),
       h('button', { class: 'btn small', title: 'Every word on the whole scan, as one page', onclick: readWholeScan }, 'Read whole scan')),
+    lib.length ? h('div', { class: 'small muted', style: { margin: '6px 0 2px' } }, 'The text of this cutout (from the library; corrections go everywhere it appears):') : null,
+    ...lib,
     ...boxes.map((b, i) => h('div', { class: 'tblock box' },
       h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: '#888' } }), h('b', {}, b.whole ? 'Whole scan' : 'From a box'), h('small', {}, `${Math.round((b.box[2] - b.box[0]) / S.info.ppm)} × ${Math.round((b.box[3] - b.box[1]) / S.info.ppm)} mm`),
         h('span', { class: 'x', title: 'Remove', onclick: () => { boxes.splice(i, 1); renderTextPane(); } }, '✕')),
@@ -585,17 +819,21 @@ function renderTextPane() {
         b.sheet && sheets.some(x => x.id === b.sheet) ? h('button', { class: 'btn small', onclick: () => { const sh = sheets.find(x => x.id === b.sheet); commit(() => { sh.ocr = ((sh.ocr || '').trim() + '\n' + b.text).trim(); }); boxes.splice(i, 1); renderTextPane(); } }, `Add to sheet ${letter(sheets.find(x => x.id === b.sheet)) || ''}`) : null))),
     ...sheets.map((sh, i) => h('div', { class: 'tblock' + (isSel(sh.id) ? ' sel' : '') + (sh.on === false ? ' off' : '') },
       h('div', { class: 'tbh', onclick: () => { selectIds([sh.id]); renderSide(); draw(); renderTextPane(); } },
-        h('span', { class: 'sw', style: { background: COLORS[i % COLORS.length] } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not exported'),
+        h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not exported'),
         h('span', { class: 'rr', title: 'Read this sheet again', onclick: e => { e.stopPropagation(); ocrSheets([sh]); } }, '↻')),
-      sh.ocr === undefined ? h('div', { class: 'small muted' }, 'Not read yet.')
+      sh.ocr === undefined ? h('div', { class: 'small muted' }, (sh.areas || []).length ? 'Whole sheet not read (only its areas).' : 'Not read yet.')
         : h('textarea', { rows: Math.min(14, Math.max(2, (sh.ocr || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
-            onchange: e => commit(() => { sh.ocr = e.target.value; }) }, sh.ocr || ''))),
+            onchange: e => commit(() => { sh.ocr = e.target.value; }) }, sh.ocr || ''),
+      ...(sh.areas || []).map((a, k) => h('div', { class: 'tarea', style: { borderLeftColor: sheetColor(S.st?.sheets?.[i], i) } },
+        h('div', { class: 'tbh' }, h('b', {}, `${letter(sh) || 'sheet'}·${k + 1}`), h('small', {}, `secondary area · ${Math.round((a.box[2] - a.box[0]) / S.info.ppm)} × ${Math.round((a.box[3] - a.box[1]) / S.info.ppm)} mm · ${a.reader || ''}`),
+          h('span', { class: 'x', title: 'Remove this area', onclick: () => commit(() => { sh.areas.splice(k, 1); }) }, '✕')),
+        h('textarea', { rows: Math.min(8, Math.max(2, (a.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { a.text = e.target.value; }) }, a.text || ''))))),
     h('div', { class: 'tpf' },
-      h('div', { class: 'small muted' }, 'Each sheet’s text goes into its cutout at export (file description: XMP, IPTC, EXIF).'),
+      h('div', { class: 'small muted' }, 'Each part’s text goes into its cutout file (description: XMP, IPTC, EXIF) and follows every correction.'),
       h('div', { class: 'btns' },
         h('button', { class: 'btn small', onclick: () => { navigator.clipboard?.writeText(allText()); status('All text copied'); } }, 'Copy all'),
         h('button', { class: 'btn small', title: 'A Markdown file next to the cutouts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
-        h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every export'))));
+        h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
 }
 // ------------------------------------------------------------ vista del testo, grande come la scansione
 // Accanto al disegno, con lo stesso zoom e la stessa posizione: il testo di ogni foglio (o riquadro letto)
@@ -664,17 +902,38 @@ function renderMirror() {
   if (!on) return;
   const pg = $('#mpage'); pg.innerHTML = '';
   const ppm = S.info.ppm, sheets = S.st.sheets;
-  const block = (b, col, text, title) => {
+  // un rettangolo per testo; secondary: area dentro un foglio (bordo tratteggiato, sopra il foglio).
+  // Doppio clic: si scrive dentro, nello stesso posto; uscendo il testo si salva dove appartiene
+  const block = (b, col, text, title, onEdit, secondary) => {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
-    pg.append(h('div', { class: 'mblock', style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + '14', borderWidth: Math.max(2, 0.4 * ppm) + 'px' } },
-      h('div', { class: 'mtag', style: { background: col, fontSize: 2.6 * ppm + 'px' } }, title),
-      h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? mdToHtml(text, b) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` })));
+    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? mdToHtml(text, b) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
+    const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
+      style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
+      h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title), body);
+    if (onEdit) el.addEventListener('dblclick', e => {
+      e.stopPropagation();
+      if (el.querySelector('textarea')) return;
+      const ta = h('textarea', { class: 'medit', spellcheck: false, style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' } }, text || '');
+      body.replaceWith(ta); ta.focus();
+      ta.addEventListener('pointerdown', ev => ev.stopPropagation());
+      ta.addEventListener('blur', () => { if (ta.value !== (text || '')) onEdit(ta.value); else renderMirror(); });
+      ta.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ta.value = text || ''; ta.blur(); } ev.stopPropagation(); });
+    });
+    pg.append(el);
   };
   const on_ = sheets.filter(x => x.on !== false);
-  sheets.forEach((sh, i) => { if (sh.ocr !== undefined && !isInverted(sh)) block(bbox(sh.poly), COLORS[i % COLORS.length], sh.ocr, ((on_.length > 1 ? 'abcdefghijklmnopqrstuvwxyz'[on_.indexOf(sh)] || '' : '') + (sh.label ? ' ' + sh.label : '')) || 'sheet'); });
-  (S.boxTexts[S.rel] || []).forEach(t => { const i = sheets.findIndex(x => x.id === t.sheet); block(t.box, i >= 0 ? COLORS[i % COLORS.length] : '#888888', t.text, 'box'); });
+  sheets.forEach((sh, i) => {
+    if (isInverted(sh) || (sh.ocr === undefined && !(sh.areas || []).length)) return;
+    const col = sheetColor(S.st?.sheets?.[i], i), L = sheetLetter(sh);
+    // l'area principale (il foglio), poi le sue aree secondarie sopra
+    block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }));
+    (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; }), true));
+  });
+  (S.boxTexts[S.rel] || []).forEach(t => block(t.box, '#888888', t.text, 'box', v => { t.text = v; renderMirror(); renderTextPane(); }));
+  if (!sheets.some(x => x.ocr !== undefined)) (S.libTexts || []).forEach(t => block([0, 0, S.info.w, S.info.h], t.color || '#8a96a6', t.plain, `${t.title} › ${t.region}`,
+    async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cutouts'); renderMirror(); renderTextPane(); }));
   if (!pg.children.length) pg.append(h('div', { class: 'mempty', style: { fontSize: 4 * ppm + 'px', padding: 10 * ppm + 'px' } }, 'Read some text (Text pane) and it appears here, where it is on the scan.'));
   placeMirror();
 }
@@ -690,7 +949,7 @@ async function readDocs(rels, embed) {
 function showReader(docs) {
   const body = h('div', { class: 'reader' }, ...docs.map(d => h('div', { class: 'rdoc' },
     h('div', { class: 'rdh' }, h('b', {}, d.rel.split('/').pop()), h('span', { class: 'muted small' }, ' ' + d.rel.split('/').slice(0, -1).join(' › ')),
-      h('a', { href: '#', style: { marginLeft: 'auto' }, onclick: e => { e.preventDefault(); $('.dlg-back')?.remove(); newTab('scan:' + d.rel); } }, 'Open')),
+      h('a', { href: '#', style: { marginLeft: 'auto' }, onclick: e => { e.preventDefault(); $('.dlg-back')?.remove(); openLoc('scan:' + d.rel, e); } }, 'Open')),
     h('div', { class: 'mtext', html: d.text ? mdToHtml(d.text, null) : '<p class="mnone">No text found.</p>' }))));
   const all = docs.map(d => `# ${d.rel.split('/').pop()}\n\n${(d.text || '').trim()}\n`).join('\n');
   dialog('Text', `${docs.length} document${docs.length > 1 ? 's' : ''} · ${ocrName()}`, body, [
@@ -723,7 +982,8 @@ async function saveTextFile() {
 }
 function renderSide() {
   const side = $('#side'); side.innerHTML = '';
-  side.style.display = $('#split2').style.display = ['gallery', 'editor'].includes(S.view) ? '' : 'none';
+  side.style.display = $('#split2').style.display = ['gallery', 'editor', 'library'].includes(S.view) ? '' : 'none';
+  if (S.view === 'library') return sideLibrary(side);
   if (S.view === 'gallery') return sideGallery(side);
   if (S.view === 'editor') return sideEditor(side);
 }
@@ -919,7 +1179,7 @@ function sideEditor(side) {
         onclick: e => { e.stopPropagation(); if (e.ctrlKey) e.preventDefault(); else if (e.altKey) { e.preventDefault(); soloSheet(s.id); } },
         oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); soloSheet(s.id); },
         onchange: e => commit(() => { s.on = e.target.checked; }) }),
-      h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
+      h('span', { class: 'dot', style: { background: sheetColor(S.st?.sheets?.[i], i) } }),
       h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}${S.info && s.poly?.length && !isInverted(s) ? (() => { const b = bbox(s.poly); return ` · ≈ ${((b[2] - b[0]) / S.info.ppm).toFixed(0)} × ${((b[3] - b[1]) / S.info.ppm).toFixed(0)} mm`; })() : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
@@ -1012,7 +1272,7 @@ async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
   useRemembered(rel);
-  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; V.tile = V.mtile = null;
+  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; S.libTexts = []; V.tile = V.mtile = null;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
@@ -1046,6 +1306,7 @@ async function openScan(rel) {
     if (S.rel !== rel) return;
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); restoreTab(rel); renderSide(); renderTextPane(); renderMirror(); renderCmdbar(); renderOptions(); draw();
+    api.get('library/texts_for', { rel }).then(t => { if (S.rel !== rel) return; S.libTexts = t || []; if (S.libTexts.length) toggleTextPane(true); renderTextPane(); renderMirror(); }).catch(() => {});
     if (BUSY[rel]) busy(true, BUSY[rel], rel);
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
     if (!st.sheets.length) status('No sheets yet: choose an engine and press Detect (or draw one).');
@@ -1060,7 +1321,7 @@ async function openScan(rel) {
   }
 }
 function leaveEditor() { flushSave(); $('#title').textContent = 'Scan Studio'; }
-function setState(st) { S.names = st.names || {}; delete st.names; S.st = st; }
+function setState(st) { S.names = st.names || {}; delete st.names; (st.sheets || []).forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); S.st = st; }
 const MODE_NAMES = { new: 'New selection', add: 'Add', sub: 'Subtract', int: 'Intersect' };
 // le icone dei modi come in Photoshop: un quadrato, due uniti, uno meno l'altro, la parte comune
 const MODE_ICONS = {
@@ -1205,9 +1466,15 @@ function draw() {
       c.fillStyle = 'rgba(20,30,45,.42)'; c.fill('evenodd'); c.restore();
     }
   }
+  sheets.forEach((sh, i) => (sh.areas || []).forEach((a, k) => {
+    const col = sheetColor(S.st?.sheets?.[i], i), [x0, y0] = toScr(a.box[0], a.box[1]), [x1, y1] = toScr(a.box[2], a.box[3]);
+    c.save(); c.setLineDash([5, 3]); c.lineWidth = 1.25; c.strokeStyle = col; c.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    c.setLineDash([]); c.font = '600 10px "Segoe UI", Tahoma, sans-serif'; const tag = `${sheetLetter(sh)}·${k + 1}`, w = c.measureText(tag).width + 8;
+    c.fillStyle = col; c.globalAlpha = .85; c.fillRect(x0, y0, w, 13); c.globalAlpha = 1; c.fillStyle = '#fff'; c.fillText(tag, x0 + 4, y0 + 10); c.restore();
+  }));
   for (const t of S.boxTexts?.[S.rel] || []) {
     const i = sheets.findIndex(x => x.id === t.sheet), [a, b] = toScr(t.box[0], t.box[1]), [e, f] = toScr(t.box[2], t.box[3]);
-    c.save(); c.setLineDash([6, 4]); c.lineWidth = 1.5; c.strokeStyle = i >= 0 ? COLORS[i % COLORS.length] : '#888'; c.strokeRect(a, b, e - a, f - b); c.restore();
+    c.save(); c.setLineDash([6, 4]); c.lineWidth = 1.5; c.strokeStyle = i >= 0 ? sheetColor(S.st?.sheets?.[i], i) : '#888'; c.strokeRect(a, b, e - a, f - b); c.restore();
   }
   if (S.compare) for (const [e, r] of Object.entries(S.compare)) {
     if (!r.polys) continue;
@@ -1215,7 +1482,7 @@ function draw() {
     r.polys.forEach(p => { c.beginPath(); polyPath(c, p); c.stroke(); }); c.restore();
   }
   sheets.forEach((s, i) => {
-    const col = COLORS[i % COLORS.length], sel = isSel(s.id), off = s.on === false;
+    const col = sheetColor(S.st?.sheets?.[i], i), sel = isSel(s.id), off = s.on === false;
     c.save();
     c.beginPath(); polyPath(c, s.poly);
     if (off) c.setLineDash([4, 4]);
@@ -1551,11 +1818,18 @@ async function ocrBox(box) {
   try { r = await api.post('ocr_box', { rel, box }); } catch (e) { busy(false, null, rel); return alertDialog('Read text', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return;
   const cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
-  const under = (S.st?.sheets || []).find(s => inside([cx, cy], s.poly));
-  (S.boxTexts[rel] ||= []).unshift({ text: r.text || '', box, sheet: under?.id });
-  if (!r.text) status('No text found in the box');
+  const under = (S.st?.sheets || []).find(s => inside([cx, cy], s.poly) && !isInverted(s));
+  if (under) {
+    // area secondaria: dentro il foglio (area principale), con il suo testo
+    commit(() => { (under.areas ||= []).push({ id: 'a' + (Math.max(0, ...under.areas.map(a => +a.id.slice(1) || 0)) + 1), box: box.map(Math.round), text: r.text || '', reader: ocrName() }); });
+    status(r.text ? `Secondary area added to sheet ${sheetLetter(under)}` : `Secondary area added to sheet ${sheetLetter(under)} (no text found)`);
+  } else {
+    (S.boxTexts[rel] ||= []).unshift({ text: r.text || '', box, sheet: null });
+    if (!r.text) status('No text found in the box');
+  }
   toggleTextPane(true); renderMirror(); draw();
 }
+const sheetLetter = sh => { const on = (S.st?.sheets || []).filter(x => x.on !== false); return on.length > 1 ? 'abcdefghijklmnopqrstuvwxyz'[on.indexOf(sh)] || '' : (sh.label || 'sheet'); };
 function soloSheet(id) {
   const sh = S.st.sheets, me = sh.find(x => x.id === id); if (!me) return;
   const alreadySolo = me.on !== false && sh.every(x => x === me || x.on === false);
@@ -1646,6 +1920,7 @@ document.addEventListener('keydown', e => {
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
   if ((mod && k === '[') || (e.altKey && k === 'ArrowLeft')) { e.preventDefault(); return navBack(); }
   if ((mod && k === ']') || (e.altKey && k === 'ArrowRight')) { e.preventDefault(); return navFwd(); }
+  if (S.view === 'library' && LIB.mode === 'cutouts' && mod && k === 'a') { e.preventDefault(); (LIB.cuts || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); return libReadLabel(); }
   if (S.view === 'gallery') {
     if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
     if (k === 'Enter' && S.selDir) { const d = S.selDir; S.selDir = null; return openDir(d); }
@@ -1689,7 +1964,7 @@ document.addEventListener('keyup', e => { if (e.key === ' ') { spaceDown = false
 // ------------------------------------------------------------ storia e salvataggio
 function pushHist() { S.hist.push(JSON.stringify(S.st.sheets)); if (S.hist.length > 80) S.hist.shift(); S.fut = []; }
 function commit(fn) { pushHist(); fn(); afterEdit(); }
-function afterEdit() { S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
+function afterEdit() { S.st.sheets.forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
 function undo() { if (!S.hist.length || S.view !== 'editor') return; S.fut.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.hist.pop()); afterEdit(); }
 function redo() { if (!S.fut.length || S.view !== 'editor') return; S.hist.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.fut.pop()); afterEdit(); }
 let saveTimer = null, saving = Promise.resolve();
@@ -1920,7 +2195,7 @@ async function pollJobs() {
   S._wasActive = active;
 }
 // avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato
-const JOB_NAMES = { read: 'Read text', batch: 'Batch', export: 'Export', ocr: 'Text of cutouts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
+const JOB_NAMES = { recut: 'Re-cut', readcuts: 'Read text of cutouts', libimport: 'Library import', edit_in: 'Edit in', read: 'Read text', batch: 'Batch', export: 'Cut', ocr: 'Text of cutouts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
   compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install' };
 // lavori senza avanzamento misurabile (un Detect, una domanda): la barra scorre, si vede il tempo
 const jobVague = j => j.status === 'running' && j.total === 1 && j.pct == null;
@@ -1953,20 +2228,20 @@ function updateJobBar() {
   if (j) { bar.classList.toggle('marquee', jobVague(j)); bar.firstChild.style.width = jobVague(j) ? '' : jobPct(j) + '%'; bar.title = jobLine(j); status(jobLine(j), true); }
 }
 // un clic su un lavoro: la sua scansione, cartella o pagina, in una scheda (quella che c'e' gia', o nuova)
-async function openJob(j) {
+async function openJob(j, e) {
   const a = j.args || {}, dirOf = r => r.split('/').slice(0, -1).join('/');
   if (['help', 'claude'].includes(j.kind)) return toggleChat(true, j.kind === 'help' ? 'help' : 'claude');
-  if (j.kind === 'install') return newTab('view:addons');
-  if (['scan', 'preview'].includes(j.kind)) return newTab('view:scanners');
+  if (j.kind === 'install') return openLoc('view:addons', e);
+  if (['scan', 'preview'].includes(j.kind)) return openLoc('view:scanners', e);
   if (a.rel) {
-    await newTab('scan:' + a.rel);
+    await openLoc('scan:' + a.rel, e);
     if (['ocr_sheets', 'ocr_box'].includes(j.kind)) toggleTextPane(true);
     if (j.kind === 'ocr_sheets' && a.ids) { selectIds(a.ids.filter(id => S.st?.sheets.some(x => x.id === id))); renderSide(); renderTextPane(); draw(); }
     return;
   }
   if (a.rels?.length) {
     const dirs = [...new Set(a.rels.map(dirOf))];
-    await newTab('dir:' + dirs[0]);
+    await openLoc('dir:' + dirs[0], e);
     a.rels.filter(r => dirOf(r) === dirs[0]).forEach(r => S.sel.add(r)); renderGallery(); renderSide(); renderCmdbar();
   }
 }
@@ -1981,7 +2256,7 @@ function renderJobs() {
   const summary = j => j.status === 'failed' ? (j.log.find(l => l.startsWith('ERROR')) || 'failed').replace(/^ERROR \w+: /, '') : j.status === 'cancelled' ? 'Cancelled' : (j.log.filter(l => !l.startsWith('done in')).at(-1) || 'Done');
   const row = j => {
     const going = ['running', 'queued'].includes(j.status), [ic, cls] = icon(j);
-    return h('div', { class: 'jrow' + (going ? ' live' : ''), title: 'Open where this job works', onclick: e => { if (!e.target.closest('button, details')) openJob(j); } },
+    return h('div', { class: 'jrow' + (going ? ' live' : ''), title: 'Open where this job works', onclick: e => { if (!e.target.closest('button, details')) openJob(j, e); } },
       h('div', { class: 'jic ' + (going ? 'run' : cls) }, going ? h('span', { class: 'tspin' }) : ic),
       h('div', { class: 'jmain' },
         h('div', {}, h('b', {}, JOB_NAMES[j.kind] || j.kind), ' ', h('span', {}, what(j)), j.args?.engine ? h('span', { class: 'muted' }, ' · ' + engName(j.args.engine)) : null),
@@ -2061,7 +2336,7 @@ function renderScanSide(side) {
     const mb = px[0] * px[1] * (am.startsWith('Gray') || am.includes('gray') ? 1 : 3) * (am.includes('48') || am.includes('16') ? 2 : 1) / 1048576;
     const own = a[4] || {}, res = own.res || SC.res, mode = own.mode || SC.mode;
     list.append(h('div', { class: 'sheet' + (i === SC.sel ? ' sel' : ''), onclick: () => { SC.sel = i; drawBed(); renderScanSide(); } },
-      h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }), h('span', {}),
+      h('span', { class: 'dot', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('span', {}),
       h('div', { class: 'nm' }, `${a[2].toFixed(0)} × ${a[3].toFixed(0)} mm`, h('small', {}, `${px[0]} × ${px[1]} px · ${mb.toFixed(0)} MB${a[4] ? ` · own: ${res} dpi, ${mode}` : ''}`)),
       h('button', { class: 'btn small', title: 'Remove this area', onclick: e => { e.stopPropagation(); SC.areas.splice(i, 1); SC.sel = -1; drawBed(); renderScanSide(); } }, '✕')));
   });
@@ -2435,6 +2710,18 @@ async function it8Reminder() {
   if (c === 'done') S.settings = await api.post('settings', { it8_last: now, it8_snooze: 0 });
   if (c === 'off') { S.settings = await api.post('settings', { it8_remind: false }); status('IT8 reminders off (Settings › Colour calibration)'); }
 }
+
+// anteprima (--dev): il codice cambia -> la pagina si ricarica da sola, salvando prima i ritocchi
+(function devReload() {
+  let first = null;
+  const tick = async () => {
+    const p = await api.get('ping').catch(() => null);
+    if (p && !p.dev) return;                                 // l'app di tutti i giorni: niente
+    if (p?.build) { if (first === null) first = p.build; else if (p.build !== first) { try { await flushSave(); } catch (e) {} return location.reload(); } }
+    setTimeout(tick, 1500);
+  };
+  setTimeout(tick, 1500);
+})();
 
 // ------------------------------------------------------------ avvio
 (async function init() {

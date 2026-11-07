@@ -14,7 +14,7 @@ let repo = conf("ScanStudioRepo", home + "/Scans/.scancut")
 let python = conf("ScanStudioPython", "/usr/bin/python3")
 let scansRoot = conf("ScanStudioRoot", home + "/Scans")
 let logDir = scansRoot + "/.scancut/studio-data"
-let port = 8765
+let port = Int(conf("ScanStudioPort", "8765")) ?? 8765          // una seconda app (anteprima) usa un'altra porta
 let base = URL(string: "http://127.0.0.1:\(port)/")!
 
 // la barra del titolo disegnata dalla pagina: qui sopra si trascina la finestra
@@ -130,7 +130,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             if !self.ping() {
                 let p = Process()
                 p.executableURL = URL(fileURLWithPath: python)
-                p.arguments = ["-I", repo + "/studio.py", "serve", "--port", "\(port)", "--root", scansRoot]
+                p.arguments = ["-I", repo + "/studio.py", "serve", "--port", "\(port)", "--root", scansRoot] + (conf("ScanStudioDev", "") == "1" ? ["--dev"] : [])
                 p.currentDirectoryURL = URL(fileURLWithPath: repo)
                 try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
                 let log = logDir + "/server.log"
