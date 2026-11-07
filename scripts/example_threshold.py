@@ -6,7 +6,7 @@ import numpy as np, cv2
 
 NAME = 'Example script: fixed threshold'
 NOTE = 'A starting point for your own engines: paper lighter than a dark lid.'
-PARAMS = [{'id': 'level', 'label': 'Level', 'type': 'number', 'default': 160, 'step': 5,
+PARAMS = [{'id': 'level', 'label': 'Level', 'type': 'number', 'default': 160, 'step': 5, 'unit': 'of 255 grey',
            'hint': 'Pixels lighter than this (0-255) count as paper.'}]
 
 

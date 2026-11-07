@@ -370,6 +370,7 @@ html.native .window { overflow: hidden; }
 .optbar .orng { width: 110px; }
 .optbar .onum { width: 52px; height: 20px; }
 .optbar .ou { color: var(--muted); }
+.row .pu { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .optbar .ohint { color: #4c5d70; font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 
 /* densitometro: una piccola finestra Aero di vetro sopra la scansione */
@@ -383,7 +384,8 @@ html.native .window { overflow: hidden; }
 .dens .dh b { position: relative; z-index: 0; color: #000; font-weight: normal; font-size: 12px; }
 .dens .dh b::before { content: ''; position: absolute; z-index: -1; left: -7px; right: -7px; top: -2px; bottom: -2px;
   border-radius: 6px; filter: blur(3px); background: rgba(255,255,255,.5); }
-.dens .dh span { margin-left: auto; color: #e8f2fb; font-size: 10.5px; text-shadow: 0 1px 1px rgba(0,0,0,.5); }
+.dens .dh span { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e8f2fb; font-size: 10.5px; text-shadow: 0 1px 1px rgba(0,0,0,.5); }
+.dens .dh b, .dens .dtog { flex: none; }
 .dens .dc { padding: 5px 8px 6px; border-radius: 3px; border: 1px solid rgba(0,0,0,.45);
   background: rgba(255,255,255,.86); box-shadow: inset 0 1px 0 #fff; }
 
@@ -417,3 +419,24 @@ html.native .window { overflow: hidden; }
 .pill { font-size: 11px; padding: 1px 7px; border-radius: 8px; margin-left: 4px; vertical-align: 1px; }
 .pill.ok { background: #e2f5e5; color: #23722f; border: 1px solid #b9e2c0; }
 .pill.no { background: #f1f3f6; color: #6b7684; border: 1px solid #dde3ea; }
+
+/* ------------------------------------------------ schede, come IE7 su Vista: nella barra del titolo */
+.titlebar .tabs { display: flex; align-items: flex-end; align-self: flex-end; gap: 2px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.titlebar .tabs:not(:empty) ~ .title > span { display: none; }
+.tab {
+  height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 10px; min-width: 0; max-width: 200px;
+  border: 1px solid rgba(0,0,0,.55); border-bottom: 0; border-radius: 5px 5px 0 0; cursor: default;
+  font-size: 12px; color: #fff; text-shadow: 0 0 4px rgba(0,0,0,.6);
+  background: linear-gradient(to bottom, rgba(255,255,255,.38), rgba(255,255,255,.12) 50%, rgba(255,255,255,.04) 51%, rgba(255,255,255,.16));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.45);
+}
+.tab:hover { background: linear-gradient(to bottom, rgba(255,255,255,.55), rgba(190,230,255,.28) 50%, rgba(140,200,240,.2) 51%, rgba(190,230,255,.35)); }
+.tab.on { color: #000; text-shadow: none; height: 26px;
+  background: linear-gradient(to bottom, #fdfeff, #eaf2fb 50%, #dce8f5 51%, #e8f0f9);
+  box-shadow: inset 0 1px 0 #fff, 0 0 6px rgba(255,255,255,.35); }
+.tab .tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab .tx { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 3px; font-size: 9px; opacity: .7; flex: none; }
+.tab .tx:hover { opacity: 1; background: #d1634c; color: #fff; text-shadow: none; }
+.tab.add { width: 26px; padding: 0; justify-content: center; font-size: 15px; font-weight: 600; }
+.tab .tspin { width: 11px; height: 11px; flex: none; border-radius: 50%; border: 2px solid rgba(51,153,255,.3); border-top-color: #3399ff; animation: tspin .8s linear infinite; }
+@keyframes tspin { to { transform: rotate(360deg); } }

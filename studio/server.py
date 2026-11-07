@@ -21,8 +21,11 @@ class Jobs:
         threading.Thread(target=self.loop, daemon=True).start()
 
     def add(self, kind, **args):
+        # passi veri per la barra: un batch con export conta rilevamento ed export di ogni scansione
+        n = len(args.get('rels', [])) or 1
         j = {'id': uuid.uuid4().hex[:8], 'kind': kind, 'args': args, 'status': 'queued', 'done': 0,
-             'total': len(args.get('rels', [])) or 1, 'log': [], 'created': time.time(), 'result': None}
+             'total': n * (2 if kind == 'batch' and args.get('export') else 1), 'log': [], 'created': time.time(),
+             'result': None, 'current': ''}
         self.jobs[j['id']] = j
         self.q.put(j['id'])
         return j
@@ -53,16 +56,20 @@ class Jobs:
         for rel in a['rels']:
             if j['status'] == 'cancelled':
                 break
+            start = j['done']
             try:
+                j['current'] = os.path.basename(rel) + ' · detect'
                 st, meta = core.detect(rel, a.get('engine', 'auto'), a.get('params') or {})
                 n = len(st['sheets'])
                 say(f'{rel}: {n} sheet(s) with {a.get("engine", "auto")} in {meta.get("seconds")}s')
+                j['done'] += 1
                 if a.get('export') and n:
+                    j['current'] = os.path.basename(rel) + ' · export'
                     for w in core.export(rel, log=say):
                         say(f'  {w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
             except Exception as e:
                 say(f'{rel}: ERROR {e}')
-            j['done'] += 1
+            j['done'] = start + (2 if a.get('export') else 1)
 
     def do_preview(self, j, say):
         # anteprima del letto intero, veloce (75 dpi): per scegliere le aree
@@ -120,6 +127,15 @@ class Jobs:
                     'print("saved", p)\n')
             cmds = ([] if core.has_module('huggingface_hub') else [[sys.executable, '-m', 'pip', 'install', 'huggingface_hub']]) + \
                    [[sys.executable, '-c', code, core.models_dir()]]
+        elif what.startswith('matte:'):
+            m = next(x for x in core.MATTE_MODELS if x['id'] == what[6:])
+            code = ('import sys\n'
+                    'from huggingface_hub import snapshot_download\n'
+                    'p = snapshot_download(sys.argv[1], local_dir=sys.argv[2], allow_patterns=["*.py", "*.json", "*.safetensors"])\n'
+                    'print("saved", p)\n')
+            need = [n for n in ('huggingface_hub', 'kornia', 'timm') if not core.has_module(n)]
+            cmds = ([[sys.executable, '-m', 'pip', 'install'] + need] if need else []) + \
+                   [[sys.executable, '-c', code, m['repo'], core.matte_dir(m['id'])]]
         else:
             raise ValueError(f'unknown add-on {what}')
         env = dict(os.environ, PATH=os.environ.get('PATH', '') + ':/opt/homebrew/bin:/usr/local/bin', HF_HUB_DISABLE_PROGRESS_BARS='1')
@@ -133,14 +149,31 @@ class Jobs:
             for line in p.stdout:
                 out.append(line.rstrip()); say(line.rstrip())
             if p.wait() != 0:
-                if what == 'sam3' and any(k in ' '.join(out) for k in ('401', '403', 'Gated', 'gated', 'awaiting', 'authenticated')):
-                    raise RuntimeError('Hugging Face refused: request access on huggingface.co/facebook/sam3, '
-                                       'wait for Meta’s approval, then paste a read token (or run “hf auth login”).')
+                if (what == 'sam3' or what.startswith('matte:')) and any(k in ' '.join(out) for k in ('401', '403', 'Gated', 'gated', 'awaiting', 'authenticated')):
+                    page = 'facebook/sam3' if what == 'sam3' else next(x['repo'] for x in core.MATTE_MODELS if x['id'] == what[6:])
+                    raise RuntimeError(f'Hugging Face refused: request access on huggingface.co/{page}, '
+                                       'wait for the approval, then paste a read token (or run “hf auth login”).')
                 raise RuntimeError(f'{os.path.basename(cmd[0])} failed (exit {p.returncode})')
         j['done'] = 1
 
+    def do_ocr(self, j, say):
+        # il testo dei ritagli scelti, uno alla volta (la barra avanza davvero), nei loro metadati
+        j['result'] = []
+        for rel in j['args']['rels']:
+            if j['status'] == 'cancelled':
+                break
+            j['current'] = os.path.basename(rel)
+            try:
+                j['result'] += core.ocr_files([rel], log=say)
+            except Exception as e:
+                say(f'{rel}: ERROR {e}')
+            j['done'] += 1
+
     def do_export(self, j, say):
         for rel in j['args']['rels']:
+            if j['status'] == 'cancelled':
+                break
+            j['current'] = os.path.basename(rel)
             for w in core.export(rel, log=say):
                 say(f'{w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
             j['done'] += 1
@@ -319,6 +352,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Box', f'{x0},{y0},{x1},{y1}')
             self.send_header('Content-Length', str(b.tell()))
             self.end_headers(); self.wfile.write(b.getvalue()); return
+        if path == 'bgtol':
+            return self.send({'tol': core.bg_tol(rel)})
         if path == 'remembered':
             return self.send(core.remembered(rel))
         if path == 'engines':
@@ -333,7 +368,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'jobs':
             return self.send([JOBS.public(j) for j in sorted(JOBS.jobs.values(), key=lambda j: -j['created'])][:50])
         if path == 'job':
-            return self.send(JOBS.public(JOBS.jobs[q['id']]))
+            j = JOBS.jobs.get(q.get('id'))
+            return self.send(JOBS.public(j)) if j else self.send({'error': 'no such job'}, code=404)
         if path == 'cutout':
             # anteprima del ritaglio (come verra' salvato) per un foglio dello stato
             st = core.load_state(rel)
@@ -414,7 +450,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'checked':
             return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':
-            core.sam3_unload()
+            core.sam3_unload(); core.matte_unload()
             return self.send({'ok': True})
         if path == 'wand':
             op = core.wand(rel, float(b['x']), float(b['y']), b.get('tol', 14), b.get('contig', True))
@@ -427,11 +463,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('batch', 'export', 'claude', 'preview', 'scan', 'install'):
+            if kind not in ('batch', 'export', 'ocr', 'claude', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'cancel':
-            j = JOBS.jobs[b['id']]
+            j = JOBS.jobs.get(b.get('id'))
+            if not j:
+                return self.send({'error': 'no such job'}, code=404)
             j['status'] = 'cancelled'
             if j.get('proc'):
                 j['proc'].terminate()
@@ -454,6 +492,8 @@ class Handler(BaseHTTPRequestHandler):
                     subprocess.run([os.path.join(os.path.dirname(__file__), 'appctl'), 'hide', str(pid)], timeout=10)
             elif what == 'sam3page':
                 subprocess.run(['open', 'https://huggingface.co/facebook/sam3'])
+            elif what == 'hfpage' and str(b.get('url', '')).startswith('https://huggingface.co/'):
+                subprocess.run(['open', b['url']])
             elif what == 'hftokens':
                 subprocess.run(['open', 'https://huggingface.co/settings/tokens'])
             elif what == 'scripts':

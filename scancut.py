@@ -901,6 +901,24 @@ def cut16(deep, y, x, m, hm, exact, rgba8, ppm):
     return np.dstack([col, a16])
 
 
+def same_png16(path, rgba16, gray=False):
+    # come same_png, per i ritagli a 16 bit (grigio + alfa, o RGBA)
+    if not os.path.exists(path):
+        return False
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from studio import png16
+    try:
+        m = png16.read(path)
+    except Exception:
+        return False
+    if m is None or m.dtype != np.uint16 or m.shape != rgba16.shape:
+        return False
+    # grigio + alfa: OpenCV lo legge come 4 canali (grigio ripetuto)
+    if gray:
+        return np.array_equal(m[..., 0], rgba16[..., 0]) and np.array_equal(m[..., 3], rgba16[..., 3])
+    return np.array_equal(m, rgba16)
+
+
 def write16(out, rgba16, dpi, icc, gray=False):
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from studio import png16
@@ -938,6 +956,8 @@ def process(keep):
         if deep is not None:
             rgba16 = cut16(deep, y, x, m, hm, ex, rgba, dpi_to_ppm(dpi, deep))
             if rgba16 is not None:
+                if same_png16(out, rgba16, deep.ndim == 2):
+                    log(f'  {os.path.relpath(out, ROOT)}  already there, identical'); continue
                 out = unique(out)
                 write16(out, rgba16, dpi, icc, gray=deep.ndim == 2)
                 log(f'  {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  16 bit  tilt {ang:+.2f}')

@@ -20,7 +20,13 @@ let base = URL(string: "http://127.0.0.1:\(port)/")!
 // la barra del titolo disegnata dalla pagina: qui sopra si trascina la finestra
 // (lasciando scoperti a destra i pulsanti riduci/ingrandisci/chiudi della cornice Vista)
 final class DragStrip: NSView {
+    // le schede della pagina stanno a sinistra nella barra del titolo: li' i clic vanno alla pagina
+    var tabsWidth: CGFloat = 0
     override var mouseDownCanMoveWindow: Bool { true }
+    override func hitTest(_ p: NSPoint) -> NSView? {
+        let q = convert(p, from: superview)
+        return q.x < tabsWidth ? nil : super.hitTest(p)
+    }
     override func mouseDown(with e: NSEvent) {
         if e.clickCount == 2 { (window as? StudioWindow)?.toggleMax(); return }
         window?.performDrag(with: e)
@@ -91,6 +97,7 @@ final class ResizeEdge: NSView {
 final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, NSWindowDelegate {
     var window: NSWindow!
     var web: WKWebView!
+    var strip: DragStrip!
     var server: Process?
     var quitting = false
 
@@ -175,7 +182,7 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         content.layer?.backgroundColor = .clear
         web.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(web)
-        let strip = DragStrip()
+        strip = DragStrip()
         strip.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(strip)
         NSLayoutConstraint.activate([
@@ -234,6 +241,8 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
         case "full": window.toggleFullScreen(nil)
         // finestra senza cornice: performClose non fa niente (manca .closable), si chiude da qui
         case "close": if windowShouldClose(window) { NSApp.terminate(nil) }
+        // fin dove arrivano le schede (in punti, dal bordo sinistro della striscia)
+        case "tabs": strip?.tabsWidth = CGFloat(((m.body as? [String: Any])?["w"] as? NSNumber)?.doubleValue ?? 0)
         default: break
         }
     }

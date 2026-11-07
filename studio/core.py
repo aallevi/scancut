@@ -20,13 +20,18 @@ except OSError:
     VERSION = '?'
 
 ROOT = DATA = None
+
+# partito dal Dock il PATH e' quello corto di macOS: exiftool, cjxl, djxl stanno in Homebrew
+_path = os.environ.get('PATH', '').split(':')
+os.environ['PATH'] = ':'.join(_path + [d for d in ('/opt/homebrew/bin', '/usr/local/bin') if d not in _path])
 _lock = threading.RLock()
 _engine_lock = threading.Lock()   # un motore alla volta (file temporanei, memoria)
 
 
 def set_root(root):
     global ROOT, DATA
-    ROOT = os.path.abspath(os.path.expanduser(root))
+    # il percorso vero (senza collegamenti): abspath() confronta con questo
+    ROOT = os.path.realpath(os.path.expanduser(root))
     sc.set_root(ROOT)
     DATA = os.path.join(ROOT, '.scancut', 'studio-data')
     for d in ('cache', 'state', 'previews', 'replaced'):
@@ -224,7 +229,7 @@ def preview_path(rel, size):
 def info(rel):
     rgb, icc, dpi, ppm = image(rel)
     h, w = rgb.shape[:2]
-    return {'rel': rel, 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm, 'alpha': alpha(rel) is not None,
+    return {'rel': rel, 'key': file_key(rel), 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm, 'alpha': alpha(rel) is not None,
             'mm': [round(w / ppm), round(h / ppm)], 'name': os.path.basename(rel)}
 
 
@@ -249,8 +254,8 @@ def tile(rel, x, y, w, h, out_w):
 # ---------------------------------------------------------------- motori
 
 # tolleranza del taglio automatico: 1 = quella che sceglie da solo (ritagli identici all'agente)
-TOL_PARAM = {'id': 'tol', 'label': 'Tolerance ×', 'type': 'number', 'default': 1.0, 'step': 0.05,
-             'hint': 'How different from the lid a pixel must be to count as paper. 1 = what the automatic cut '
+TOL_PARAM = {'id': 'tol', 'label': 'Tolerance', 'type': 'number', 'default': 1.0, 'step': 0.05, 'unit': '× auto',
+             'hint': 'How different from the lid a pixel must be to count as paper, as a multiple of the distance the automatic cut picks for this scan (shown in grey: a colour distance in Lab, where a change of tint counts double). 1 = what the automatic cut '
                      'picks by itself (cutouts identical to the agent\'s). Higher (1.2-1.5) takes away more lid '
                      'and shadow but can nibble pale paper edges; lower (0.7-0.9) keeps faint edges but may keep '
                      'some lid.'}
@@ -321,7 +326,7 @@ def engines():
              {'id': 'prompt', 'label': 'Prompt', 'type': 'text', 'default': 'sheet of paper', 'choices': SAM_PROMPTS,
               'hint': 'A short English noun phrase naming what to cut out. SAM 3 finds every object that matches. '
                       'The list holds the phrases that worked best on your kind of scans; you can type any other.'},
-             {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05,
+             {'id': 'threshold', 'label': 'Score', 'type': 'number', 'default': 0.4, 'step': 0.05, 'unit': '0–1 sure',
               'hint': 'How sure SAM 3 must be (0 to 1) before it keeps an object. 0.4 is a good start. Lower '
                       '(0.2-0.3) finds faint or unusual sheets but also wrong things; higher (0.6+) keeps only '
                       'obvious ones. It never changes the edge, only which objects are kept.'},
@@ -334,6 +339,19 @@ def engines():
                       'against the lid right next to each point (works with an open lid too), only within 2 mm of '
                       'SAM\'s edge. Fibres and tears stay. Turn off only to see SAM\'s raw mask.'}]},
     ]
+    have = [m for m in MATTE_MODELS if matte_installed(m['id'])]
+    out.append({'id': 'matte', 'name': 'Remove background', 'kind': 'ai', 'available': bool(have),
+                'note': 'BiRefNet-family models: finds the subject in front of any background. Sheets on the lid, or photos.',
+                'params': [
+                    {'id': 'model', 'label': 'Model', 'type': 'choice', 'default': have[0]['id'] if have else 'birefnet_lite',
+                     'choices': [{'text': m['id'], 'label': m['name'], 'note': f'{m["line"]} {m["mb"]} MB, {m["licence"]}.'} for m in have],
+                     'hint': 'Which downloaded model to use. More in Add-ons.'},
+                    {'id': 'mode', 'label': 'Edge', 'type': 'choice', 'default': 'sheet',
+                     'choices': [{'text': 'sheet', 'note': 'The model picks the sheet; the edge is then taken from your scan (magic wand against the lid, within 2 mm). Fibres and tears stay.'},
+                                 {'text': 'subject', 'note': 'The model\'s own edge. For photos and backgrounds that are not a scanner lid.'}],
+                     'hint': 'Where the final edge comes from. Only transparency changes either way: pixels stay as scanned.'},
+                    {'id': 'threshold', 'label': 'Keep above', 'type': 'number', 'default': 0.5, 'step': 0.05, 'unit': '0–1 subject',
+                     'hint': 'The model says, for every pixel, how sure it is that the pixel is subject (0 to 1). Pixels above this are kept. Lower keeps faint parts (and some background); higher keeps only the sure core.'}]})
     for f in sorted(os.listdir(SCRIPTS)) if os.path.isdir(SCRIPTS) else []:
         if f.endswith('.py') and not f.startswith('_'):
             meta = {'id': 'script:' + f[:-3], 'name': f[:-3], 'kind': 'script', 'available': True, 'note': ''}
@@ -409,6 +427,8 @@ def run_engine(rel, engine, params=None, box=None):
                 if params.get('refine', True):
                     m = refine_with_wand(srgb, m, ppm)
                 masks.extend(_crop_mask(m, np.zeros_like(m), ppm))
+        elif engine == 'matte':
+            masks = matte_masks(sub, ppm, params)
         elif engine.startswith('script:'):
             masks = script_masks(engine[7:], sub, ppm, params)
         else:
@@ -620,6 +640,103 @@ def sam3_second_pass(path, rgb, m, ppm, params):
     return out if inter > 0.9 else m
 
 
+# ---------------------------------------------------------------- togli lo sfondo (famiglia BiRefNet)
+# Modelli scaricati dalla pagina Add-ons in studio-data/models/<id>; girano in matte_worker.py.
+# Danno quanto ogni pixel e' soggetto (0-255): qui si sceglie solo cosa tenere, i pixel restano veri.
+
+MATTE_MODELS = [
+    {'id': 'birefnet_lite', 'name': 'BiRefNet lite', 'repo': 'ZhengPeng7/BiRefNet_lite', 'size': 1024, 'mb': 180,
+     'licence': 'MIT', 'line': 'The lightest and fastest. General subjects and sheets.'},
+    {'id': 'birefnet', 'name': 'BiRefNet', 'repo': 'ZhengPeng7/BiRefNet', 'size': 1024, 'mb': 440,
+     'licence': 'MIT', 'line': 'The full model the others come from. General subjects.'},
+    {'id': 'birefnet_hr', 'name': 'BiRefNet HR', 'repo': 'ZhengPeng7/BiRefNet_HR', 'size': 2048, 'mb': 440,
+     'licence': 'MIT', 'line': 'Trained at 2048 px: sharper edges on big scans and photos; slower.'},
+    {'id': 'rmbg2', 'name': 'RMBG-2.0 (BRIA)', 'repo': 'briaai/RMBG-2.0', 'size': 1024, 'mb': 885, 'gated': True,
+     'licence': 'BRIA, non-commercial', 'line': 'BRIA\'s fine-tune of BiRefNet. Licence for non-commercial use only.'},
+]
+
+
+def matte_dir(mid):
+    return os.path.join(models_dir(), mid)
+
+
+def matte_installed(mid):
+    d = matte_dir(mid)
+    return os.path.isfile(os.path.join(d, 'config.json')) and any(f.endswith('.safetensors') for f in os.listdir(d))
+
+
+_matte = None
+_matte_used = 0.0
+
+
+def matte_unload():
+    global _matte
+    with _lock:
+        if _matte is not None and _matte.poll() is None:
+            _matte.stdin.close()
+            try:
+                _matte.wait(10)
+            except subprocess.TimeoutExpired:
+                _matte.kill()
+        _matte = None
+
+
+def _matte_watch():
+    while True:
+        time.sleep(30)
+        if _matte is not None and _matte.poll() is None and time.time() - _matte_used > SAM_IDLE_S:
+            matte_unload()
+
+
+threading.Thread(target=_matte_watch, daemon=True).start()
+
+
+def matte_alpha(path, mid):
+    # (H, W) uint8 alla risoluzione dell'immagine
+    global _matte, _matte_used
+    m = next(x for x in MATTE_MODELS if x['id'] == mid)
+    if not matte_installed(mid):
+        raise RuntimeError(f'{m["name"]} is not downloaded (Add-ons)')
+    out = os.path.join(DATA, 'cache', f'.matte-{os.getpid()}-{threading.get_ident()}.npz')
+    with _lock:
+        _matte_used = time.time()
+        if _matte is None or _matte.poll() is not None:
+            _matte = subprocess.Popen([sys.executable, '-I', os.path.join(REPO, 'studio', 'matte_worker.py')],
+                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
+                                      env=dict(os.environ, HF_HUB_OFFLINE='1'))
+        _matte.stdin.write(json.dumps({'image': path, 'out': out, 'model': matte_dir(mid), 'size': m['size']}) + '\n')
+        _matte.stdin.flush()
+        line = _matte.stdout.readline()
+    _matte_used = time.time()
+    if not line:
+        raise RuntimeError('background-removal worker stopped (see errors in the terminal)')
+    res = json.loads(line)
+    if 'error' in res:
+        raise RuntimeError(res['error'])
+    a = np.load(out)['alpha']
+    os.remove(out)
+    return a
+
+
+def matte_masks(path, ppm, params):
+    # soggetto: cio' che il modello dice oltre la soglia, a pezzi. Foglio: poi il bordo
+    # si riprende dai pixel veri, come per SAM
+    mid = params.get('model') or next((m['id'] for m in MATTE_MODELS if matte_installed(m['id'])), 'birefnet_lite')
+    rgb = np.asarray(Image.open(path).convert('RGB'))
+    a = matte_alpha(path, mid)
+    m = a >= round(float(params.get('threshold', 0.5)) * 255)
+    out = []
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m.astype(np.uint8), 8)
+    for i in range(1, n):
+        if st[i, 4] < 100 * ppm * ppm:
+            continue
+        piece = lab == i
+        if params.get('mode', 'sheet') == 'sheet':
+            piece = refine_with_wand(rgb, piece, ppm)
+        out.extend(_crop_mask(piece, np.zeros_like(piece), ppm))
+    return out
+
+
 def local_background(lab, m, ppm):
     # il fondo vicino al foglio: l'anello fra 1.5 e 5 mm fuori dalla sagoma, sfocato, e per
     # ogni pixel il colore del punto d'anello piu' vicino (coperchio aperto: il fondo sfuma)
@@ -786,6 +903,10 @@ def sheet_mask(rel, sheet):
     if sheet.get('src'):
         _, cs = load_cache(sheet['src'][0])
         base = cs[sheet['src'][1]]
+        if sheet['poly'] == sheet['poly0'] and not sheet.get('ops'):
+            # non toccato: la stessa finestra del motore. Il raddrizzo (warpAffine) cambia di
+            # +-1 se la finestra e' piu' larga: cosi' il ritaglio resta identico a quello dell'agente
+            return base['y'], base['x'], base['m'], base['h'] & base['m'], base['exact']
     pts = list(sheet['poly'])
     for o in sheet.get('ops', []):
         pts += o['pts']
@@ -830,6 +951,10 @@ def sheet_mask(rel, sheet):
                     Hh[b0 - by0:b1 - by0, a0 - bx0:a1 - bx0] |= SH[b0 - sy:b1 - sy, a0 - sx:a1 - sx]
                 if i == 0:
                     exact = se
+        elif o.get('op') == 'inv':
+            # Seleziona > Inverti: tutto il resto della scansione (pts copre l'immagine intera)
+            M = ~M
+            continue
         elif o.get('kind') == 'wand':
             R = wand_region(rel, o['seed'], o['tol'], o.get('contig', True))[by0:by1, bx0:bx1]
         else:
@@ -901,6 +1026,11 @@ def bg_model(rel):
             _bg_cache.pop(next(iter(_bg_cache)))
         _bg_cache[k] = (lab, col, T)
     return _bg_cache[k]
+
+
+def bg_tol(rel):
+    # la distanza dal fondo che il taglio automatico sceglie per questa scansione (Tolerance x 1)
+    return round(float(bg_model(rel)[2]), 1)
 
 
 def lab_real(v):
@@ -1388,7 +1518,7 @@ def ocr_text(path):
 
 def embed_text(path, text):
     # nei campi descrizione che leggono tutti (XMP, IPTC, EXIF): i pixel non cambiano
-    if not text:
+    if not text or not tool('exiftool'):
         return False
     r = subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', f'-XMP-dc:Description={text}',
                         f'-IPTC:Caption-Abstract={text[:2000]}', f'-IFD0:ImageDescription={text}', path],
@@ -1435,6 +1565,82 @@ def _backup(path, stamp):
     return b
 
 
+def _turn_pt(p, W, H, q):
+    # un punto (x, y) dell'immagine W x H dopo q quarti di giro in senso orario
+    x, y = p
+    for _ in range(q):
+        x, y, W, H = H - y, x, H, W
+    return [x, y]
+
+
+def _turn_seed(p, W, H, q):
+    # un pixel (colonna, riga): come _turn_pt ma sugli indici
+    x, y = p
+    for _ in range(q):
+        x, y, W, H = H - 1 - y, x, H, W
+    return [int(x), int(y)]
+
+
+def _turn_cache(key, W, H, q):
+    # le sagome del motore girate come il file: una voce nuova della cache
+    new = hashlib.sha1(f'{key}-turn{q}'.encode()).hexdigest()[:20]
+    if not os.path.exists(os.path.join(DATA, 'cache', new + '.npz')):
+        meta, sheets = load_cache(key)
+        out = []
+        for sh in sheets:
+            m, h, y, x = sh['m'], sh['h'], sh['y'], sh['x']
+            w0, h0 = W, H
+            for _ in range(q):
+                hh, ww = m.shape
+                m, h = np.rot90(m, -1), np.rot90(h, -1)
+                y, x = x, h0 - (y + hh)
+                w0, h0 = h0, w0
+            out.append({'y': int(y), 'x': int(x), 'm': np.ascontiguousarray(m), 'h': np.ascontiguousarray(h), 'exact': sh['exact']})
+        save_cache(new, out, {k: v for k, v in meta.items() if k != 'sheets'})
+    return new
+
+
+def _turn_sheet(sh, W, H, q):
+    sh = dict(sh)
+    for k in ('poly', 'poly0'):
+        if sh.get(k):
+            sh[k] = [_turn_pt(p, W, H, q) for p in sh[k]]
+    sh['holes'] = [[_turn_pt(p, W, H, q) for p in hp] for hp in sh.get('holes') or []]
+    if sh.get('src'):
+        sh['src'] = [_turn_cache(sh['src'][0], W, H, q), sh['src'][1]]
+    ops = []
+    for o in sh.get('ops') or []:
+        o = dict(o)
+        if o.get('op') == 'inv':
+            WW, HH = (W, H) if q % 2 == 0 else (H, W)
+            o['pts'] = [[0, 0], [WW, HH]]
+        else:
+            if o.get('kind') == 'wand':
+                o['seed'] = _turn_seed(o['seed'], W, H, q)
+                o['outline'] = [[_turn_pt(p, W, H, q) for p in c] for c in o.get('outline') or []]
+            if o.get('kind') == 'sheets':
+                o['sheets'] = [_turn_sheet(x, W, H, q) for x in o['sheets']]
+            pts = [_turn_pt(p, W, H, q) for p in o.get('pts') or []]
+            if o.get('kind') in ('wand', 'sheets') and len(pts) == 2:
+                # riquadro: di nuovo angolo in alto a sinistra e in basso a destra
+                pts = [[min(pts[0][0], pts[1][0]), min(pts[0][1], pts[1][1])], [max(pts[0][0], pts[1][0]), max(pts[0][1], pts[1][1])]]
+            o['pts'] = pts
+        ops.append(o)
+    sh['ops'] = ops
+    return sh
+
+
+def turn_state(rel, W, H, q):
+    # il file e' stato girato: le sagome e i ritocchi girano con lui (anche le versioni di prima)
+    st = load_state(rel, create=False)
+    if not st:
+        return
+    st['sheets'] = [_turn_sheet(x, W, H, q) for x in st['sheets']]
+    for v in st.get('history') or []:
+        v['sheets'] = [_turn_sheet(x, W, H, q) for x in v['sheets']]
+    save_state(st)
+
+
 def rotate_files(rels, deg, log=print):
     # ritagli gia' salvati, girati di 90 gradi senza perdita. La copia di prima resta in
     # studio-data/replaced/, i metadati passano al file girato (misura e dimensioni giuste)
@@ -1450,6 +1656,10 @@ def rotate_files(rels, deg, log=print):
         if ext not in ('.png', '.jxl'):
             log(f'{rel}: only PNG and JPEG XL cutouts can be rotated here'); continue
         back = _backup(path, stamp)
+        if ext != '.png':
+            W0, H0 = info(rel)['w'], info(rel)['h']
+        else:
+            W0, H0 = Image.open(path).size
         src, tmp = _readable(path)
         try:
             pim = Image.open(src)
@@ -1477,7 +1687,9 @@ def rotate_files(rels, deg, log=print):
         cmd = ['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', back, '-all:all', '-icc_profile', '-IFD0:Orientation#=1']
         if w:
             cmd += [f'-ExifIFD:ExifImageWidth={w}', f'-ExifIFD:ExifImageHeight={h}', f'-XMP-exif:PixelXDimension={w}', f'-XMP-exif:PixelYDimension={h}']
-        subprocess.run(cmd + [path], capture_output=True, timeout=120)
+        if tool('exiftool'):
+            subprocess.run(cmd + [path], capture_output=True, timeout=120)
+        turn_state(rel, W0, H0, q)
         done.append(rel)
         log(f'{rel}: rotated {90 * q}°, previous version kept in {os.path.relpath(back, ROOT)}')
     return done
@@ -1651,4 +1863,10 @@ def addons():
         {'id': 'sam3', 'name': 'SAM 3 model', 'ok': bool(w), 'group': 'SAM 3', 'path': w,
          'line': 'Meta’s model, 3.5 GB, licence-gated. Download it here, or drop sam3.pt in Downloads.',
          'cmd': 'hf download facebook/sam3 sam3.pt', 'link': 'https://huggingface.co/facebook/sam3', 'blocked': None},
+    ] + [
+        {'id': 'matte:' + m['id'], 'name': m['name'], 'ok': matte_installed(m['id']), 'group': 'Remove background',
+         'line': f'{m["line"]} {m["mb"]} MB, {m["licence"]}.', 'cmd': f'hf download {m["repo"]}',
+         'path': matte_dir(m['id']) if matte_installed(m['id']) else None, 'gated': bool(m.get('gated')),
+         'link': f'https://huggingface.co/{m["repo"]}', 'blocked': None if has_module('transformers') else 'Needs Ultralytics (SAM 3) or PyTorch first'}
+        for m in MATTE_MODELS
     ]

@@ -242,7 +242,10 @@ function renderNav() {
   const nav = $('#nav'); nav.innerHTML = '';
   const node = (label, icon, key, { count, kids, onclick, sel } = {}) => {
     const wrap = h('div', { class: S.open.has(key) ? 'open' : '' });
-    const row = h('div', { class: 'node' + (sel ? ' sel' : ''), onclick, ondblclick: () => kids && toggle() },
+    const loc = key.startsWith('v:') ? 'view:' + key.slice(2) : 'dir:' + key;
+    const row = h('div', { class: 'node' + (sel ? ' sel' : ''), onclick: e => (wantsTab(e) && key !== 'v:settings' ? newTab(loc) : onclick?.(e)), ondblclick: () => kids && toggle(),
+      onauxclick: e => { if (e.button === 1 && key !== 'v:settings') { e.preventDefault(); newTab(loc); } },
+      oncontextmenu: key === 'v:settings' ? null : e => { e.preventDefault(); tabMenu(row, loc, onclick); } },
       h('span', { class: 'tw', onclick: e => { e.stopPropagation(); toggle(); } }, kids?.length ? (S.open.has(key) ? '◢' : '▷') : ''),
       svg(icon), h('span', {}, label), count != null ? h('span', { class: 'count' }, count) : null);
     function toggle() { S.open.has(key) ? S.open.delete(key) : S.open.add(key); renderNav(); }
@@ -306,13 +309,93 @@ S.navBack = []; S.navFwd = []; S._here = null; S._navigating = false;
 function remember(target) {
   if (!S._navigating && S._here && S._here !== target) { S.navBack.push(S._here); if (S.navBack.length > 100) S.navBack.shift(); S.navFwd = []; }
   S._here = target;
+  const t = TABS.list[TABS.i];
+  if (t && t.loc !== target) { t.loc = target; tabsSave(); renderTabs(); }
 }
 async function goLoc(loc) {
   const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
   S._navigating = true;
-  try { if (kind === 'dir') await openDir(arg); else if (kind === 'scan') await openScan(arg); else await go(arg); }
+  try { if (kind === 'dir') await openDir(arg); else if (kind === 'scan') await openScan(arg); else if (arg === 'gallery') await openDir(S.dir || 'originals'); else await go(arg); }
   finally { S._navigating = false; }
 }
+// ------------------------------------------------------------ schede (come IE7)
+// Ogni scheda ricorda dove si trova (scansione, cartella o pagina), avanti/indietro, e per una
+// scansione zoom, selezione e annulla. Lo stato dei ritocchi sta sul server: cambiare scheda salva.
+// Clic nel posto = nella scheda; ⌘-clic o clic con la rotellina = scheda nuova.
+const TABS = { list: [], i: 0 };
+function tabLabel(loc) {
+  const [kind, ...rest] = (loc || '').split(':'), arg = rest.join(':');
+  if (kind === 'scan') return arg.split('/').pop();
+  if (kind === 'dir') return TOP_NAMES[arg] || arg.split('/').pop();
+  return { jobs: 'Jobs', scanners: 'Scanners', scripts: 'Scripts', addons: 'Add-ons', gallery: 'Scans' }[arg] || arg || 'New tab';
+}
+function tabsSave() { store('tabs', JSON.stringify({ list: TABS.list.map(t => t.loc), i: TABS.i })); }
+function renderTabs() {
+  const box = $('#tabs'); if (!box) return;
+  box.innerHTML = '';
+  TABS.list.forEach((t, i) => {
+    const rel = t.loc?.startsWith('scan:') ? t.loc.slice(5) : null;
+    const working = rel && BUSY[rel];
+    box.append(h('div', { class: 'tab' + (i === TABS.i ? ' on' : ''), title: (working ? BUSY[rel] + ' · ' : '') + tabLabel(t.loc),
+      onmousedown: e => { e.stopPropagation(); if (e.button === 1) { e.preventDefault(); closeTab(i); } else if (e.button === 0) switchTab(i); } },
+      working ? h('span', { class: 'tspin' }) : null,
+      h('span', { class: 'tl' }, tabLabel(t.loc)),
+      TABS.list.length > 1 ? h('span', { class: 'tx', title: 'Close tab (⌘W)', onmousedown: e => { e.stopPropagation(); if (e.button === 0) closeTab(i); } }, '✕') : null));
+  });
+  box.append(h('div', { class: 'tab add', title: 'New tab (⌘T)', onmousedown: e => { e.stopPropagation(); if (e.button === 0) newTab(); } }, '+'));
+  // nell'app del Dock la striscia per trascinare la finestra lascia passare i clic sulle schede
+  const mac = window.webkit?.messageHandlers?.studio;
+  if (mac) requestAnimationFrame(() => mac.postMessage({ cmd: 'tabs', w: Math.max(0, box.getBoundingClientRect().right - 30) }));
+}
+function snapTab() {
+  const t = TABS.list[TABS.i]; if (!t) return;
+  t.back = S.navBack; t.fwd = S.navFwd;
+  t.snap = S.view === 'editor' && S.rel ? { rel: S.rel, hist: S.hist, fut: S.fut, sel: S.selSheet, selSet: [...S.selSet], s: V.s, ox: V.ox, oy: V.oy, tool: S.tool } : null;
+}
+// dopo openScan: la scheda torna com'era (zoom, selezione, annulla)
+function restoreTab(rel) {
+  const t = TABS.list[TABS.i], sn = t?.snap;
+  if (!sn || sn.rel !== rel) return;
+  t.snap = null;
+  S.hist = sn.hist; S.fut = sn.fut; V.s = sn.s; V.ox = sn.ox; V.oy = sn.oy;
+  const ids = sn.selSet.filter(id => S.st.sheets.some(x => x.id === id));
+  if (ids.length) selectIds(ids); else if (S.st.sheets.some(x => x.id === sn.sel)) S.selSheet = sn.sel;
+  if (sn.tool && sn.tool !== S.tool) setTool(sn.tool);
+}
+async function switchTab(i) {
+  if (i === TABS.i || !TABS.list[i]) return;
+  if (S.view === 'editor') await flushSave();
+  snapTab();
+  TABS.i = i; const t = TABS.list[i];
+  S.navBack = t.back || []; S.navFwd = t.fwd || []; S._here = null;
+  tabsSave(); renderTabs();
+  await goLoc(t.loc);
+}
+async function newTab(loc) {
+  if (S.view === 'editor') await flushSave();
+  snapTab();
+  loc = loc || (S.dir ? 'dir:' + S.dir : 'dir:originals');
+  const have = loc.startsWith('scan:') ? TABS.list.findIndex(t => t.loc === loc) : -1;
+  if (have >= 0) return switchTab(have);
+  TABS.list.splice(TABS.i + 1, 0, { loc, back: [], fwd: [] });
+  TABS.i += 1; S.navBack = []; S.navFwd = []; S._here = null;
+  tabsSave(); renderTabs();
+  await goLoc(loc);
+}
+async function closeTab(i) {
+  if (TABS.list.length < 2) return;
+  if (i !== TABS.i) { TABS.list.splice(i, 1); if (i < TABS.i) TABS.i -= 1; tabsSave(); return renderTabs(); }
+  if (S.view === 'editor') await flushSave();
+  TABS.list.splice(i, 1);
+  TABS.i = Math.min(i, TABS.list.length - 1);
+  const t = TABS.list[TABS.i];
+  S.navBack = t.back || []; S.navFwd = t.fwd || []; S._here = null;
+  tabsSave(); renderTabs();
+  await goLoc(t.loc);
+}
+// ⌘-clic o rotellina: in una scheda nuova
+const wantsTab = e => e && (e.button === 1 || e.metaKey);
+function tabMenu(el, loc, here) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }]); }
 async function navBack() { if (!S.navBack.length) return; S.navFwd.push(S._here); await goLoc(S.navBack.pop()); }
 async function navFwd() { if (!S.navFwd.length) return; S.navBack.push(S._here); await goLoc(S.navFwd.pop()); }
 function addressBar(dir, file, right) {
@@ -368,7 +451,9 @@ function renderGallery() {
   const grid = h('div', { class: 'gallery', tabindex: 0 });
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
-  sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: () => { S.selDir = null; openDir(c.rel); },
+  sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: e => { S.selDir = null; e.metaKey ? newTab('dir:' + c.rel) : openDir(c.rel); },
+    onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('dir:' + c.rel); } },
+    oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'dir:' + c.rel, () => openDir(c.rel)); },
     onclick: () => { S.selDir = c.rel; S.sel.clear(); renderGallery(); renderSide(); renderCmdbar(); } },
     h('div', { class: 'pic', html: folderTile(c.peek) }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
   if (!items.length && !sub.length) grid.append(h('div', { class: 'empty' }, S.items.length ? 'No scans match the search.' : 'This folder is empty.'));
@@ -379,7 +464,9 @@ function renderGallery() {
     if (it.done === 'failed' || S.dir.startsWith('failed')) badges.push(h('span', { class: 'badge fail' }, 'check'));
     if (it.sheets != null && !it.exported) badges.push(h('span', { class: 'badge edit', title: 'Edited, not exported yet' }, `${it.sheets} ✎`));
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
-      onclick: e => clickItem(e, it, idx, items), ondblclick: () => openScan(it.rel) },
+      onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel) : openScan(it.rel)),
+      onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
+      oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel)); } },
       h('div', { class: 'badges' }, badges),
       h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
       h('div', { class: 'cap' }, it.name));
@@ -424,15 +511,29 @@ function engineChooser() {
     else if (p.choices) {
       const free = p.id === 'prompt';      // la frase di SAM si puo' anche scrivere a mano
       inp = h('select', { class: 'f', onchange: ev => { if (ev.target.value === '__other') { samPromptDialog(); ev.target.value = v; } else { S.params[p.id] = ev.target.value; renderSide(); } } },
-        p.choices.map(c => h('option', { value: c.text, selected: c.text === v, title: c.note }, c.text)),
+        p.choices.map(c => h('option', { value: c.text, selected: c.text === v, title: c.note }, c.label || c.text)),
         p.choices.some(c => c.text === v) ? null : h('option', { value: v, selected: true }, v),
         free ? h('option', { value: '__other' }, 'Other…') : null);
-    } else inp = h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value });
-    box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp, p.hint ? info(p.hint) : null));
+    } else inp = h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => {
+      S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value;
+      if (p.id === 'tol') { const t = BGTOL[S.rel], l = ev.target.closest('.row')?.nextSibling; if (t != null && l) l.textContent = `Auto for this scan: ${t} · now ${(t * (+ev.target.value || 1)).toFixed(1)} (Lab distance from the lid)`; }
+    } });
+    box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp, p.unit ? h('span', { class: 'pu' }, p.unit) : null, p.hint ? info(p.hint) : null));
+    if (p.id === 'tol') box.append(tolLine(+v || 1));
     const ch = p.choices?.find(c => c.text === v);
     if (ch) box.append(h('div', { class: 'small muted', style: { margin: '-2px 0 4px 76px' } }, ch.note));
   }
   return box;
+}
+// Tolerance x: quanto vale davvero sulla scansione aperta (la distanza dal fondo in Lab)
+const BGTOL = {};
+function tolLine(x) {
+  const el = h('div', { class: 'small muted', style: { margin: '-2px 0 4px 76px' } });
+  const show = t => { el.textContent = `Auto for this scan: ${t} · now ${(t * x).toFixed(1)} (Lab distance from the lid)`; };
+  if (!S.rel) return el;
+  if (BGTOL[S.rel] != null) show(BGTOL[S.rel]);
+  else { const rel = S.rel; api.get('bgtol', { rel }).then(r => { BGTOL[rel] = r.tol; if (S.rel === rel) show(r.tol); }).catch(() => {}); }
+  return el;
 }
 function samParams() {
   const e = S.engines.find(x => x.id === 'sam3'); const o = {};
@@ -455,7 +556,7 @@ function samPromptDialog() {
     h('div', { class: 'small muted', style: { margin: '0 0 8px' } }, 'Tested on your kind of scans:'),
     h('div', { class: 'chips' }, samChoices().map(c => h('span', { class: 'chip', title: c.note, onclick: () => { f.prompt.value = c.text; } }, c.text))),
     row('Prompt', f.prompt, null, samHint('prompt')),
-    row('Score', f.threshold, null, samHint('threshold')),
+    row('Score', f.threshold, '0 to 1: how sure SAM 3 must be', samHint('threshold')),
     row('Second pass', f.hires, null, samHint('hires')),
     row('Edge from real pixels', f.refine, null, samHint('refine'))),
     [['OK', () => { S.params.prompt = f.prompt.value.trim() || 'sheet of paper'; S.params.threshold = +f.threshold.value || 0.4; S.params.hires = f.hires.checked; S.params.refine = f.refine.checked; renderSide(); renderCmdbar(); }, true], ['Cancel', () => true]]);
@@ -526,7 +627,16 @@ async function cutoutAction(action, items, deg) {
     const ok = await choose('Move to Trash', `Move ${rels.length} cutout(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. You can put them back from the Trash.', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
     if (!ok) return;
   }
-  status({ rotate: 'Rotating…', ocr: 'Reading text…', trash: 'Moving to Trash…', merge: 'Merging…' }[action], true);
+  if (action === 'ocr') {
+    const j = await api.post('jobs', { kind: 'ocr', rels }); pollJobs();
+    let x = j;
+    while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 700)); x = await api.get('job', { id: j.id }); }
+    const done = x.result || [];
+    alertDialog('Text found', h('pre', { class: 'log' }, done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n') || x.log.join('\n')));
+    status(`${done.length} cutout(s) read`);
+    S.sel.clear(); await refreshItems(); return renderSide();
+  }
+  status({ rotate: 'Rotating…', trash: 'Moving to Trash…', merge: 'Merging…' }[action], true);
   try {
     const r = await api.post('cutouts', { action, rels, deg });
     if (action === 'ocr') alertDialog('Text found', h('pre', { class: 'log' }, r.done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n')));
@@ -573,7 +683,7 @@ function sideEditor(side) {
         oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); soloSheet(s.id); },
         onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: COLORS[i % COLORS.length] } }),
-      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}`)),
+      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
@@ -587,6 +697,7 @@ function sideEditor(side) {
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Export on'),
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Export off'),
       h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
+      h('button', { class: 'btn small', title: 'Everything except these (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', disabled: !many.some(x => sheetEdited(x) && x.poly0), onclick: () => commit(() => many.forEach(x => { if (x.poly0) { x.poly = JSON.parse(JSON.stringify(x.poly0)); x.ops = []; } })) }, 'Undo their edits'),
       h('button', { class: 'btn small', onclick: () => ocrSheets(many) }, 'Text (OCR)'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
@@ -601,6 +712,7 @@ function sideEditor(side) {
       info('Turns the cutout by 90° at export: pixels are moved, never resampled, so nothing is lost.'),
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
       h('button', { class: 'btn small', onclick: () => ocrSheets([sel]) }, 'Text (OCR)'),
+      h('button', { class: 'btn small', title: 'Everything except this sheet (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
     sel.ocr !== undefined ? h('div', { style: { marginTop: '6px' } },
       h('div', { class: 'small muted' }, 'Text found (edit if needed; saved in the file description at export):'),
@@ -661,6 +773,9 @@ const V = { s: 1, ox: 0, oy: 0, img: null, pScale: 1, tile: null, mtile: null, d
 let cv, ctx, hud, busyEl;
 
 async function openScan(rel) {
+  // la stessa scansione in due schede si contraddirebbe: si va alla scheda che ce l'ha gia'
+  const other = TABS.list.findIndex((t, i) => i !== TABS.i && t.loc === 'scan:' + rel);
+  if (other >= 0) return switchTab(other);
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
   useRemembered(rel);
@@ -694,10 +809,11 @@ async function openScan(rel) {
     const [info, st] = await Promise.all([api.get('info', { rel }), api.get('state', { rel })]);
     if (S.rel !== rel) return;
     S.info = info; setState(st);
-    const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}`; await im.decode();
+    const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}&k=${info.key || ''}`; await im.decode();
     if (S.rel !== rel) return;
     V.img = im; V.pScale = im.naturalWidth / info.w;
-    resize(); fit(); renderSide(); renderCmdbar();
+    resize(); fit(); restoreTab(rel); renderSide(); renderCmdbar(); renderOptions(); draw();
+    if (BUSY[rel]) busy(true, BUSY[rel], rel);
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
     if (!st.sheets.length) status('No sheets yet: choose an engine and press Detect (or draw one).');
   } catch (e) {
@@ -749,7 +865,7 @@ function renderOptions() {
   bar.append(h('div', { class: 'otool' }, svg(icon), h('b', {}, TOOL_TITLES[t] || t)));
   if (t === 'wand') {
     bar.append(modeGroup(),
-      numSlider('Tolerance', S.wandTol, 1, 120, 1, '', v => { S.wandTol = v; }, TIPS.wand),
+      numSlider('Tolerance', S.wandTol, 1, 120, 1, 'of 255 / channel', v => { S.wandTol = v; }, TIPS.wand),
       h('label', { class: 'og' }, h('input', { type: 'checkbox', checked: S.wandContig, onchange: e => { S.wandContig = e.target.checked; renderOptions(); } }), ' Contiguous', info(TIPS.contig)),
       hint(`Click a colour on the scan. ${MODE_NAMES[S.mode]} ${MODE_HINTS[S.mode]}.${S.wandContig ? '' : ' Contiguous is off: every pixel of that colour on the whole scan.'}`));
   } else if (t === 'lasso' || t === 'rect') {
@@ -757,7 +873,7 @@ function renderOptions() {
   } else if (t === 'brush') {
     bar.append(h('div', { class: 'og' }, h('span', { class: 'ol' }, 'Paint'),
         h('div', { class: 'segs' }, [['add', 'Add'], ['sub', 'Erase']].map(([m, l]) => h('div', { class: 'seg' + ((S.mode === m || (m === 'add' && S.mode !== 'sub')) ? ' on' : ''), onclick: () => setMode(m) }, svg(MODE_ICONS[m]), h('span', {}, l))))),
-      numSlider('Size', S.brushMM, 0.2, 20, 0.1, 'mm', v => { S.brushMM = v; draw(); }, TIPS.brush),
+      numSlider('Size', S.brushMM, 0.2, 20, 0.1, 'mm' + (S.info ? ` · ${Math.round(S.brushMM * S.info.ppm)} px` : ''), v => { S.brushMM = v; const u = $('#optbar .ou'); if (u && S.info) u.textContent = `mm · ${Math.round(v * S.info.ppm)} px`; draw(); }, TIPS.brush),
       hint(S.mode === 'sub' ? 'Paint over what should become transparent.' : 'Paint over paper the cut missed. [ and ] change the size.'));
   } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; ⌃-click: export only that one; Delete removes.'));
   else if (t === 'hand') bar.append(hint('Drag to move around. Also: hold Space with any tool, or scroll with two fingers.'));
@@ -845,7 +961,7 @@ function draw() {
       c.drawImage(V.mtile.bmp, a, b, (V.mtile.box[2] - V.mtile.box[0]) * V.s, (V.mtile.box[3] - V.mtile.box[1]) * V.s);
     } else {
       c.save(); c.beginPath(); c.rect(ix, iy, iw, ih);
-      sheets.filter(s => s.on !== false).forEach(s => polyPath(c, s.poly));
+      sheets.filter(s => s.on !== false).forEach(s => { polyPath(c, s.poly); if (isInverted(s)) c.rect(ix, iy, iw, ih); });
       c.fillStyle = 'rgba(20,30,45,.42)'; c.fill('evenodd'); c.restore();
     }
   }
@@ -862,7 +978,12 @@ function draw() {
     c.lineWidth = sel ? 3.5 : 2.5; c.strokeStyle = 'rgba(255,255,255,.85)'; c.stroke();
     c.lineWidth = sel ? 2 : 1.25; c.strokeStyle = off ? '#888' : col; c.stroke();
     if (sel) { c.fillStyle = col + '14'; c.fill(); }
+    if (isInverted(s)) {
+      // invertita: il bordo della scansione nel colore del foglio, il foglio tratteggiato dentro
+      c.save(); c.setLineDash([8, 5]); c.lineWidth = sel ? 2.5 : 1.5; c.strokeStyle = col; c.strokeRect(ix + 1, iy + 1, iw - 2, ih - 2); c.restore();
+    }
     for (const o of s.ops) {
+      if (o.op === 'inv') continue;
       c.beginPath(); c.strokeStyle = c.fillStyle = o.op === 'add' ? 'rgba(40,170,60,.35)' : o.op === 'int' ? 'rgba(40,110,230,.30)' : 'rgba(220,40,40,.35)';
       if (o.kind === 'wand') { (o.outline || []).forEach(p => polyPath(c, p)); c.fill('evenodd'); const [x, y] = toScr(...o.seed); c.fillStyle = o.op === 'add' ? '#1e8a1e' : '#c22'; c.fillRect(x - 3, y - 3, 6, 6); }
       else if (o.kind === 'stroke') { c.lineWidth = Math.max(1, 2 * o.r * V.s); c.lineCap = c.lineJoin = 'round'; const [x, y] = toScr(...o.pts[0]); c.moveTo(x, y); o.pts.forEach(p => c.lineTo(...toScr(...p))); c.stroke(); }
@@ -875,7 +996,7 @@ function draw() {
     const p = s.poly.reduce((a, q) => (q[1] < a[1] || (q[1] === a[1] && q[0] < a[0])) ? q : a, s.poly[0]);
     if (p) {
       const [lx, ly] = toScr(...p), L = sheets.filter(x => x.on !== false).length > 1 ? 'abcdefghijklmnopqrstuvwxyz'[sheets.filter(x => x.on !== false).indexOf(s)] || '' : '';
-      const txt = (off ? '(off) ' : '') + (L || '') + (s.label ? ' ' + s.label : '') + (sheetEdited(s) ? ' ✎' : '');
+      const txt = (off ? '(off) ' : '') + (L || '') + (s.label ? ' ' + s.label : '') + (isInverted(s) ? ' ⇄' : '') + (s.rot ? ` ⟳${s.rot}°` : '') + (sheetEdited(s) ? ' ✎' : '');
       if (txt.trim()) { c.font = '600 11px "Segoe UI", Tahoma, sans-serif'; const w = c.measureText(txt).width + 10;
         c.fillStyle = off ? '#888' : col; c.beginPath(); c.roundRect(lx, ly - 20, w, 16, 3); c.fill(); c.fillStyle = '#fff'; c.fillText(txt, lx + 5, ly - 8); }
     }
@@ -1036,7 +1157,7 @@ function bindCanvas(stage) {
     const r = cv.getBoundingClientRect(), s = sheetAt(toImg(e.clientX - r.left, e.clientY - r.top));
     if (s) { soloSheet(s.id); renderSide(); draw(); }
   });
-  cv.addEventListener('pointerleave', () => { mouse = null; draw(); $('#dens').style.display = 'none'; $('#loupe').style.display = 'none'; });
+  cv.addEventListener('pointerleave', () => { mouse = null; draw(); $('#loupe').style.display = 'none'; });
   cv.addEventListener('dblclick', e => {
     const r = cv.getBoundingClientRect(), pt = toImg(e.clientX - r.left, e.clientY - r.top);
     if (S.tool === 'poly') { S.poly?.pop(); closePoly(); return; }
@@ -1154,14 +1275,20 @@ async function samClick(pt, add) {
   S.sam.points.push(pt); S.sam.labels.push(add ? 1 : 0); draw();
   const prm = Object.assign(samParams(), { points: S.sam.points, labels: S.sam.labels });
   if (!prm.prompt) prm.prompt = (S.engines.find(e => e.id === 'sam3').params.find(p => p.id === 'prompt') || {}).default;
+  const rel = S.rel;
   busy(true, 'SAM 3: “' + prm.prompt + '”' + (S.samLoaded ? '' : ' (loading the model, ~10 s)'));
   try {
     await flushSave();
     const before = new Set(S.st.sheets.map(s => s.id));
-    const r = await api.post('detect', { rel: S.rel, engine: 'sam3', params: prm, replace: false });
-    S.samLoaded = true;
-    pushHist();
     const prev = S.sam.sheet;
+    const r = await api.post('detect', { rel, engine: 'sam3', params: prm, replace: false });
+    S.samLoaded = true;
+    if (S.rel !== rel) {
+      // un clic in piu' sullo stesso oggetto: quello di prima se ne va anche se si guarda altrove
+      if (prev) await saveElsewhere(rel, st => { st.sheets = st.sheets.filter(x => x.id !== prev); });
+      busy(false, null, rel); return status(`${baseName(rel)}: SAM 3 done`);
+    }
+    pushHist();
     const fresh = r.state.sheets.filter(s => !before.has(s.id));
     r.state.sheets = r.state.sheets.filter(s => s.id !== prev);
     setState(r.state);
@@ -1169,8 +1296,8 @@ async function samClick(pt, add) {
     if (S.sam.sheet) S.selSheet = S.sam.sheet;
     status(fresh.length ? `SAM 3: object selected (${S.sam.points.length} click${S.sam.points.length > 1 ? 's' : ''}). Enter = done.` : `SAM 3 found no “${prm.prompt}” under the click. Try another prompt in the Engine panel.`);
     scheduleSave();
-  } catch (e) { alertDialog('SAM 3 failed', e.message); }
-  busy(false); renderSide(); draw();
+  } catch (e) { busy(false, null, rel); if (S.rel !== rel) return status(`${baseName(rel)}: SAM 3 failed`); alertDialog('SAM 3 failed', e.message); }
+  busy(false, null, rel); if (S.rel !== rel) return; renderSide(); draw();
 }
 function soloSheet(id) {
   const sh = S.st.sheets, me = sh.find(x => x.id === id); if (!me) return;
@@ -1181,14 +1308,23 @@ function soloSheet(id) {
 }
 async function ocrSheets(list) {
   await flushSave();
-  busy(true, 'Reading text (Apple Vision)…');
+  const rel = S.rel;
+  busy(true, `Reading text: 0 of ${list.length} sheet(s)`, rel, 0);
   try {
-    const r = await api.post('ocr_sheets', { rel: S.rel, ids: list.map(x => x.id) });
+    const r = {};
+    for (const [k, x] of list.entries()) {
+      Object.assign(r, await api.post('ocr_sheets', { rel, ids: [x.id] }));
+      busy(true, `Reading text: ${k + 1} of ${list.length} sheet(s)`, rel, (k + 1) / list.length);
+    }
+    if (S.rel !== rel) {
+      await saveElsewhere(rel, st => st.sheets.forEach(x => { if (r[x.id] !== undefined) x.ocr = r[x.id]; }));
+      busy(false, null, rel); return status(`${baseName(rel)}: text read`);
+    }
     commit(() => list.forEach(x => { if (r[x.id] !== undefined) x.ocr = r[x.id]; }));
     const n = Object.values(r).filter(Boolean).length;
     status(n ? `Text found on ${n} sheet(s): it goes into the metadata at export` : 'No text found');
-  } catch (e) { alertDialog('Text (OCR)', e.message); }
-  busy(false); renderSide();
+  } catch (e) { busy(false, null, rel); if (S.rel !== rel) return; alertDialog('Text (OCR)', e.message); }
+  busy(false, null, rel); if (S.rel !== rel) return; renderSide();
 }
 function deleteSelected() {
   const ids = new Set(S.selSet); if (!ids.size) return;
@@ -1219,12 +1355,31 @@ function mergeSelected() {
   });
   status(`${many.length} sheets merged into one`);
 }
+// Inverti, come Seleziona > Inverti di Affinity o GIMP: la selezione diventa tutto il resto della
+// scansione. Di nuovo: se dopo non si e' toccato niente torna esattamente com'era, altrimenti
+// inverte la selezione ritoccata. Piu' fogli scelti: prima si uniscono.
+const isInverted = s => (s.ops || []).filter(o => o.op === 'inv').length % 2 === 1;
+function invertSelected() {
+  let many = selSheets().length ? selSheets() : (S.st?.sheets || []).filter(s => s.id === S.selSheet);
+  if (!many.length || !S.info) return status('Select a sheet to invert');
+  if (many.length > 1) { mergeSelected(); many = (S.st.sheets || []).filter(s => s.id === S.selSheet); }
+  const sh = many[0];
+  commit(() => {
+    if (sh.ops.at(-1)?.op === 'inv') sh.ops.pop();
+    else sh.ops.push({ op: 'inv', kind: 'inv', pts: [[0, 0], [S.info.w, S.info.h]] });
+  });
+  V.mtile = null; requestTile();
+  status(isInverted(sh) ? 'Selection inverted: everything except that sheet (⇧⌘I again goes back)' : 'Selection back to the sheet');
+}
 function closePoly() {
   const p = S.poly; S.poly = null;
   if (p && p.length >= 3) commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: p, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
   draw();
 }
 document.addEventListener('keydown', e => {
+  if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); return newTab(); }
+  if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'w') { e.preventDefault(); return closeTab(TABS.i); }
+  if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); const n = TABS.list.length; return switchTab((TABS.i + (e.shiftKey ? n - 1 : 1)) % n); }
   if (e.target.closest?.('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
@@ -1247,6 +1402,7 @@ document.addEventListener('keydown', e => {
   if (mod && k === '0') { e.preventDefault(); return fit(); }
   if (mod && k === '1') { e.preventDefault(); return actual(); }
   if (mod && k === 'a') { e.preventDefault(); selectIds(S.st.sheets.map(s => s.id)); renderSide(); return draw(); }
+  if (mod && e.shiftKey && k.toLowerCase() === 'i') { e.preventDefault(); return invertSelected(); }
   if (mod) return;
   const tools = { v: 'select', h: 'hand', a: 'points', p: 'poly', m: 'rect', l: 'lasso', k: 'lasso', w: 'wand', b: 'brush', e: 'brush', r: 'box', s: 'sam' };
   if (k === 'g') { S.loupe = !S.loupe; store('loupe', S.loupe ? '1' : '0'); return loupeDraw(); }
@@ -1296,7 +1452,23 @@ function save() {
 async function flushSave() { if (saveTimer) { clearTimeout(saveTimer); save(); } await saving; }
 
 // ------------------------------------------------------------ azioni
-function busy(on, msg) { busyEl?.classList.toggle('on', on); const m = $('#busymsg'); if (m && msg) m.textContent = msg; }
+// lavori lunghi (Detect, SAM, testo, export) per scansione: con le schede si puo' cambiare scheda
+// mentre girano; il cerchietto resta sulla scheda della loro scansione
+const BUSY = {};
+function busy(on, msg, rel = S.rel, frac = null) {
+  if (rel) { if (on) BUSY[rel] = msg || BUSY[rel] || 'Working…'; else delete BUSY[rel]; renderTabs(); }
+  if (rel !== S.rel) return;
+  busyEl?.classList.toggle('on', on); const m = $('#busymsg'); if (m && msg) m.textContent = msg;
+  // con una frazione la barra dice quanto manca davvero; senza, scorre (durata sconosciuta)
+  const bar = busyEl?.querySelector('.progress');
+  if (bar) { bar.classList.toggle('marquee', frac == null); bar.firstChild.style.width = frac == null ? '' : Math.round(frac * 100) + '%'; }
+}
+// il risultato e' arrivato ma si guarda un'altra scansione: si cambia il suo stato sul server
+async function saveElsewhere(rel, fn) {
+  const st = await api.get('state', { rel }); delete st.names; fn(st);
+  await api.post('state', { state: st });
+}
+const baseName = rel => rel.split('/').pop();
 async function detect(box, engine, add) {
   if (!S.rel) return;
   await flushSave();
@@ -1313,23 +1485,32 @@ async function detect(box, engine, add) {
     if (!choice) return;
     addOnly = choice === 'keep';
   }
+  const rel = S.rel;
   busy(true, `${eng.name}${many ? ' (inside the box)' : ''}…` + (engine === 'sam3' && !S.samLoaded ? ' loading the model the first time (~10 s)' : ''));
   try {
     pushHist();
-    const r = await api.post('detect', { rel: S.rel, engine, params: engine === 'sam3' ? samParams() : engine === S.engine ? engParams() : {}, box: Array.isArray(box) ? box : null, replace: !many && !addOnly });
+    const r = await api.post('detect', { rel, engine, params: engine === 'sam3' ? samParams() : engine === S.engine ? engParams() : {}, box: Array.isArray(box) ? box : null, replace: !many && !addOnly });
     if (engine === 'sam3') S.samLoaded = true;
-    setState(r.state); const fresh = await api.get('state', { rel: S.rel }); S.names = fresh.names || {};
+    if (S.rel !== rel) { busy(false, null, rel); return status(`${baseName(rel)}: ${eng.name} found ${r.state.sheets.length} sheet(s)`); }
+    setState(r.state); const fresh = await api.get('state', { rel }); S.names = fresh.names || {};
     status(`${eng.name}: ${r.state.sheets.length} sheet(s) in ${r.meta.seconds ?? 0}s`);
     V.mtile = null; requestTile();
-  } catch (e) { status('Detect failed: ' + e.message); alertDialog('Detect failed', e.message); }
-  busy(false); renderSide(); renderCmdbar(); draw(); refreshItems();
+  } catch (e) {
+    busy(false, null, rel);
+    if (S.rel !== rel) return status(`${baseName(rel)}: Detect failed: ${e.message}`);
+    status('Detect failed: ' + e.message); alertDialog('Detect failed', e.message);
+  }
+  busy(false, null, rel); if (S.rel !== rel) return; renderSide(); renderCmdbar(); draw(); refreshItems();
 }
 async function toggleCompare() {
   if (S.view !== 'editor') return;
   if (S.compare) { S.compare = null; renderSide(); renderCmdbar(); return draw(); }
+  const rel = S.rel;
   busy(true, 'Running the other engines…');
-  try { S.compare = await api.post('compare', { rel: S.rel, engines: S.settings.compare_engines }); } catch (e) { status(e.message); }
-  busy(false); renderSide(); renderCmdbar(); draw();
+  let r = null;
+  try { r = await api.post('compare', { rel, engines: S.settings.compare_engines }); } catch (e) { status(e.message); }
+  busy(false, null, rel); if (S.rel !== rel) return;
+  S.compare = r; renderSide(); renderCmdbar(); draw();
 }
 function rotateSheets(list, deg) {
   commit(() => list.forEach(x => { x.rot = (((x.rot || 0) + deg) % 360 + 360) % 360; }));
@@ -1348,17 +1529,19 @@ function restoreVersion(i) {
 async function doExport(sub) {
   if (S.view !== 'editor' || !S.st?.sheets.length) return;
   await flushSave();
+  const rel = S.rel;
   busy(true, 'Saving the cutouts…');
   try {
-    const r = await api.post('export', { rel: S.rel, subfolder: typeof sub === 'string' ? sub : null });
+    const r = await api.post('export', { rel, subfolder: typeof sub === 'string' ? sub : null });
+    if (S.rel !== rel) { busy(false, null, rel); refreshItems(); return status(`${baseName(rel)}: exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`); }
     const moved = r.written.find(w => w.status === 'moved');
     if (moved) { S.rel = moved.rel; S.dir = moved.rel.split('/').slice(0, -1).join('/'); }
     const st = await api.get('state', { rel: S.rel }); setState(st);
     const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.status === 'identical' ? '   (already there, identical)' : ''}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cutout you started from, kept)' : ''}`).join('\n');
     status(`Exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`);
     alertDialog('Cutouts saved', h('pre', { class: 'log' }, list || 'Nothing to save.'));
-  } catch (e) { alertDialog('Export failed', e.message); }
-  busy(false); renderSide(); refreshItems();
+  } catch (e) { busy(false, null, rel); if (S.rel !== rel) return status(`${baseName(rel)}: export failed: ${e.message}`); alertDialog('Export failed', e.message); }
+  busy(false, null, rel); if (S.rel !== rel) return; renderSide(); refreshItems();
 }
 async function exportMany(rels) { if (!rels.length) return; await api.post('jobs', { kind: 'export', rels }); status(`Export of ${rels.length} scan(s) queued`); pollJobs(); }
 async function batch(exp) {
@@ -1465,19 +1648,28 @@ async function pollJobs() {
   if (!active && S._wasActive) { refreshItems(); renderNav(); if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); if (st.version !== S.st.version) { setState(st); renderSide(); draw(); } } }
   S._wasActive = active;
 }
+// avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato
+const JOB_NAMES = { batch: 'Batch', export: 'Export', ocr: 'Text (OCR)', scan: 'Scan', preview: 'Preview', install: 'Install' };
+function jobPct(j) { return j.status === 'done' ? 100 : j.pct != null ? Math.round(j.pct) : Math.round(100 * j.done / Math.max(1, j.total)); }
+function jobLine(j) {
+  const pct = jobPct(j), el = j.started ? Date.now() / 1000 - j.started : 0;
+  const left = j.done > 0 && j.done < j.total ? el / j.done * (j.total - j.done) : null;
+  const t = s => s < 60 ? `${Math.max(1, Math.round(s))} s` : `${Math.round(s / 60)} min`;
+  return `${JOB_NAMES[j.kind] || j.kind}: ${j.done} of ${j.total} steps · ${pct}%` + (left != null ? ` · about ${t(left)} left` : '') + (j.current ? ` · ${j.current}` : '');
+}
 function updateJobBar() {
   const bar = $('#jobbar'); if (!bar) return;
   const j = S.jobs.find(x => x.status === 'running' && x.kind !== 'claude');
   bar.style.display = j ? '' : 'none';
-  if (j) { bar.firstChild.style.width = Math.round(100 * j.done / j.total) + '%'; status(`${j.kind}: ${j.done}/${j.total}`, true); }
+  if (j) { bar.firstChild.style.width = jobPct(j) + '%'; bar.title = jobLine(j); status(jobLine(j), true); }
 }
 function renderJobs() {
   const main = $('#main'); main.innerHTML = '';
   const t = h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'Job'), h('th', { style: { width: '150px' } }, 'Progress'), h('th', {}, 'Log'), h('th', {}, '')));
   for (const j of S.jobs) {
-    const pct = Math.round(100 * j.done / j.total);
+    const pct = jobPct(j);
     t.append(h('tr', {}, h('td', {}, h('b', {}, j.kind), h('div', { class: 'small muted' }, new Date(j.created * 1000).toLocaleTimeString()), h('div', { class: 'small muted' }, j.args.engine || '')),
-      h('td', {}, h('div', { class: 'progress' + (j.status === 'running' && j.kind === 'claude' ? ' marquee' : '') }, h('i', { style: { width: (j.status === 'done' ? 100 : pct) + '%' } })), h('div', { class: 'small muted' }, `${j.status} · ${j.done}/${j.total}`)),
+      h('td', {}, h('div', { class: 'progress' + (j.status === 'running' && j.kind === 'claude' ? ' marquee' : '') }, h('i', { style: { width: (j.status === 'done' ? 100 : pct) + '%' } })), h('div', { class: 'small muted' }, j.status === 'running' ? jobLine(j).replace(/^[^:]+: /, '') : `${j.status} · ${j.done} of ${j.total} steps`)),
       h('td', {}, h('div', { class: 'log', style: { maxHeight: '160px', overflow: 'auto' } }, j.log.slice(-60).join('\n'))),
       h('td', {}, ['running', 'queued'].includes(j.status) ? h('button', { class: 'btn small', onclick: () => api.post('cancel', { id: j.id }).then(pollJobs) }, 'Cancel') : null)));
   }
@@ -1748,24 +1940,25 @@ async function renderAddons(refresh = true) {
     const job = ADD.jobs[a.id];
     const pill = h('span', { class: 'pill ' + (a.ok ? 'ok' : 'no') }, a.ok ? (a.id === 'sam3' ? '✓ Found' : '✓ Installed') : 'Not installed');
     const btn = job ? h('button', { class: 'btn', disabled: true }, 'Installing…')
-      : a.id === 'sam3' || (a.ok && a.id !== 'helpers') ? null
-      : h('button', { class: 'btn' + (a.ok ? '' : ' default'), disabled: !!a.blocked, onclick: () => installAddon(a.id) }, a.ok ? 'Rebuild' : 'Install');
+      : a.id === 'sam3' || a.gated || (a.ok && a.id !== 'helpers') ? null
+      : h('button', { class: 'btn' + (a.ok ? '' : ' default'), disabled: !!a.blocked, onclick: () => installAddon(a.id) }, a.ok ? 'Rebuild' : a.id.startsWith('matte:') ? 'Download' : 'Install');
     return h('div', { class: 'addon' },
       h('div', { class: 'addon-main' },
         h('div', {}, h('b', {}, a.name), ' ', pill),
-        h('div', {}, a.ok && a.path ? 'Meta’s segmentation model.' : a.line),
+        h('div', {}, a.ok && a.path && a.id === 'sam3' ? 'Meta’s segmentation model.' : a.line),
         a.path ? h('div', { class: 'small muted' }, a.path) : h('code', { class: 'small muted' }, a.cmd),
         a.blocked ? h('div', { class: 'small warn' }, a.blocked) : null,
         ADD.err[a.id] ? h('div', { class: 'small warn' }, ADD.err[a.id]) : null,
-        a.id === 'sam3' && !a.ok ? h('div', { class: 'addon-steps' },
-          h('div', {}, '1. ', h('a', { href: '#', onclick: e => { e.preventDefault(); api.post('open', { what: 'sam3page' }); } }, 'Request access on Hugging Face'), ' (free account; Meta approves it).'),
+        (a.id === 'sam3' || a.gated) && !a.ok ? h('div', { class: 'addon-steps' },
+          h('div', {}, '1. ', h('a', { href: '#', onclick: e => { e.preventDefault(); api.post('open', a.id === 'sam3' ? { what: 'sam3page' } : { what: 'hfpage', url: a.link }); } }, 'Request access on Hugging Face'), a.id === 'sam3' ? ' (free account; Meta approves it).' : ' (free account; approved at once).'),
           h('div', {}, '2. ', h('a', { href: '#', onclick: e => { e.preventDefault(); api.post('open', { what: 'hftokens' }); } }, 'Create a read token'), ', paste it, download. Not stored.'),
           h('div', { class: 'row' }, h('input', { class: 'f', type: 'password', placeholder: 'hf_… (or leave empty after “hf auth login”)', value: ADD.token, oninput: e => { ADD.token = e.target.value; } }),
             job ? h('button', { class: 'btn', disabled: true }, 'Downloading…')
-              : h('button', { class: 'btn default', onclick: () => installAddon('sam3', { token: ADD.token }) }, 'Download'))) : null),
+              : h('button', { class: 'btn default', onclick: () => installAddon(a.id, { token: ADD.token }) }, 'Download'))) : null),
       btn);
   };
-  const groups = [['Tools', ADD.list.filter(a => !a.group)], ['SAM 3', ADD.list.filter(a => a.group === 'SAM 3')]];
+  const groups = [['Tools', ADD.list.filter(a => !a.group)], ['SAM 3', ADD.list.filter(a => a.group === 'SAM 3')],
+    ['Remove background', ADD.list.filter(a => a.group === 'Remove background')]];
   main.append(addressBar(null, null, 'Add-ons'), h('div', { style: { padding: '14px', overflow: 'auto', maxWidth: '780px' } },
     h('div', { class: 'muted', style: { marginBottom: '10px' } }, 'Optional. Cutting works without any of these.'),
     ...groups.map(([t, l], i) => h('div', { class: 'group', style: { margin: i ? '16px 0 0' : 0 } }, h('div', { class: 'gh' }, t), l.map(row)))));
@@ -1780,7 +1973,7 @@ async function installAddon(id, extra = {}) {
     if (['queued', 'running'].includes(x.status)) continue;
     delete ADD.jobs[id];
     if (x.status !== 'done') ADD.err[id] = (x.log.filter(l => l.startsWith('ERROR')).pop() || 'Failed: see Jobs').replace(/^ERROR \w+: /, '');
-    if (id === 'sam3' && x.status === 'done') ADD.token = '';
+    if (x.status === 'done') ADD.token = '';
     S.engines = await api.get('engines');
     status(x.status === 'done' ? 'Installed' : 'Install failed');
     return renderAddons();
@@ -1890,8 +2083,19 @@ async function it8Reminder() {
   S.root = t.root; S.tree = t.tree; S.engines = engines; S.settings = settings;
   renderNav();
   const hash = decodeURIComponent(location.hash.slice(1));
-  if (hash) { S.dir = hash.split('/').slice(0, -1).join('/'); S.items = await api.get('list', { dir: S.dir }).catch(() => []); openScan(hash); }
-  else openDir('originals');
+  let saved = null; try { saved = JSON.parse(store('tabs') || 'null'); } catch (e) {}
+  TABS.list = (saved?.list || []).filter(Boolean).map(loc => ({ loc, back: [], fwd: [] }));
+  TABS.i = Math.min(Math.max(0, saved?.i || 0), Math.max(0, TABS.list.length - 1));
+  if (hash) {
+    // un indirizzo con la scansione (screenshot, link): in una scheda sua
+    const loc = 'scan:' + hash, j = TABS.list.findIndex(t => t.loc === loc);
+    if (j >= 0) TABS.i = j; else { TABS.list.push({ loc, back: [], fwd: [] }); TABS.i = TABS.list.length - 1; }
+  }
+  if (!TABS.list.length) TABS.list = [{ loc: 'dir:originals', back: [], fwd: [] }];
+  renderTabs();
+  const loc = TABS.list[TABS.i].loc;
+  if (loc.startsWith('scan:')) { S.dir = loc.slice(5).split('/').slice(0, -1).join('/'); S.items = await api.get('list', { dir: S.dir }).catch(() => []); }
+  goLoc(loc).catch(() => openDir('originals'));
   pollJobs();
   setTimeout(it8Reminder, 2500);
   setInterval(async () => { const t = await api.get('tree').catch(() => null); if (t && JSON.stringify(t.tree) !== JSON.stringify(S.tree)) { S.tree = t.tree; renderNav(); if (S.view === 'gallery') refreshItems(); } }, 5000);

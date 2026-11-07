@@ -8,6 +8,8 @@ let url = URL(string: a[1])!, out = a[2], w = Double(a[3])!, h = Double(a[4])!, 
 let js = a.count > 6 ? (try? String(contentsOfFile: a[6], encoding: .utf8)) : nil
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)
+// fuori schermo macOS rallenta i timer della pagina (App Nap): le prove lunghe si bloccherebbero
+let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical], reason: "snap")
 class D: NSObject, WKNavigationDelegate {
   let wv: WKWebView; let win: NSWindow
   init(_ wv: WKWebView, _ win: NSWindow) { self.wv = wv; self.win = win }
@@ -28,13 +30,19 @@ class D: NSObject, WKNavigationDelegate {
   }
 }
 let cfg = WKWebViewConfiguration()
+// niente sonno per la pagina nascosta (preferenze di WebKit per le prove)
+for k in ["hiddenPageDOMTimerThrottlingEnabled", "hiddenPageDOMTimerThrottlingAutoIncreases", "pageVisibilityBasedProcessSuppressionEnabled"] {
+  cfg.preferences.setValue(false, forKey: k)
+}
 let pre = WKUserScript(source: "window.__errs=[];window.addEventListener('error',e=>__errs.push(e.message+' @'+e.lineno));window.addEventListener('unhandledrejection',e=>__errs.push('rej: '+(e.reason&&e.reason.message||e.reason)));", injectionTime: .atDocumentStart, forMainFrameOnly: true)
 cfg.userContentController.addUserScript(pre)
 let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: w, height: h), styleMask: [.borderless], backing: .buffered, defer: false)
 let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: w, height: h), configuration: cfg)
 win.contentView = wv
-win.setFrameOrigin(NSPoint(x: -10000, y: -10000)); win.orderBack(nil)
+// sullo schermo ma invisibile e senza clic: per WebKit la pagina e' visibile e i timer non rallentano
+win.alphaValue = 0; win.ignoresMouseEvents = true; win.level = .floating
+win.setFrameOrigin(NSPoint(x: 0, y: 0)); win.orderFrontRegardless()
 let d = D(wv, win); wv.navigationDelegate = d
 wv.load(URLRequest(url: url))
-DispatchQueue.main.asyncAfter(deadline: .now() + 60) { print("timeout"); exit(1) }
+DispatchQueue.main.asyncAfter(deadline: .now() + max(60, wait + 30)) { print("timeout"); exit(1) }
 app.run()

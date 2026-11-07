@@ -63,6 +63,7 @@ numbering each time it opens, so a taken name gets the next free number.
 
 - Discuss big pipeline changes before making them.
 - Code comments in Italian; docs in English; commit messages in Italian.
+- Run `python3 -m unittest discover -s tests` before committing (also in CI).
 - Test on **copies** with a scratch root: `python3 -I scancut.py <root>` takes the
   root as its argument. Compare old vs new on real scans and look at zoomed edges.
   Synthetic tests (rotating a scan by hand) mislead: they rotate the lid too.

@@ -47,6 +47,13 @@ studio.py export "originals/sketchbook/sketchbook 4.png"   # saves the edited st
   takes clicks (+/-) and boxes (`mode: 'prompt'`) for the coming SAM tool.
   "Refine edge with wand" keeps SAM's region but takes the real edge from the
   classic wand within 2 mm.
+- `matte`: "Remove background", the BiRefNet family (BiRefNet, BiRefNet lite, BiRefNet HR,
+  RMBG-2.0), all loaded the same way in `studio/matte_worker.py` from `studio-data/models/<id>`
+  (downloaded from Add-ons; RMBG-2.0 needs an access request and a token, non-commercial
+  licence). Edge "sheet": the model picks the piece, the edge comes from the wand within 2 mm
+  (as SAM); "subject": the model's own edge, for photos. "Keep above" is the 0-1 subject
+  score. On sheets of squared/written paper the lite model tends to pick the ink, not the
+  paper: it is better for lifting a drawing or a subject than for cutting sheets.
 - `script:<name>`: any `scripts/<name>.py` with `segment(rgb, ppm, params)` returning
   masks. Reloaded on every run.
 
@@ -103,11 +110,12 @@ or white lid (dark paper); those fill pixels are never saved.
 `GET addons` lists the optional parts with their state; `jobs {kind: install, what}` installs one:
 `helpers` (swiftc), `sane` / `exiftool` / `jxl` (Homebrew), `ultralytics` (pip into the studio's
 Python), `sam3` (Hugging Face download; `token` goes to the child's environment, never into job
-listings). Only these fixed commands run.
+listings), `matte:<id>` (one BiRefNet-family model, plus `kornia`/`timm` if missing). Only these
+fixed commands run.
 
 ## API (127.0.0.1 only; POSTs need header `X-Studio: 1`)
 
-GET  `tree`, `list?dir=`, `info?rel=`, `state?rel=`, `engines`, `settings`, `jobs`,
+GET  `tree`, `list?dir=`, `info?rel=`, `bgtol?rel=`, `state?rel=`, `engines`, `settings`, `jobs`,
 `job?id=`, `thumb|preview?rel=`, `tile|masktile?rel=&x=&y=&w=&h=&out=`,
 `cutout?rel=&id=`, `scanners`
 POST `detect {rel, engine, params, box?, replace?}`, `state {state}` (version-checked),
@@ -137,13 +145,28 @@ recomputes it at full resolution. Clicking paper with no sheet there makes a new
 View menu: background (light blue, white, grey, dark, checker). Pane edges drag;
 double-click resets.
 
+## Tabs
+
+Like IE7: tabs sit in the title bar. A click opens in the current tab; ⌘-click, middle-click or
+right-click › Open in new tab opens a new one (gallery items, folders, the tree). ⌘T new tab,
+⌘W close, ⌃Tab / ⌃⇧Tab next/previous. Each tab keeps its place, back/forward, and for a scan
+its zoom, selection, tool and undo. Detect, SAM, text and export keep running when you switch:
+the tab shows a spinner and the result is saved to that scan. Tabs come back after a restart
+(browser storage). In the Dock app the window drags from the empty part of the title bar.
+
+## Units
+
+Every number setting shows its unit in grey: Tolerance (× the automatic distance, with the
+real Lab distance for the open scan underneath), wand tolerance (of 255, per channel), brush
+(mm and px), SAM / Remove background scores (0-1). Engine and script `PARAMS` take a `unit` key.
+
 ## Shortcuts (editor)
 
 V select · H pan (or hold Space) · A edit points (double-click edge adds, ⌥-click
 removes) · P polygon (Enter closes) · M rectangle · L lasso · W Magic Wand (options in the bar above the scan) · B brush ·
 K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the other) ·
 R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
-⇧/⌘-click or drag on empty space selects several sheets · ⌃-click (or ⌥-click, right-click) a sheet: only that one is exported, again: all back on · Text (OCR) on the selected sheets reads their text into an editable box, written into the cutout's description at export · ⌘A all · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
+⇧/⌘-click or drag on empty space selects several sheets · ⌃-click (or ⌥-click, right-click) a sheet: only that one is exported, again: all back on · Text (OCR) on the selected sheets reads their text into an editable box, written into the cutout's description at export · ⌘A all · ⇧⌘I invert (everything except the selected sheets; inverting again gives them back) · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
 Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
 Address bar: every folder is clickable, ▸ lists its subfolders; back/forward with the round
 buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
@@ -156,11 +179,19 @@ next page, or timed). Scans go to the inbox like any other. Tested with a Canon 
 
 ## Testing (for Claude)
 
+- Tests: `python3 -m unittest discover -s tests` (stdlib only, ~30 s, made-up scans in temp
+  roots). They cover the never-lose/never-overwrite rules, identical re-cuts (8 and 16 bit),
+  studio exports byte-identical to the agent's, path safety and the server guards.
+
 - Scratch root: `python3 -I studio.py serve --root <copy> --port 8799`, never the live ~/Scans.
 - Screenshots: `swiftc -O tools/snap.swift -o tools/snap`, then
   `tools/snap "http://127.0.0.1:8799/#originals%2F<file>" out.png 1400 880 <wait-s> [script.js]`;
   the JS runs after load (studio globals like `S`, `openScan`, `detect` are reachable), page
   errors are printed. Read the PNG to check.
+- UI health check: `tools/snap "http://127.0.0.1:8799/" out.png 1400 880 60 tools/health.js` on a
+  scratch root (it detects, exports and rotates files): every view, units, sheet rotation, invert,
+  densitometer, tabs, export, rotating a cutout with its selection. Prints PASS/FAIL per step.
+  Restart the scratch server after changing Python code.
 - Made-up drawings for screenshots: `tools/make_demo_scans.py` (in an empty inbox).
 - Pipeline changes: run the HEAD copy and the new `scancut.py` on the same inbox in two
   scratch roots and `cmp` every cutout (`tools/make_test_scans.py` makes made-up scans for this).
