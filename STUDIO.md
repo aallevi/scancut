@@ -145,6 +145,44 @@ recomputes it at full resolution. Clicking paper with no sheet there makes a new
 View menu: background (light blue, white, grey, dark, checker). Pane edges drag;
 double-click resets.
 
+## Text (OCR)
+
+Reads the writing on a scan, a sheet or a cutout. Pixels never change; the text goes into metadata.
+Everything is in the **Text pane** beside the drawing (Text › Show text pane, or the Text tool T):
+- Reader: Apple Vision (built in, instant, printed text and neat handwriting, no layout), GLM-OCR
+  (recommended download, ~2.7 GB: handwriting and print, keeps headings, lists and tables as
+  Markdown) or Qwen3-VL 8B (~6 GB, difficult handwriting). Downloads: Add-ons › Text (OCR); they run
+  in Ollama on this Mac. Text in several languages at once is kept as written, never translated.
+- Read selected / Read all: each sheet's text appears in its own block, editable; ↻ reads one again.
+- Read a box (T): drag a box over any writing; the result appears at the top of the pane: Copy, or
+  Add to sheet (appended to the sheet under the box).
+- Copy all, Save .md (a Markdown file next to the cutouts, never over an existing one), and
+  "read at every export".
+- Where it is stored: while editing, in the scan's edit state (studio-data/state, the sheet's `ocr`);
+  at export, inside the cutout file: XMP Description, IPTC Caption and EXIF ImageDescription.
+- Side by side (checkbox in the pane, or Text menu): a second view the size of the scan, zooming and
+  scrolling with it; each text sits where its sheet or box is, in the same colour, formatted
+  (headings, lists, tables; pictures a model marks are shown from the real pixels).
+- Whole documents: in any gallery (originals or cutouts) select files and press Read (or Text ›
+  Read the whole document): a job, then a reader with the formatted text, Copy all, Save .md, Open.
+  Read into the files also writes it into the cutouts' descriptions; originals are never changed.
+  In the editor: Read whole scan. Results are remembered (studio-data/text) until the file or the
+  reader changes. Long pages are read in strips cut between lines.
+- The downloaded readers load on first use (a few seconds) and free their memory after 10 idle
+  minutes, like SAM 3; SAM 3 › Unload frees them at once.
+- Every OCR run is listed in Jobs, like Detect, SAM, Compare and Export.
+
+## Local assistant and search
+
+- Search box (top right): scans and cutouts in every folder, sheet labels and read text, help topics;
+  Enter opens the first result, ⌘-click opens it in a new tab. In a gallery it also filters the folder.
+- Ask › Help (local): a small model on this Mac answers from this guide, the engine notes and the (i)
+  tips. Ask › Claude: Claude Code, which can also do jobs; it gets the matching help first.
+- Mac Help menu: its search box shows studio help topics and scans too; Keyboard Shortcuts, Ask Claude.
+- Set up in Add-ons › Local assistant: a model server (Ollama, or LM Studio, llama.cpp, mlx_lm.server,
+  any OpenAI-compatible server; address in Settings), an answering model (e.g. gemma3:4b) and an
+  embedding model (e.g. embeddinggemma) so help is found by meaning, not only by words.
+
 ## Tabs
 
 Like IE7: tabs sit in the title bar. A click opens in the current tab; ⌘-click, middle-click or

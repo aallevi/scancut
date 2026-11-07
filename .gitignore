@@ -20,3 +20,4 @@ tools/work/
 media/
 studio/ocr
 .venv/
+install.log

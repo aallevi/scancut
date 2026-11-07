@@ -1145,6 +1145,11 @@ DEFAULT_SETTINGS = {
     'it8_snooze': 0,                   # rimandato fino a
     'sam3_weights': '',                # sam3.pt scelto a mano (vuoto: si cerca nei posti soliti)
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
+    'llm_url': 'http://localhost:11434/v1',   # assistente locale: Ollama, o qualunque server compatibile OpenAI
+    'llm_model': '',                   # vuoto: il primo adatto fra quelli installati
+    'embed_model': '',                 # vuoto: il primo modello di embedding installato (o solo parole)
+    'claude_model': 'sonnet',
+    'ocr_engine': 'vision',            # vision (Apple, sul Mac) o ollama:<modello> (GLM-OCR, Qwen3-VL: anche a mano)          # Chiedi a Claude: sonnet (equilibrato), haiku (veloce), opus, o vuoto
 }
 
 
@@ -1503,8 +1508,48 @@ def _readable(path):
     return path, False
 
 
+def read_doc(rel, progress=None):
+    # il testo di un documento intero (scansione o ritaglio), con il lettore scelto; ricordato in
+    # studio-data/text/ finche' il file e il lettore non cambiano. Nessun file viene toccato.
+    eng = settings().get('ocr_engine') or 'vision'
+    d = os.path.join(DATA, 'text'); os.makedirs(d, exist_ok=True)
+    cache = os.path.join(d, f'{file_key(rel)}-{hashlib.sha1(eng.encode()).hexdigest()[:8]}.md')
+    if os.path.exists(cache):
+        return open(cache, encoding='utf-8').read()
+    f, tmp = _readable(abspath(rel))
+    try:
+        if eng.startswith('ollama:'):
+            from . import assistant
+            text = assistant.ocr_image(f, eng[7:], progress)
+        else:
+            text = ocr_text(f)
+    finally:
+        if tmp and os.path.exists(f):
+            os.remove(f)
+    with open(cache + '.part', 'w', encoding='utf-8') as fh:
+        fh.write(text)
+    os.replace(cache + '.part', cache)
+    return text
+
+
+def read_cached(rel):
+    eng = settings().get('ocr_engine') or 'vision'
+    p = os.path.join(DATA, 'text', f'{file_key(rel)}-{hashlib.sha1(eng.encode()).hexdigest()[:8]}.md')
+    return open(p, encoding='utf-8').read() if os.path.exists(p) else None
+
+
 def ocr_text(path):
-    # il testo riconosciuto, riga per riga dall'alto; '' se non c'e' testo
+    # il testo riconosciuto; '' se non c'e' testo. Con un modello di Ollama: Markdown, anche a mano
+    eng = settings().get('ocr_engine') or 'vision'
+    if eng.startswith('ollama:'):
+        from . import assistant
+        f, tmp = _readable(path)
+        try:
+            return assistant.ocr_image(f, eng[7:])
+        finally:
+            if tmp and os.path.exists(f):
+                os.remove(f)
+    # Apple Vision: riga per riga dall'alto
     if not os.path.exists(OCR):
         raise RuntimeError('OCR helper missing: swiftc -O studio/ocr.swift -o studio/ocr')
     f, tmp = _readable(path)
@@ -1546,6 +1591,26 @@ def ocr_sheets(rel, ids):
         finally:
             os.remove(tmp)
     return out
+
+
+def ocr_box(rel, box):
+    # il testo dentro un riquadro della scansione (pixel veri, ritagliati solo per leggerli)
+    rgb = image(rel)[0]
+    a = alpha(rel)
+    H, W = rgb.shape[:2]
+    x0, y0, x1, y1 = [int(round(v)) for v in box]
+    x0, y0, x1, y1 = max(0, min(x0, x1)), max(0, min(y0, y1)), min(W, max(x0, x1)), min(H, max(y0, y1))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return ''
+    crop = rgb[y0:y1, x0:x1]
+    if a is not None:
+        crop = np.dstack([crop, a[y0:y1, x0:x1]])
+    tmp = os.path.join(DATA, 'cache', f'.ocrbox-{os.getpid()}-{threading.get_ident()}.png')
+    Image.fromarray(crop).save(tmp)
+    try:
+        return ocr_text(tmp)
+    finally:
+        os.remove(tmp)
 
 
 def ocr_files(rels, log=print):

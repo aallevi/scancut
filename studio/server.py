@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
 
-from . import core, scanner
+from . import core, scanner, assistant
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 PORT = 8765
@@ -27,8 +27,36 @@ class Jobs:
              'total': n * (2 if kind == 'batch' and args.get('export') else 1), 'log': [], 'created': time.time(),
              'result': None, 'current': ''}
         self.jobs[j['id']] = j
-        self.q.put(j['id'])
+        if kind in self.BESIDE:
+            threading.Thread(target=self.run, args=(j,), daemon=True).start()
+        else:
+            self.q.put(j['id'])
         return j
+
+    # domande, download e testo dei fogli non aspettano in coda dietro un batch (e viceversa)
+    BESIDE = ('help', 'claude', 'install', 'ocr_sheets', 'read')
+
+    def track(self, kind, **args):
+        # un'operazione fatta subito (Detect, SAM, Export dall'editor...) compare lo stesso fra i lavori
+        jobs = self
+        class T:
+            def __enter__(self):
+                self.j = {'id': uuid.uuid4().hex[:8], 'kind': kind, 'args': args, 'status': 'running', 'done': 0, 'total': 1,
+                          'log': [], 'created': time.time(), 'started': time.time(), 'result': None,
+                          'current': os.path.basename(args.get('rel') or '')}
+                jobs.jobs[self.j['id']] = self.j
+                return self.j
+            def __exit__(self, et, e, tb):
+                j = self.j
+                j['finished'] = time.time()
+                if e is None:
+                    j['status'], j['done'] = 'done', 1
+                    j['log'].append(f'done in {j["finished"] - j["started"]:.1f} s')
+                else:
+                    j['status'] = 'failed'
+                    j['log'].append(f'ERROR {type(e).__name__}: {e}')
+                return False
+        return T()
 
     def public(self, j):
         # il token di Hugging Face non esce mai dal server
@@ -36,20 +64,22 @@ class Jobs:
 
     def loop(self):
         while True:
-            j = self.jobs[self.q.get()]
-            if j['status'] == 'cancelled':
-                continue
-            j['status'] = 'running'; j['started'] = time.time()
-            say = lambda m: j['log'].append(m)
-            try:
-                getattr(self, 'do_' + j['kind'])(j, say)
-                if j['status'] == 'running':
-                    j['status'] = 'done'
-            except Exception as e:
-                say(f'ERROR {type(e).__name__}: {e}')
-                traceback.print_exc()
-                j['status'] = 'failed'
-            j['finished'] = time.time()
+            self.run(self.jobs[self.q.get()])
+
+    def run(self, j):
+        if j['status'] == 'cancelled':
+            return
+        j['status'] = 'running'; j['started'] = time.time()
+        say = lambda m: j['log'].append(m)
+        try:
+            getattr(self, 'do_' + j['kind'])(j, say)
+            if j['status'] == 'running':
+                j['status'] = 'done'
+        except Exception as e:
+            say(f'ERROR {type(e).__name__}: {e}')
+            traceback.print_exc()
+            j['status'] = 'failed'
+        j['finished'] = time.time()
 
     def do_batch(self, j, say):
         a = j['args']
@@ -112,8 +142,20 @@ class Jobs:
         # Niente sudo; solo comandi fissi, il nome arriva da una lista chiusa
         what = j['args'].get('what', 'sane')
         repo = core.REPO
-        if what in ('sane', 'exiftool', 'jxl'):
-            cmds = [[core.brew() or 'brew', 'install', {'sane': 'sane-backends', 'exiftool': 'exiftool', 'jxl': 'jpeg-xl'}[what]]]
+        if what.startswith('pull:'):
+            # un modello di Ollama: avanzamento vero (byte scaricati)
+            def prog(st, pct):
+                if pct is not None:
+                    j['pct'] = pct
+                if not j['log'] or j['log'][-1] != st:
+                    say(st)
+            assistant.pull(what[5:], prog)
+            j['done'] = 1
+            return
+        if what == 'ollama':
+            what = 'ollama-brew'
+        if what in ('sane', 'exiftool', 'jxl', 'ollama-brew'):
+            cmds = [[core.brew() or 'brew', 'install', {'sane': 'sane-backends', 'exiftool': 'exiftool', 'jxl': 'jpeg-xl', 'ollama-brew': 'ollama'}[what]]]
         elif what == 'ultralytics':
             cmds = [[sys.executable, '-m', 'pip', 'install', '--upgrade', 'ultralytics']]
         elif what == 'helpers':
@@ -156,6 +198,46 @@ class Jobs:
                 raise RuntimeError(f'{os.path.basename(cmd[0])} failed (exit {p.returncode})')
         j['done'] = 1
 
+    def do_ocr_sheets(self, j, say):
+        # il testo dei fogli scelti di una scansione, uno alla volta (avanzamento vero)
+        a = j['args']
+        st = core.load_state(a['rel'])
+        names = {sid: os.path.basename(p) for sid, p in core.out_names(a['rel'], st)}
+        j['result'] = {}
+        for sid in a['ids']:
+            if j['status'] == 'cancelled':
+                break
+            j['current'] = names.get(sid, sid)
+            t = core.ocr_sheets(a['rel'], [sid]).get(sid)
+            if t is not None:
+                j['result'][sid] = t
+            say(f'{names.get(sid, sid)}: ' + (f'{len(t.splitlines())} line(s)' if t else 'no text'))
+            j['done'] += 1
+
+    def do_read(self, j, say):
+        # documenti interi: il testo di ognuno (anche gli originali, che non si toccano); per i ritagli,
+        # con embed, anche nei loro metadati
+        a = j['args']
+        j['result'] = []
+        n = len(a['rels'])
+        for i, rel in enumerate(a['rels']):
+            if j['status'] == 'cancelled':
+                break
+            j['current'] = os.path.basename(rel)
+            def prog(k, m, i=i):
+                j['pct'] = (i + k / m) / n * 100
+                j['current'] = f'{os.path.basename(rel)} · part {k} of {m}'
+            try:
+                t = core.read_doc(rel, prog)
+                if a.get('embed') and core.is_recut(rel) and t:
+                    core.embed_text(core.abspath(rel), t)
+                j['result'].append({'rel': rel, 'text': t})
+                say(f'{os.path.basename(rel)}: ' + (f'{len(t.splitlines())} line(s)' if t else 'no text'))
+            except Exception as e:
+                say(f'{rel}: ERROR {e}')
+            j['done'] += 1
+            j['pct'] = j['done'] / n * 100
+
     def do_ocr(self, j, say):
         # il testo dei ritagli scelti, uno alla volta (la barra avanza davvero), nei loro metadati
         j['result'] = []
@@ -168,6 +250,24 @@ class Jobs:
             except Exception as e:
                 say(f'{rel}: ERROR {e}')
             j['done'] += 1
+
+    def do_help(self, j, say):
+        # l'assistente locale: la risposta cresce mentre il modello scrive (j['result'])
+        a = j['args']
+        def grow(t):
+            j['result'] = {'text': t, 'partial': True}
+        j['result'] = assistant.answer(a['message'], a.get('history'), on_text=grow)
+
+    def do_pull(self, j, say):
+        def prog(st, pct):
+            if pct is not None:
+                j['pct'] = pct
+            if not j['log'] or j['log'][-1] != st:
+                say(st)
+        assistant.pull(j['args']['model'], prog)
+        j['done'] = 1
+        if what == 'ollama-brew':
+            assistant.start_ollama()
 
     def do_export(self, j, say):
         for rel in j['args']['rels']:
@@ -189,8 +289,17 @@ class Jobs:
         exe = shutil.which('claude')
         if not exe:
             raise RuntimeError('Claude Code not found: install it (claude.com/claude-code), then reopen the studio')
+        try:
+            hits, _ = assistant.find(a['message'], k=4)
+            if hits:
+                ctx += ('Relevant parts of STUDIO.md and the interface help (use these first; read code only if '
+                        'they are not enough):\n' + '\n\n'.join(f'## {h["title"]}\n{h["text"]}' for h in hits) + '\n\n')
+        except Exception:
+            pass
         cmd = [exe, '-p', ctx + a['message'], '--output-format', 'stream-json', '--verbose',
                '--allowedTools', s['claude_tools']]
+        if s.get('claude_model'):
+            cmd += ['--model', s['claude_model']]
         if a.get('resume') and self.claude_session:
             cmd += ['--resume', self.claude_session]
         p = subprocess.Popen(cmd, cwd=core.REPO, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -304,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'ping':
             return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999, 'version': core.VERSION})
         if path == 'addons':
-            return self.send(core.addons())
+            return self.send(core.addons() + assistant.addon_rows())
         if path == 'tree':
             return self.send({'root': core.ROOT, 'tree': core.tree()})
         if path == 'list':
@@ -355,6 +464,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Box', f'{x0},{y0},{x1},{y1}')
             self.send_header('Content-Length', str(b.tell()))
             self.end_headers(); self.wfile.write(b.getvalue()); return
+        if path == 'search':
+            return self.send(assistant.search(q.get('q', '')))
+        if path == 'read_cached':
+            return self.send({'text': core.read_cached(rel)})
+        if path == 'helptopic':
+            return self.send([{'title': c['title'], 'text': c['text']} for c in assistant.chunks() if c['title'] == q.get('title')])
+        if path == 'assistant':
+            return self.send(assistant.status())
         if path == 'bgtol':
             return self.send({'tol': core.bg_tol(rel)})
         if path == 'remembered':
@@ -424,8 +541,11 @@ class Handler(BaseHTTPRequestHandler):
             core.abspath(rel)
         rel = b.get('rel')
         if path == 'detect':
-            st, meta = core.detect(rel, b.get('engine', 'auto'), b.get('params') or {}, b.get('box'),
-                                   replace=b.get('replace', True))
+            e = b.get('engine', 'auto')
+            kind = 'sam' if e == 'sam3' and (b.get('params') or {}).get('points') else 'detect'
+            with JOBS.track(kind, rel=rel, engine=e, box=b.get('box')) as j:
+                st, meta = core.detect(rel, e, b.get('params') or {}, b.get('box'), replace=b.get('replace', True))
+                j['log'].append(f'{len(st["sheets"])} sheet(s)')
             return self.send({'state': st, 'meta': {k: v for k, v in meta.items() if k != 'sheets'}})
         if path == 'state':
             st = b['state']
@@ -448,27 +568,52 @@ class Handler(BaseHTTPRequestHandler):
             if act == 'trash':
                 return self.send({'done': core.trash_files(rels)})
             return self.send({'error': 'unknown action'}, code=400)
+        if path == 'ocr_box':
+            eng = core.settings().get('ocr_engine') or 'vision'
+            with JOBS.track('ocr_box', rel=rel, engine=eng) as j:
+                text = core.ocr_box(rel, b['box'])
+                j['log'].append(f'{len(text.splitlines())} line(s)' if text else 'no text')
+            return self.send({'text': text, 'engine': eng})
+        if path == 'save_text':
+            # il testo letto in un file Markdown accanto ai ritagli, mai sopra uno che c'e' gia'
+            names = core.out_names(rel)
+            d = os.path.dirname(names[0][1]) if names else os.path.join(core.ROOT, 'cut', core.batch_of(rel))
+            os.makedirs(d, exist_ok=True)
+            out = core.sc.unique(os.path.join(d, core.sc.clean_stem(os.path.splitext(os.path.basename(rel))[0]) + '.md'))
+            with open(out + '.part', 'w', encoding='utf-8') as f:
+                f.write(str(b.get('text', '')))
+            os.replace(out + '.part', out)
+            return self.send({'path': os.path.relpath(out, core.ROOT) if out.startswith(core.ROOT) else out})
         if path == 'ocr_sheets':
             return self.send(core.ocr_sheets(rel, b.get('ids') or []))
         if path == 'checked':
             return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':
-            core.sam3_unload(); core.matte_unload()
+            core.sam3_unload(); core.matte_unload(); assistant.unload_ocr()
             return self.send({'ok': True})
         if path == 'wand':
             op = core.wand(rel, float(b['x']), float(b['y']), b.get('tol', 14), b.get('contig', True))
             return self.send(op or {'error': 'nothing selected'}, code=200 if op else 404)
         if path == 'compare':
-            return self.send(core.compare(rel, b.get('engines') or core.settings()['compare_engines']))
+            with JOBS.track('compare', rel=rel):
+                r = core.compare(rel, b.get('engines') or core.settings()['compare_engines'])
+            return self.send(r)
         if path == 'export':
-            return self.send({'written': core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'))})
+            with JOBS.track('export', rel=rel) as j:
+                w = core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
+                j['log'] += [f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}' for x in w]
+            return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('batch', 'export', 'ocr', 'claude', 'preview', 'scan', 'install'):
+            if kind not in ('batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'help', 'pull', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
+        if path == 'jobs_clear':
+            for k in [k for k, j in JOBS.jobs.items() if j['status'] not in ('running', 'queued')]:
+                del JOBS.jobs[k]
+            return self.send({'ok': True})
         if path == 'cancel':
             j = JOBS.jobs.get(b.get('id'))
             if not j:
@@ -495,7 +640,7 @@ class Handler(BaseHTTPRequestHandler):
                     subprocess.run([os.path.join(os.path.dirname(__file__), 'appctl'), 'hide', str(pid)], timeout=10)
             elif what == 'sam3page':
                 subprocess.run(['open', 'https://huggingface.co/facebook/sam3'])
-            elif what == 'hfpage' and str(b.get('url', '')).startswith('https://huggingface.co/'):
+            elif what == 'hfpage' and str(b.get('url', '')).startswith(('https://huggingface.co/', 'https://ollama.com/')):
                 subprocess.run(['open', b['url']])
             elif what == 'hftokens':
                 subprocess.run(['open', 'https://huggingface.co/settings/tokens'])

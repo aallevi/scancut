@@ -94,7 +94,7 @@ final class ResizeEdge: NSView {
     }
 }
 
-final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, NSWindowDelegate {
+final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDelegate, WKNavigationDelegate, NSWindowDelegate, NSUserInterfaceItemSearching {
     var window: NSWindow!
     var web: WKWebView!
     var strip: DragStrip!
@@ -330,11 +330,26 @@ final class App: NSObject, NSApplicationDelegate, WKScriptMessageHandler, WKUIDe
             .separator(),
             item("Bring All to Front", #selector(NSApplication.arrangeInFront(_:))),
         ])
-        NSApp.mainMenu = main
         NSApp.windowsMenu = main.items.last?.submenu
+        // Aiuto: macOS ci mette la sua casella di ricerca; i risultati vengono anche dallo studio
+        sub("Help", [
+            item("Scan Studio Help", #selector(App.helpHome), "?"),
+            item("Keyboard Shortcuts", #selector(App.helpShortcuts), "/"),
+            item("Ask Claude…", #selector(App.askClaude)),
+            .separator(),
+            item("Report a Problem…", #selector(App.reportProblem)),
+        ])
+        NSApp.helpMenu = main.items.last?.submenu
+        NSApp.mainMenu = main
+        NSApp.registerUserInterfaceItemSearchHandler(self)
     }
 
     @objc func reload() { web.reload() }
+    func js(_ code: String) { window.makeKeyAndOrderFront(nil); web.evaluateJavaScript(code, completionHandler: nil) }
+    @objc func helpHome() { js("openHelp()") }
+    @objc func helpShortcuts() { js("showHelpTopic('Shortcuts (editor)')") }
+    @objc func askClaude() { js("toggleChat(true, 'claude')") }
+    @objc func reportProblem() { NSWorkspace.shared.open(URL(string: "https://github.com/aallevi/scancut/issues")!) }
 
     // niente invalidateShadow(): ricalcolata dal contenuto, l'ombra diventa un rettangolo con una
     // riga scura squadrata fuori dagli angoli tondi; quella del vetro segue gia' la sua forma
@@ -356,3 +371,32 @@ app.delegate = delegate
 app.setActivationPolicy(.regular)
 app.activate(ignoringOtherApps: true)
 app.run()
+
+// la casella di ricerca del menu Aiuto di macOS: argomenti d'aiuto e scansioni dallo studio
+func jsString(_ v: String) -> String {
+    let d = try! JSONSerialization.data(withJSONObject: [v]); let a = String(data: d, encoding: .utf8)!
+    return String(a.dropFirst().dropLast())
+}
+extension App {
+    func searchForItems(withSearch q: String, resultLimit: Int, matchedItemHandler: @escaping ([Any]) -> Void) {
+        var c = URLComponents(url: base.appendingPathComponent("api/search"), resolvingAgainstBaseURL: false)!
+        c.queryItems = [URLQueryItem(name: "q", value: q)]
+        URLSession.shared.dataTask(with: c.url!) { data, _, _ in
+            var out: [[String: String]] = []
+            if let d = data, let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
+                for x in (j["help"] as? [[String: Any]]) ?? [] { let t = (x["title"] as? String) ?? ""; out.append(["title": "Help: " + t, "topic": t]) }
+                for x in (j["files"] as? [[String: Any]]) ?? [] { out.append(["title": "Open " + ((x["name"] as? String) ?? ""), "rel": (x["rel"] as? String) ?? ""]) }
+            }
+            out.append(["title": "Ask the assistant: " + q, "ask": q])
+            matchedItemHandler(Array(out.prefix(resultLimit)))
+        }.resume()
+    }
+    func localizedTitles(forItem item: Any) -> [String] { [((item as? [String: String])?["title"]) ?? ""] }
+    func performAction(forItem item: Any) {
+        guard let x = item as? [String: String] else { return }
+        if let t = x["topic"] { js("showHelpTopic(" + jsString(t) + ")") }
+        else if let r = x["rel"] { js("openScan(" + jsString(r) + ")") }
+        else if let q = x["ask"] { js("openHelp(" + jsString(q) + ")") }
+    }
+    func showAllHelpTopics(forSearch q: String) { js("openHelp(" + jsString(q) + ")") }
+}

@@ -12,7 +12,9 @@ let W = Double(cg.width), H = Double(cg.height)
 let req = VNRecognizeTextRequest()
 req.recognitionLevel = .accurate
 req.usesLanguageCorrection = true
-req.recognitionLanguages = ["it-IT", "en-US", "fr-FR", "de-DE", "es-ES"]
+// testi in piu' lingue insieme: la lingua si riconosce riga per riga; la lista resta come suggerimento
+req.recognitionLanguages = ["it-IT", "en-US", "fr-FR", "de-DE", "es-ES", "pt-BR"]
+if #available(macOS 13.0, *) { req.automaticallyDetectsLanguage = true }
 try VNImageRequestHandler(cgImage: cg, options: [:]).perform([req])
 for o in req.results ?? [] {
     guard let c = o.topCandidates(1).first else { continue }
