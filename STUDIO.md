@@ -99,11 +99,17 @@ Its transparency stays (the new alpha is never more opaque than the old). For th
 engines, transparent areas and a 10 mm margin are filled with grey card (light paper)
 or white lid (dark paper); those fill pixels are never saved.
 
-## Data (`<root>/.scancut/studio-data/`, not in git)
+## Data
 
-`state/` edit state per scan (JSON), `cache/` engine masks, `previews/`,
-`replaced/`, `models/` (SAM 3 downloaded from Add-ons), `settings.json`,
-`batch-memory.json` (engine per batch), `server.log`.
+**Everything about sources, parts, cuts and texts lives in the library** (`<root>/Library.scanlib/`,
+see docs/LIBRARY.md): the editor's state of a scan is built from its rows and written back to them
+(`studio/library/store.py`). Nothing else holds it: no JSON state files, no private text cache. Older
+`studio-data/state/` and `studio-data/text/` are moved in once, then set aside as `*.migrated-<date>`.
+Library › Check (⌥: pixels too) verifies that every file, cut and embedded text matches the library.
+
+`<root>/.scancut/studio-data/` (not in git) keeps only rebuildable caches and settings: `cache/`
+engine masks, `previews/`, `replaced/` (history of replaced cuts), `models/`, `settings.json`,
+`batch-memory.json`, `server.log`.
 
 ## Add-ons
 
@@ -158,7 +164,7 @@ Everything is in the **Text pane** beside the drawing (Text › Show text pane, 
   Add to sheet (appended to the sheet under the box).
 - Copy all, Save .md (a Markdown file next to the cutouts, never over an existing one), and
   "read at every cut".
-- Where it is stored: while editing, in the scan's edit state (studio-data/state, the sheet's `ocr`);
+- Where it is stored: in the library, as the part's text (every reading kept, corrections as versions);
   in its cut, inside the file: XMP Description, IPTC Caption and EXIF ImageDescription.
 - Side by side (checkbox in the pane, or Text menu): a second view the size of the scan, zooming and
   scrolling with it; each text sits where its sheet or box is, in the same colour, formatted
@@ -166,7 +172,7 @@ Everything is in the **Text pane** beside the drawing (Text › Show text pane, 
 - Whole documents: in any gallery (originals or cutouts) select files and press Read (or Text ›
   Read the whole document): a job, then a reader with the formatted text, Copy all, Save .md, Open.
   Read into the files also writes it into the cutouts' descriptions; originals are never changed.
-  In the editor: Read whole scan. Results are remembered (studio-data/text) until the file or the
+  In the editor: Read whole scan. Results are stored in the library (a cut: its part's text) until the file or the
   reader changes. Long pages are read in strips cut between lines.
 - The downloaded readers load on first use (a few seconds) and free their memory after 10 idle
   minutes, like SAM 3; SAM 3 › Unload frees them at once.

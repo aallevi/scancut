@@ -71,14 +71,15 @@ def write(lib, out_dir):
     files = []
     for it in lib.db.execute("SELECT i.*, s.name AS series FROM item i LEFT JOIN series s ON s.id = i.series_id WHERE i.trashed_at IS NULL ORDER BY i.date, i.title"):
         parts = []
-        tops = lib.db.execute('SELECT * FROM region WHERE item_id = ? AND parent_id IS NULL ORDER BY position', (it['id'],)).fetchall()
+        tops = lib.db.execute("SELECT * FROM region WHERE item_id = ? AND parent_id IS NULL AND kind = 'sheet' AND removed_at IS NULL "
+                              "AND asset_id IN (SELECT asset_id FROM item_asset WHERE item_id = ? AND role != 'cutout') ORDER BY position", (it['id'], it['id'])).fetchall()
         # la stessa lettera del taglio (a, b, c… fra le parti incluse), cosi' testo e file si ritrovano
         inc = [r['id'] for r in tops if r['export_on']]
         letter = lambda r: ('abcdefghijklmnopqrstuvwxyz'[inc.index(r['id']) % 26] if len(inc) > 1 else '') if r['id'] in inc else '–'
         for r in tops:
             ts = lambda rid: lib.db.execute('SELECT * FROM current_text WHERE region_id = ? ORDER BY created_at DESC LIMIT 1', (rid,)).fetchone()
             main = ts(r['id'])
-            areas = [(a, ts(a['id'])) for a in lib.db.execute('SELECT * FROM region WHERE parent_id = ? ORDER BY position', (r['id'],))]
+            areas = [(a, ts(a['id'])) for a in lib.db.execute('SELECT * FROM region WHERE parent_id = ? AND removed_at IS NULL ORDER BY position', (r['id'],))]
             areas = [(a, t) for a, t in areas if t and t['plain'].strip()]
             if not ((main and main['plain'].strip()) or areas):
                 continue

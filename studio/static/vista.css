@@ -573,3 +573,50 @@ html.native .window { overflow: hidden; }
 .libsort { display: inline-flex; gap: 4px; flex: none; }
 .libbar .btn { white-space: nowrap; flex: none; }
 .libbar .search { flex: 0 1 260px; min-width: 120px; }
+
+/* Aiuto: indice a sinistra, articolo a destra (come la finestra Aiuto di Affinity) */
+.helppage { display: flex; height: 100%; background: #fff; }
+.helpside { width: 270px; flex: none; border-right: 1px solid #d6dde8; background: linear-gradient(#f7f9fc, #eef2f8); display: flex; flex-direction: column; padding: 10px; box-sizing: border-box; }
+.helpside input { width: 100%; box-sizing: border-box; margin-bottom: 8px; }
+.helptoc { overflow: auto; flex: 1; }
+.helptoc .hch { padding: 5px 8px; border-radius: 3px; cursor: default; color: #1e3287; }
+.helptoc .hch.on { background: #dde8f8; font-weight: bold; }
+.helptoc .hsec { padding: 3px 8px 3px 22px; cursor: default; color: #333; font-size: 12px; }
+.helptoc .hsec.on, .helptoc .hsec:hover, .helptoc .hch:hover { background: #e8f0fb; }
+.helptoc .hhit { padding: 6px 8px; border-bottom: 1px solid #e3e8f0; cursor: default; }
+.helptoc .hhit:hover { background: #e8f0fb; }
+.helpart { flex: 1; overflow: auto; padding: 22px 34px 40px; max-width: 760px; }
+.helpart h1 { font-size: 22px; color: #1e3287; font-weight: normal; margin: 0 0 14px; }
+.helpart h2 { font-size: 15px; color: #1e3287; margin: 22px 0 6px; }
+.helpart .mtext { height: auto; overflow: visible; cursor: auto; font-size: 13px; line-height: 1.5; }
+.helpart .mtext table { border-collapse: collapse; margin: 6px 0; }
+.helpart .mtext td, .helpart .mtext th { border: 1px solid #d6dde8; padding: 3px 8px; text-align: left; }
+.helpart mark { background: #fff3a8; }
+.helpnav { display: flex; justify-content: space-between; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e3e8f0; }
+
+/* file trascinati sulla finestra */
+.drophint { position: fixed; left: 50%; bottom: 70px; transform: translateX(-50%); padding: 10px 18px; border-radius: 6px; background: rgba(30,50,135,.92);
+  color: #fff; font-size: 14px; box-shadow: 0 4px 18px rgba(0,0,0,.3); pointer-events: none; opacity: 0; transition: opacity .12s; z-index: 9999; }
+.drophint.on { opacity: 1; }
+
+/* sezioni che si chiudono: un triangolino davanti al titolo */
+.nav h4 { cursor: default; user-select: none; }
+.nav h4::before, .group > .gh::before { content: '▾'; display: inline-block; width: 11px; color: #7a8aa6; font-size: 10px; transition: transform .12s; }
+.nav h4.shut::before, .group.shut > .gh::before { transform: rotate(-90deg); }
+.nav h4.shut + * { display: none; }
+.group > .gh { cursor: default; user-select: none; }
+.group.shut > :not(.gh) { display: none; }
+
+/* pannelli che si chiudono del tutto */
+.nav.hidden, #nav.hidden, #side.hidden { display: none !important; }
+.split.closed { width: 12px; margin: 0; cursor: default; background: linear-gradient(to right, #e3e9f2, #d3dcea); }
+.paneflap { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 12px; height: 44px; line-height: 44px; text-align: center;
+  font-size: 11px; color: #5a6b88; background: #eef2f8; border: 1px solid #c3cddd; border-radius: 3px; cursor: default; opacity: 0; transition: opacity .12s; }
+.split:hover .paneflap, .split.closed .paneflap { opacity: 1; }
+.paneflap:hover { background: #dde8f8; color: #1e3287; }
+
+/* dove si tiene: per la fonte e per ogni parte */
+.keptpart { border-left: 3px solid #ccc; padding: 4px 0 4px 8px; margin: 6px 0; }
+.keptpart .row { display: flex; gap: 6px; margin-top: 3px; }
+.keptpart .row select { flex: 1; min-width: 0; }
+.thumb .cap small.addr { color: #6a7a96; font-variant-numeric: tabular-nums; }

@@ -1,12 +1,12 @@
 # server locale dello studio: l'interfaccia (static/) e un'API JSON che usano
 # anche i lavori senza finestra e Claude. Solo 127.0.0.1.
 
-import os, io, sys, json, time, threading, traceback, subprocess, uuid, queue, urllib.parse, shutil
+import os, io, sys, json, time, sqlite3, threading, traceback, subprocess, uuid, queue, urllib.parse, shutil
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
 
-from . import core, scanner, assistant
+from . import core, scanner, readers, help as helpdocs
 from .library import bridge
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
@@ -35,7 +35,7 @@ class Jobs:
         return j
 
     # domande, download e testo dei fogli non aspettano in coda dietro un batch (e viceversa)
-    BESIDE = ('help', 'claude', 'install', 'ocr_sheets', 'read', 'readcuts')
+    BESIDE = ('claude', 'install', 'ocr_sheets', 'read', 'readcuts')
 
     def track(self, kind, **args):
         # un'operazione fatta subito (Detect, SAM, Export dall'editor...) compare lo stesso fra i lavori
@@ -94,13 +94,11 @@ class Jobs:
                 n = len(st['sheets'])
                 say(f'{rel}: {n} sheet(s) with {a.get("engine", "auto")} in {meta.get("seconds")}s')
                 j['done'] += 1
-                bridge._safe(bridge.sync_rel, rel)
                 if a.get('export') and n:
                     j['current'] = os.path.basename(rel) + ' · export'
-                    ws = core.export(rel, log=say)
+                    ws = bridge.cut(rel, log=say)
                     for w in ws:
                         say(f'  {w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
-                    bridge._safe(bridge.on_export, rel, ws)
             except Exception as e:
                 say(f'{rel}: ERROR {e}')
             j['done'] = start + (2 if a.get('export') else 1)
@@ -138,8 +136,18 @@ class Jobs:
             scanner.scan(a['dev'], out, res, mode, area=tuple(area[:4]) if area else None,
                          progress=prog, cancelled=lambda: j['status'] == 'cancelled')
             say(f'  -> inbox/{os.path.basename(out)}')
+            # come e' nata questa scansione (scanner, impostazioni, area): nella libreria, legata al file per checksum
+            bridge._safe(bridge.record_capture, bridge.library(create=True), out, 'scanner', series=batch, device=a['dev'],
+                         settings={'res': res, 'mode': mode, 'area': [round(v, 1) for v in area[:4]] if area else None,
+                                   'frames': a.get('frames') or None})
             j['done'] += 1
         core.save_settings({'scan_device': a['dev'], 'scan_res': int(a['res']), 'scan_mode': a['mode'], 'scan_batch': batch})
+        # fra le fonti e nella libreria, subito: ogni scansione e' gia' un oggetto della sua serie
+        say('filing the scans…')
+        core.file_inbox()
+        new = bridge.register_new(bridge.library(create=True))
+        j['result'] = {'rels': bridge.new_rels(bridge.library(), new)}
+        say(f'{len(new)} new source(s) in the library')
 
     def do_install(self, j, say):
         # i componenti aggiuntivi (pagina Add-ons): Homebrew, pip, swiftc, o il modello da Hugging Face.
@@ -153,7 +161,7 @@ class Jobs:
                     j['pct'] = pct
                 if not j['log'] or j['log'][-1] != st:
                     say(st)
-            assistant.pull(what[5:], prog)
+            readers.pull(what[5:], prog)
             j['done'] = 1
             return
         if what == 'ollama':
@@ -173,6 +181,8 @@ class Jobs:
                     'print("saved", p)\n')
             cmds = ([] if core.has_module('huggingface_hub') else [[sys.executable, '-m', 'pip', 'install', 'huggingface_hub']]) + \
                    [[sys.executable, '-c', code, core.models_dir()]]
+        elif what.startswith('mlx:'):
+            cmds = readers.mlx_install_cmds(what[4:])
         elif what.startswith('matte:'):
             m = next(x for x in core.MATTE_MODELS if x['id'] == what[6:])
             code = ('import sys\n'
@@ -233,6 +243,7 @@ class Jobs:
                 j['current'] = f'{os.path.basename(rel)} · part {k} of {m}'
             try:
                 t = core.read_doc(rel, prog)
+                bridge._safe(bridge.on_read_doc, rel, t)          # nella libreria: testo della parte, o della fonte
                 if a.get('embed') and core.is_recut(rel) and t:
                     core.embed_text(core.abspath(rel), t)
                 j['result'].append({'rel': rel, 'text': t})
@@ -271,33 +282,25 @@ class Jobs:
         r = bridge.import_root(lib, prog, log=say)
         j['result'] = r; j['done'] = 1
 
-    def do_help(self, j, say):
-        # l'assistente locale: la risposta cresce mentre il modello scrive (j['result'])
-        a = j['args']
-        def grow(t):
-            j['result'] = {'text': t, 'partial': True}
-        j['result'] = assistant.answer(a['message'], a.get('history'), on_text=grow)
-
     def do_pull(self, j, say):
         def prog(st, pct):
             if pct is not None:
                 j['pct'] = pct
             if not j['log'] or j['log'][-1] != st:
                 say(st)
-        assistant.pull(j['args']['model'], prog)
+        readers.pull(j['args']['model'], prog)
         j['done'] = 1
         if what == 'ollama-brew':
-            assistant.start_ollama()
+            readers.start_ollama()
 
     def do_export(self, j, say):
         for rel in j['args']['rels']:
             if j['status'] == 'cancelled':
                 break
             j['current'] = os.path.basename(rel)
-            w = core.export(rel, log=say)
+            w = bridge.cut(rel, log=say)
             for x in w:
                 say(f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}')
-            bridge._safe(bridge.on_export, rel, w)
             j['done'] += 1
 
     def do_claude(self, j, say):
@@ -306,15 +309,15 @@ class Jobs:
         s = core.settings()
         ctx = (f'[Scan Studio] You are inside the user\'s Scan Studio. Scans root: {core.ROOT}. '
                f'Studio API: http://127.0.0.1:{PORT} (see STUDIO.md). '
-               + (f'Current scan: {a["rel"]} (edit state: {core.state_path(a["rel"])}). ' if a.get('rel') else '')
+               + (f'Current scan: {a["rel"]} (its parts, cuts and texts are in the library; read them with GET /api/state?rel=...). ' if a.get('rel') else '')
                + 'Keep answers short; the reply is shown in a small panel.\n\n')
         exe = shutil.which('claude')
         if not exe:
             raise RuntimeError('Claude Code not found: install it (claude.com/claude-code), then reopen the studio')
         try:
-            hits, _ = assistant.find(a['message'], k=4)
+            hits = helpdocs.find(a['message'], k=4)
             if hits:
-                ctx += ('Relevant parts of STUDIO.md and the interface help (use these first; read code only if '
+                ctx += ('Relevant parts of the studio help (use these first; read code only if '
                         'they are not enough):\n' + '\n\n'.join(f'## {h["title"]}\n{h["text"]}' for h in hits) + '\n\n')
         except Exception:
             pass
@@ -419,6 +422,8 @@ class Handler(BaseHTTPRequestHandler):
         u = urllib.parse.urlparse(self.path)
         n = int(self.headers.get('Content-Length') or 0)
         try:
+            if u.path == '/api/add_file':
+                return self.add_file(urllib.parse.parse_qs(u.query), n)
             body = json.loads(self.rfile.read(n) or b'{}')
             return self.api_post(u.path[5:], body)
         except core.Busy as e:
@@ -426,6 +431,37 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             self.send({'error': f'{type(e).__name__}: {e}'}, code=500)
+
+    def add_file(self, q, n):
+        # un file trascinato nella finestra: i byte arrivano cosi' come sono (niente conversioni), in un .part,
+        # poi con un nome libero (mai sopra un altro). Fonti: nell'inbox, l'agente le mette fra le fonti;
+        # tagli: in cut/added/, nella libreria come tagli portati da fuori.
+        to = (q.get('to') or ['sources'])[0]
+        name = os.path.basename((q.get('name') or ['file'])[0]).strip() or 'file'
+        if not core.is_image(name) and not name.lower().endswith('.pdf'):
+            self.rfile.read(n)
+            return self.send({'error': f'{name}: not an image'}, code=400)
+        d = os.path.join(core.ROOT, 'inbox' if to == 'sources' else os.path.join('cut', 'added'))
+        os.makedirs(d, exist_ok=True)
+        part = os.path.join(d, '.' + name + f'.{os.getpid()}-{threading.get_ident()}.part')
+        left = n
+        with open(part, 'wb') as f:
+            while left > 0:
+                chunk = self.rfile.read(min(left, 1 << 20))
+                if not chunk:
+                    break
+                f.write(chunk); left -= len(chunk)
+        if left:
+            os.remove(part)
+            return self.send({'error': 'upload interrupted'}, code=400)
+        dst = core.sc.unique(os.path.join(d, name))
+        os.link(part, dst); os.remove(part)                  # mai sopra un file che c'e'
+        lib = bridge.library(create=True)
+        if to == 'sources':
+            bridge.record_capture(lib, dst, 'added', name=name)
+        else:
+            bridge.add_cut_file(lib, dst)
+        return self.send({'ok': True, 'rel': core.relpath(dst)})
 
     # ------------------------------------------------------------ GET
     def api_get(self, path, q):
@@ -436,8 +472,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'idle': round(time.time() - LAST_SEEN[0], 1) if LAST_SEEN[0] else 9999, 'version': core.VERSION,
                               'build': BUILD[0], 'dev': '--dev' in sys.argv})
         if path == 'addons':
-            return self.send(core.addons() + assistant.addon_rows())
+            return self.send(core.addons() + readers.addon_rows())
         if path == 'tree':
+            lib = bridge.library(create=False)
+            if lib:
+                bridge._safe(bridge.register_new, lib, False)      # le fonti arrivate intanto: nella libreria
             return self.send({'root': core.ROOT, 'tree': core.tree()})
         if path == 'list':
             return self.send(core.listing(q.get('dir', 'originals')))
@@ -488,16 +527,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', str(b.tell()))
             self.end_headers(); self.wfile.write(b.getvalue()); return
         if path == 'search':
-            return self.send(assistant.search(q.get('q', '')))
+            return self.send(helpdocs.search(q.get('q', '')))
         if path == 'library':
             lib = bridge.library(create=False)
             return self.send(dict(bridge.info(lib), exists=True) if lib else {'exists': False, 'path': bridge.library_path()})
+        if path == 'library/trash':
+            lib = bridge.library(create=False)
+            return self.send(bridge.trash_list(lib) if lib else [])
+        if path == 'library/places':
+            lib = bridge.library(create=False)
+            return self.send({'places': bridge.places(lib), 'categories': bridge.categories(lib)} if lib else {'places': [], 'categories': []})
         if path == 'library/items':
             lib = bridge.library(create=False)
-            return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None) if lib else [])
+            return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None, place=q.get('place') or None) if lib else [])
         if path == 'library/journal':
             lib = bridge.library(create=False)
             return self.send({'dir': bridge.journal_dir(lib) if lib else None})
+        if path == 'library/check':
+            lib = bridge.library(create=False)
+            return self.send(bridge.check(lib, deep=q.get('deep') == '1') if lib else [])
         if path == 'library/where':
             lib = bridge.library(create=False)
             return self.send(bridge.where(lib, rel) if lib else {'known': False})
@@ -512,7 +560,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(bridge.text_list(lib, q.get('q') or None) if lib else [])
         if path == 'library/cutouts':
             lib = bridge.library(create=False)
-            return self.send(bridge.cutout_list(lib, series=q.get('series') or None) if lib else [])
+            return self.send(bridge.cutout_list(lib, series=q.get('series') or None, place=q.get('place') or None) if lib else [])
         if path == 'library/texts_for':
             lib = bridge.library(create=False)
             return self.send(bridge.texts_for_rel(lib, rel) if lib else [])
@@ -520,10 +568,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(bridge.editors())
         if path == 'read_cached':
             return self.send({'text': core.read_cached(rel)})
-        if path == 'helptopic':
-            return self.send([{'title': c['title'], 'text': c['text']} for c in assistant.chunks() if c['title'] == q.get('title')])
-        if path == 'assistant':
-            return self.send(assistant.status())
+        if path == 'help':
+            # la finestra Aiuto: tutti i capitoli (indice e testi), o le sezioni che rispondono a una ricerca
+            return self.send(helpdocs.find(q['q'], k=20) if q.get('q') else helpdocs.chapters())
         if path == 'bgtol':
             return self.send({'tol': core.bg_tol(rel)})
         if path == 'remembered':
@@ -598,7 +645,6 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS.track(kind, rel=rel, engine=e, box=b.get('box')) as j:
                 st, meta = core.detect(rel, e, b.get('params') or {}, b.get('box'), replace=b.get('replace', True))
                 j['log'].append(f'{len(st["sheets"])} sheet(s)')
-            bridge.sync_async(bridge.sync_rel, rel)
             return self.send({'state': st, 'meta': {k: v for k, v in meta.items() if k != 'sheets'}})
         if path == 'state':
             st = b['state']
@@ -606,9 +652,7 @@ class Handler(BaseHTTPRequestHandler):
             if cur.get('version', 0) != st.get('version', 0):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
-            saved = core.save_state(st)
-            bridge.sync_async(bridge.sync_rel, st['rel'])          # la libreria segue lo studio
-            return self.send(saved)
+            return self.send(core.save_state(st))                  # salvare = scrivere la libreria
         if path == 'cutouts':
             # ritagli gia' salvati: girare (senza perdita), testo nei metadati, nel Cestino
             rels, act = b.get('rels') or [], b.get('action')
@@ -623,7 +667,15 @@ class Handler(BaseHTTPRequestHandler):
             if act == 'merge':
                 return self.send({'done': [core.relpath(core.merge_tiff(rels))]})
             if act == 'trash':
-                return self.send({'done': core.trash_files(rels)})
+                # nel cestino della libreria (si rimette a posto da li'; si svuota da solo dopo i giorni scelti)
+                lib = bridge.library()
+                ids = []
+                for r in rels:
+                    p_ = os.path.realpath(core.abspath(r))
+                    a = lib.db.execute('SELECT uuid FROM asset WHERE path = ?', (p_,)).fetchone()
+                    ids.append(a[0] if a else lib.db.execute('SELECT uuid FROM asset WHERE id = ?', (bridge.add_cut_file(lib, p_),)).fetchone()[0])
+                bridge.trash(lib, [], ids)
+                return self.send({'done': rels})
             return self.send({'error': 'unknown action'}, code=400)
         if path == 'ocr_box':
             eng = core.settings().get('ocr_engine') or 'vision'
@@ -631,6 +683,58 @@ class Handler(BaseHTTPRequestHandler):
                 text = core.ocr_box(rel, b['box'])
                 j['log'].append(f'{len(text.splitlines())} line(s)' if text else 'no text')
             return self.send({'text': text, 'engine': eng})
+        if path == 'library/trash':
+            # nel cestino della libreria: fonti intere (con i loro tagli) o tagli (per uuid, o per percorso)
+            lib = bridge.library()
+            cuts = list(b.get('cuts') or [])
+            for r in b.get('rels') or []:
+                a = lib.db.execute('SELECT uuid FROM asset WHERE path = ?', (os.path.realpath(core.abspath(r)),)).fetchone()
+                if a:
+                    cuts.append(a[0])
+            return self.send({'trashed': bridge.trash(lib, b.get('items') or [], cuts)})
+        if path == 'library/restore':
+            return self.send({'ok': bridge.restore(bridge.library(), b['uuid'])})
+        if path == 'library/empty':
+            return self.send({'gone': bridge.empty_trash(bridge.library(), None, b.get('uuids') or None)})
+        if path == 'library/export':
+            r = bridge.export_cuts(bridge.library(), b['dir'], b.get('structure') or 'place', b.get('series') or None, b.get('place') or None, b.get('cuts') or None)
+            if b.get('reveal'):
+                subprocess.run(['open', r['dir']])
+            return self.send(r)
+        if path == 'choose_folder':
+            # la finestra del Mac per scegliere una cartella
+            r = subprocess.run(['osascript', '-e', f'POSIX path of (choose folder with prompt "{b.get("prompt") or "Choose a folder"}")'], capture_output=True, text=True)
+            return self.send({'dir': r.stdout.strip().rstrip('/') or None})
+        if path == 'library/place':
+            # un posto nuovo o cambiato (nome, dentro quale, numero) o tolto; le regole le tiene il database
+            lib = bridge.library()
+            try:
+                u = bridge.save_place(lib, b.get('uuid'), b.get('name'), b.get('parent'), b.get('number'), b.get('kind') or 'storage', b.get('notes'), bool(b.get('delete')))
+            except sqlite3.IntegrityError as e:
+                return self.send({'error': str(e)}, code=409)
+            return self.send({'uuid': u, 'places': bridge.places(lib)})
+        if path == 'library/put':
+            # in un posto (con numero) e/o una categoria: fonti intere o singole parti; un indirizzo "24-05" si risolve
+            lib = bridge.library()
+            kw = {}
+            if 'place' in b:
+                kw['place'] = bridge.resolve_address(lib, b['address']) if b.get('address') else b['place']
+                if b.get('address') and not kw['place']:
+                    return self.send({'error': f'no place at {b["address"]}'}, code=404)
+            if 'number' in b:
+                kw['number'] = b['number']
+            if 'category' in b:
+                kw['category'] = b['category']
+            try:
+                n = bridge.put(lib, b.get('items') or [], b.get('regions') or [], **kw)
+            except sqlite3.IntegrityError as e:
+                return self.send({'error': str(e)}, code=409)
+            return self.send({'changed': n})
+        if path == 'add_done':
+            # i file trascinati sono tutti arrivati: fra le fonti e nella libreria
+            core.file_inbox()
+            new = bridge.register_new(bridge.library(create=True))
+            return self.send({'rels': bridge.new_rels(bridge.library(), new)})
         if path == 'library/journal':
             lib = bridge.library(create=False)
             if b.get('dir'):
@@ -667,7 +771,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'checked':
             return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':
-            core.sam3_unload(); core.matte_unload(); assistant.unload_ocr()
+            core.sam3_unload(); core.matte_unload(); readers.unload_ocr()
             return self.send({'ok': True})
         if path == 'wand':
             op = core.wand(rel, float(b['x']), float(b['y']), b.get('tol', 14), b.get('contig', True))
@@ -678,16 +782,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(r)
         if path == 'export':
             with JOBS.track('export', rel=rel) as j:
-                w = core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
+                # una copia congelata (sottocartella) non e' il taglio della parte: la libreria non la segue
+                w = bridge.cut(rel, follow=not b.get('subfolder'), replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
                 j['log'] += [f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}' for x in w]
-            if not b.get('subfolder'):                 # una copia congelata non e' il taglio della zona: non segue
-                bridge.sync_async(bridge.on_export, rel, w)
             return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('readcuts', 'libimport', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'help', 'pull', 'preview', 'scan', 'install'):
+            if kind not in ('readcuts', 'libimport', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':

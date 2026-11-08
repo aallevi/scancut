@@ -59,7 +59,9 @@ CREATE TABLE item (
   notes       TEXT,
   created_at  TEXT NOT NULL,
   modified_at TEXT NOT NULL,
-  trashed_at  TEXT                                  -- nel cestino della libreria (mai cancellato subito)
+  trashed_at  TEXT,                                 -- nel cestino della libreria (mai cancellato subito)
+  place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove stanno le sue parti, se non lo dicono loro
+  category    TEXT
 ) STRICT;
 CREATE INDEX item_date ON item(trashed_at, date, created_at);
 CREATE INDEX item_series ON item(series_id);
@@ -93,9 +95,26 @@ CREATE TABLE region (
   position    INTEGER NOT NULL DEFAULT 0,           -- ordine di lettura
   color       TEXT,                                 -- il colore della selezione (vista testo, export)
   created_at  TEXT NOT NULL,
-  modified_at TEXT NOT NULL
+  modified_at TEXT NOT NULL,
+  removed_at  TEXT,                                 -- tolta nello studio: non si vede piu', resta nella storia
+  place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove sta questo foglio (vuoto: quello della sua fonte)
+  place_number INTEGER,                             -- il suo numero li' (vuoto: lo da' l'archivio)
+  category    TEXT                                  -- categoria dell'archivio (vuoto: quella della sua fonte)
 ) STRICT;
 CREATE INDEX region_item ON region(item_id, position);
+CREATE INDEX region_asset ON region(asset_id, removed_at, position);
+
+-- la sessione di lavoro su un file nello studio: versione (per chi salva insieme), motore e impostazioni
+-- dell'ultimo rilevamento, quando e' stato tagliato, le versioni di prima delle parti (Earlier)
+CREATE TABLE editstate (
+  asset_id   INTEGER PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+  version    INTEGER NOT NULL DEFAULT 0,
+  engine     TEXT,
+  params     TEXT CHECK (params IS NULL OR json_valid(params)),
+  cut_at     REAL,
+  history    TEXT CHECK (history IS NULL OR json_valid(history)),
+  saved_at   REAL
+) STRICT;
 CREATE INDEX region_parent ON region(parent_id);
 
 -- ------------------------------------------------------------ testo: letture e correzioni
@@ -195,6 +214,36 @@ CREATE TABLE cut (
 CREATE INDEX cut_item ON cut(item_id);
 CREATE INDEX cut_region ON cut(region_id);
 CREATE INDEX cut_path ON cut(path);
+
+-- come e' arrivato un file: lo scanner (con le sue impostazioni), trascinato nella finestra, l'inbox.
+-- Si scrive appena il file esiste (per checksum); si lega al suo asset quando e' fra le fonti.
+CREATE TABLE capture (
+  id          INTEGER PRIMARY KEY,
+  uuid        TEXT NOT NULL UNIQUE,
+  sha256      TEXT NOT NULL,
+  asset_id    INTEGER REFERENCES asset(id) ON DELETE SET NULL,
+  how         TEXT NOT NULL,                        -- scanner | added
+  name        TEXT,                                 -- il nome con cui e' arrivato
+  series      TEXT,                                 -- la serie scelta (sessione dello scanner)
+  device      TEXT,
+  settings    TEXT CHECK (settings IS NULL OR json_valid(settings)),   -- risoluzione, modo, area in mm, …
+  captured_at TEXT NOT NULL
+) STRICT;
+CREATE INDEX capture_sha ON capture(sha256);
+CREATE INDEX capture_asset ON capture(asset_id);
+
+-- il cestino della libreria: cosa c'e' dentro, da dove veniva ogni file (per rimetterlo a posto), quando.
+-- Si svuota da solo dopo i giorni scelti (Impostazioni, di base tre mesi): solo allora si cancella davvero.
+CREATE TABLE trash (
+  id          INTEGER PRIMARY KEY,
+  uuid        TEXT NOT NULL UNIQUE,
+  what        TEXT NOT NULL CHECK (what IN ('item', 'cut')),
+  ref         TEXT NOT NULL,                        -- uuid dell'oggetto o dell'asset del taglio
+  title       TEXT,
+  files       TEXT NOT NULL CHECK (json_valid(files)),     -- [{asset, from, to}]
+  regions_off TEXT CHECK (regions_off IS NULL OR json_valid(regions_off)),   -- parti tolte dal taglio con lui
+  trashed_at  TEXT NOT NULL
+) STRICT;
 
 -- ------------------------------------------------------------ conservazione (come PREMIS)
 CREATE TABLE event (                     -- registro di tutto cio' che succede: import, letture, ritocchi, export, controlli

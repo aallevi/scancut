@@ -37,8 +37,15 @@ def set_root(root):
     ROOT = os.path.realpath(os.path.expanduser(root))
     sc.set_root(ROOT)
     DATA = os.path.join(ROOT, '.scancut', 'studio-data')
-    for d in ('cache', 'state', 'previews', 'replaced'):
+    for d in ('cache', 'previews', 'replaced'):
         os.makedirs(os.path.join(DATA, d), exist_ok=True)
+    # la libreria della radice: c'e' sempre (lo studio non tiene dati altrove); i file di prima entrano una volta
+    from .library import bridge, store
+    bridge._lib = None
+    store._cache.clear()
+    store.migrate_legacy(bridge.library(create=True))
+    # il cestino che ha passato i suoi giorni si svuota (cancellato davvero, come scelto in Impostazioni)
+    bridge._safe(bridge.empty_trash, bridge.library(), int(settings().get('trash_days') or 91))
 
 
 # ---------------------------------------------------------------- percorsi
@@ -97,11 +104,12 @@ def listing(rel):
         if not is_image(f) or not os.path.exists(p):
             continue
         r = relpath(p) if not os.path.islink(p) else os.path.join(rel, f)
-        st = load_state(r, create=False)
+        from .library import store
+        st = store.summary(r)
         out.append({'rel': r, 'name': f, 'size': os.path.getsize(p), 'mtime': os.path.getmtime(p),
-                    'sheets': len([s for s in st['sheets'] if s.get('on', True)]) if st else None,
-                    'engine': st.get('engine') if st else None,
-                    'exported': bool(st and st.get('exported')),
+                    'sheets': st['sheets'] if st else None,
+                    'engine': st['engine'] if st else None,
+                    'exported': bool(st and st['exported']),
                     'done': done_result(r)})
     return out
 
@@ -294,6 +302,52 @@ def corner_masks(shape, ppm, params):
     return [(y0, x0, m, np.zeros_like(m), True)]
 
 
+# le cornici di carta: rettangoli fissi in mm dall'angolo in alto a sinistra del letto (come le aree dello
+# scanner). Le serie salvate nella pagina Scanner (frame_sets) valgono anche qui: si scansiona e si taglia
+# con le stesse aree.
+PAPER_LAYOUTS = {
+    'A4': [[0, 0, 210, 297]],
+    'A5 (upright)': [[0, 0, 148, 210]],
+    '2 × A5 (one above the other)': [[0, 0, 210, 148.5], [0, 148.5, 210, 148.5]],
+    '4 × A6': [[0, 0, 105, 148.5], [105, 0, 105, 148.5], [0, 148.5, 105, 148.5], [105, 148.5, 105, 148.5]],
+    '2 × A6 (side by side)': [[0, 0, 105, 148.5], [105, 0, 105, 148.5]],
+    'Letter': [[0, 0, 215.9, 279.4]],
+}
+
+
+def frame_sets():
+    return dict(PAPER_LAYOUTS, **{f'Frame set: {k}': v for k, v in (settings().get('frame_sets') or {}).items()})
+
+
+def frames_masks(rel, shape, ppm, params):
+    # i rettangoli della serie scelta, alla risoluzione della scansione. Se la scansione era di un'area del
+    # letto (lo dice la libreria: com'e' stata fatta), le cornici si spostano di conseguenza
+    H, W = shape
+    areas = frame_sets().get(params.get('set') or 'A4') or PAPER_LAYOUTS['A4']
+    ox = oy = 0.0
+    try:
+        from .library import bridge
+        lib = bridge.library(create=False)
+        a = lib and lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(abspath(rel)),)).fetchone()
+        cap = a and bridge.capture_of(lib, a[0])
+        if cap and cap['settings'].get('area'):
+            ox, oy = cap['settings']['area'][:2]
+    except Exception:
+        pass
+    m_ = float(params.get('margin') or 0)
+    out = []
+    for ar in areas:
+        x, y, w, h = [float(v) for v in ar[:4]]
+        x0, y0 = int(round((x - ox + m_) * ppm)), int(round((y - oy + m_) * ppm))
+        x1, y1 = int(round((x - ox + w - m_) * ppm)), int(round((y - oy + h - m_) * ppm))
+        x0, y0, x1, y1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+        if x1 - x0 < 10 or y1 - y0 < 10:
+            continue
+        m = np.ones((y1 - y0, x1 - x0), bool)
+        out.append((y0, x0, m, np.zeros_like(m), True))
+    return out
+
+
 def engines():
     out = [
         {'id': 'auto', 'name': 'Automatic (as the agent)', 'kind': 'builtin', 'available': True,
@@ -322,6 +376,14 @@ def engines():
              {'id': 'corner', 'label': 'Corner', 'type': 'choice', 'default': 'bottom-left',
               'choices': [{'text': c, 'note': f'The sheet is pushed into the {c} corner of the scan.'} for c in ('bottom-left', 'top-left', 'bottom-right', 'top-right')],
               'hint': 'The corner of the scan (as you see it on screen) where the sheet sits.'}]},
+        {'id': 'frames', 'name': 'Paper frames', 'kind': 'builtin', 'available': True,
+         'note': 'No detection: fixed paper-size frames (A4, two A5, four A6…) or a frame set saved on the Scanners page. Made for batches of the same size. Instant.',
+         'params': [
+             {'id': 'set', 'label': 'Frames', 'type': 'choice', 'default': 'A4',
+              'choices': [{'text': k, 'note': ', '.join(f'{v[2]:g} × {v[3]:g} mm' for v in a)} for k, a in frame_sets().items()],
+              'hint': 'Rectangles measured from the top-left corner of the scanner bed. Frame sets saved on the Scanners page appear here, so you scan and cut with the same areas.'},
+             {'id': 'margin', 'label': 'Inset', 'type': 'number', 'default': 0, 'step': 0.5, 'unit': 'mm',
+              'hint': 'Moves every edge inwards by this much (0: the exact paper size).'}]},
         {'id': 'vision', 'name': 'Apple Vision', 'kind': 'ai', 'available': os.path.exists(sc.VISION),
          'note': 'Foreground instances from macOS. Smooth edges; for white on white.'},
         {'id': 'sam3', 'name': 'SAM 3 (Meta)', 'kind': 'ai', 'available': bool(sam3_weights()) and has_module('ultralytics'),
@@ -421,6 +483,9 @@ def run_engine(rel, engine, params=None, box=None):
             masks = sam3_masks(sub, ppm, params, whole=bool(box), off=off)
         elif engine == 'corner':
             masks = corner_masks(rgb.shape[:2], ppm, params)
+            off = (0, 0)
+        elif engine == 'frames':
+            masks = frames_masks(rel, rgb.shape[:2], ppm, params)
             off = (0, 0)
         elif engine == 'otsu':
             from . import otsu
@@ -787,31 +852,16 @@ def refine_with_wand(rgb, m, ppm):
 #   poly0: contorno semplificato della sagoma, poly: lo stesso dopo i ritocchi
 #   ops: [{op: add|sub, kind: poly|stroke, pts: [[x,y]...], r}] in ordine
 
-def state_path(rel):
-    return os.path.join(DATA, 'state', hashlib.sha1(rel.encode()).hexdigest()[:20] + '.json')
-
-
 def load_state(rel, create=True):
-    p = state_path(rel)
-    if os.path.exists(p):
-        try:
-            st = json.load(open(p))
-            if st.get('rel') == rel:
-                return st
-        except ValueError:
-            pass
-    return {'rel': rel, 'engine': None, 'sheets': [], 'version': 0} if create else None
+    # lo stato di un file e' fatto di righe della libreria (non ci sono altri posti dove stia)
+    from .library import store
+    return store.load(rel, create=create)
 
 
 def save_state(st):
-    st['version'] = int(st.get('version', 0)) + 1
-    st['saved'] = time.time()
-    p = state_path(st['rel'])
-    tmp = p + '.part'
-    with open(tmp, 'w') as f:
-        json.dump(st, f)
-    os.replace(tmp, p)
-    return st
+    # salvare = scrivere le righe della libreria; da li' partono tagli rifatti, metadati, diario
+    from .library import store
+    return store.save(st)
 
 
 def contour(m, ppm, y=0, x=0):
@@ -1139,6 +1189,7 @@ DEFAULT_SETTINGS = {
     'compare_engines': ['classic', 'vision'],
     'scan_device': '', 'scan_res': 600, 'scan_mode': 'Color', 'scan_batch': 'scan',
     'export_format': 'png',            # png | jxl (JPEG XL senza perdita, con la trasparenza)
+    'trash_days': 91,                  # il cestino della libreria si svuota da solo dopo questi giorni (di base ogni tre mesi)
     'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
     'export_subfolder': 'extra',
     'verify_jxl': False,
@@ -1151,8 +1202,6 @@ DEFAULT_SETTINGS = {
     'sam3_weights': '',                # sam3.pt scelto a mano (vuoto: si cerca nei posti soliti)
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
     'llm_url': 'http://localhost:11434/v1',   # assistente locale: Ollama, o qualunque server compatibile OpenAI
-    'llm_model': '',                   # vuoto: il primo adatto fra quelli installati
-    'embed_model': '',                 # vuoto: il primo modello di embedding installato (o solo parole)
     'claude_model': 'sonnet',
     'ocr_engine': 'vision',            # vision (Apple, sul Mac) o ollama:<modello> (GLM-OCR, Qwen3-VL: anche a mano)          # Chiedi a Claude: sonnet (equilibrato), haiku (veloce), opus, o vuoto
 }
@@ -1449,17 +1498,14 @@ def export(rel, replace=None, log=print, subfolder=None):
                 sc.log(f'studio: {rel} -> {new_rel} (kept, next to its new pieces)')
     finally:
         lock.close()
-    st['exported'] = time.time()
+    # si scrive solo quel che il taglio cambia (quando e' stato tagliato): mai lo stato letto all'inizio,
+    # che nel frattempo puo' essere stato modificato (un ritocco mentre un taglio rifatto girava)
+    from .library import store
     if new_rel:
-        # lo stato segue il file
-        old = state_path(rel)
+        # il file si e' spostato: la libreria segue il file, e lo stato con lui
+        store.moved(rel, new_rel)
         st['rel'] = new_rel
-        st['version'] = load_state(new_rel).get('version', 0)
-        save_state(st)
-        if os.path.exists(old):
-            os.remove(old)
-    else:
-        save_state(st)
+    st['exported'] = store.mark_cut(st['rel'])
     if st.get('engine') and any(w['status'] == 'written' for w in written):
         remember_batch(rel, st['engine'], st.get('params') or {})
     if settings().get('eagle'):
@@ -1471,27 +1517,29 @@ def export(rel, replace=None, log=print, subfolder=None):
 # il motore e le impostazioni dell'ultimo ritaglio esportato di ogni serie: la scansione
 # successiva della stessa serie parte da li'. Niente si impara, si ricorda solo la scelta.
 def batch_memory_path():
+    # (prima: un file a parte; ora la memoria della serie sta nella libreria. Questo resta solo per portarla dentro)
     return os.path.join(DATA, 'batch-memory.json')
 
 
 def batch_memory():
-    try:
-        return json.load(open(batch_memory_path()))
-    except (OSError, ValueError):
-        return {}
+    # motore e impostazioni dell'ultimo taglio di ogni serie: nella libreria
+    from .library import bridge
+    lib = bridge.library(create=True)
+    r = lib.db.execute("SELECT value FROM setting WHERE key = 'series_memory'").fetchone()
+    return json.loads(r[0]) if r else {}
 
 
 def remember_batch(rel, engine, params):
+    from .library import bridge
+    lib = bridge.library(create=True)
     mem = batch_memory()
     b = batch_of(rel)
     old = mem.get(b) or {}
     same = old.get('engine') == engine and old.get('params') == params
     mem[b] = {'engine': engine, 'params': params, 'time': time.time(),
               'count': old.get('count', 0) + 1 if same else 1}
-    tmp = batch_memory_path() + '.part'
-    with open(tmp, 'w') as f:
-        json.dump(mem, f, indent=1)
-    os.replace(tmp, batch_memory_path())
+    with lib.db:
+        lib.db.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('series_memory', ?)", (json.dumps(mem),))
 
 
 def remembered(rel):
@@ -1514,43 +1562,44 @@ def _readable(path):
 
 
 def read_doc(rel, progress=None):
-    # il testo di un documento intero (scansione o ritaglio), con il lettore scelto; ricordato in
-    # studio-data/text/ finche' il file e il lettore non cambiano. Nessun file viene toccato.
+    # il testo di un documento intero (fonte o taglio), con il lettore scelto. Se la libreria ha gia' una
+    # lettura di questo file con questo lettore, e' quella (con le correzioni); se no si legge, e la lettura
+    # entra nella libreria (un taglio: testo della sua parte; una fonte: testo intero). Nessun file cambia.
+    from .library import bridge
+    known = read_cached(rel)
+    if known is not None:
+        return known
     eng = settings().get('ocr_engine') or 'vision'
-    d = os.path.join(DATA, 'text'); os.makedirs(d, exist_ok=True)
-    cache = os.path.join(d, f'{file_key(rel)}-{hashlib.sha1(eng.encode()).hexdigest()[:8]}.md')
-    if os.path.exists(cache):
-        return open(cache, encoding='utf-8').read()
     f, tmp = _readable(abspath(rel))
     try:
         if eng.startswith('ollama:'):
-            from . import assistant
-            text = assistant.ocr_image(f, eng[7:], progress)
+            from . import readers
+            text = readers.ocr_image(f, eng[7:], progress)
+        elif eng.startswith('mlx:'):
+            from . import readers
+            text = readers.ocr_mlx(f, eng[4:], progress)
         else:
             text = ocr_text(f)
     finally:
         if tmp and os.path.exists(f):
             os.remove(f)
-    with open(cache + '.part', 'w', encoding='utf-8') as fh:
-        fh.write(text)
-    os.replace(cache + '.part', cache)
+    bridge.on_read_doc(rel, text)
     return text
 
 
 def read_cached(rel):
-    eng = settings().get('ocr_engine') or 'vision'
-    p = os.path.join(DATA, 'text', f'{file_key(rel)}-{hashlib.sha1(eng.encode()).hexdigest()[:8]}.md')
-    return open(p, encoding='utf-8').read() if os.path.exists(p) else None
+    from .library import bridge
+    return bridge.doc_text(rel)
 
 
 def ocr_text(path):
     # il testo riconosciuto; '' se non c'e' testo. Con un modello di Ollama: Markdown, anche a mano
     eng = settings().get('ocr_engine') or 'vision'
-    if eng.startswith('ollama:'):
-        from . import assistant
+    if eng.startswith(('ollama:', 'mlx:')):
+        from . import readers
         f, tmp = _readable(path)
         try:
-            return assistant.ocr_image(f, eng[7:])
+            return readers.ocr_image(f, eng[7:]) if eng.startswith('ollama:') else readers.ocr_mlx(f, eng[4:])
         finally:
             if tmp and os.path.exists(f):
                 os.remove(f)
@@ -1726,9 +1775,30 @@ def rotate_files(rels, deg, log=print):
     for rel in rels:
         path = abspath(rel)
         ext = os.path.splitext(path)[1].lower()
-        if ext not in ('.png', '.jxl'):
-            log(f'{rel}: only PNG and JPEG XL cutouts can be rotated here'); continue
+        if ext not in ('.png', '.jxl', '.jpg', '.jpeg', '.tif', '.tiff'):
+            log(f'{rel}: this kind of file cannot be rotated here'); continue
         back = _backup(path, stamp)
+        if ext not in ('.png', '.jxl'):
+            # un JPEG (o TIFF) non si gira senza ricomprimerlo: i suoi pixel, girati, diventano un PNG (senza
+            # perdita, gli stessi pixel); il file di prima resta nella storia, la libreria segue il file nuovo
+            from PIL import ImageOps
+            W0, H0 = Image.open(path).size
+            pim = Image.open(path); pim.load()
+            dpi = (pim.info.get('dpi') or (0, 0))[0] or None
+            icc = pim.info.get('icc_profile')
+            new = sc.unique(os.path.splitext(path)[0] + '.png')
+            pim.rotate(-90 * q, expand=True).save(new + '.part', 'PNG', dpi=(dpi, dpi) if dpi else None, **({'icc_profile': icc} if icc else {}))
+            os.replace(new + '.part', new)
+            if tool('exiftool'):
+                subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', back, '-all:all', '-icc_profile', '-IFD0:Orientation#=1', new],
+                               capture_output=True, timeout=120)
+            os.remove(path)
+            from .library import store
+            store.moved(rel, relpath(new))
+            turn_state(relpath(new), W0, H0, q)
+            done.append(relpath(new))
+            log(f'{rel}: rotated {90 * q}° into {os.path.basename(new)} (same pixels, PNG); the JPEG is kept in {os.path.relpath(back, ROOT)}')
+            continue
         if ext != '.png':
             W0, H0 = info(rel)['w'], info(rel)['h']
         else:
@@ -1907,11 +1977,35 @@ def sam3_weights():
 
 
 def agent_label():
-    # l'agente della cartella d'arrivo, com'e' installato su questo Mac
-    import glob
+    # l'agente della cartella d'arrivo DI QUESTA radice (quello che guarda <radice>/inbox), se c'e':
+    # mai quello di un'altra cartella di scansioni (l'anteprima non deve muovere le scansioni vere)
+    import glob, plistlib
+    inbox = os.path.realpath(os.path.join(ROOT, 'inbox'))
     for f in sorted(glob.glob(os.path.expanduser('~/Library/LaunchAgents/*scancut*.plist'))):
-        return os.path.basename(f)[:-6]
+        try:
+            pl = plistlib.load(open(f, 'rb'))
+        except Exception:
+            continue
+        if any(os.path.realpath(w) == inbox for w in pl.get('WatchPaths') or []):
+            return pl.get('Label') or os.path.basename(f)[:-6]
     return None
+
+
+def file_inbox(timeout=120):
+    # le scansioni appena arrivate nell'inbox vanno fra le fonti (mai perse, mai sovrascritte): con l'agente
+    # di questa radice se c'e' (lo si sveglia e si aspetta), se no con lo stesso programma, qui
+    inbox = os.path.join(ROOT, 'inbox')
+    waiting = lambda: [f for f in os.listdir(inbox) if not f.startswith('.') and not f.endswith('.part')] if os.path.isdir(inbox) else []
+    if not waiting():
+        return
+    label = agent_label()
+    if label:
+        subprocess.run(['launchctl', 'kickstart', f'gui/{os.getuid()}/{label}'], capture_output=True)
+        t = time.time()
+        while waiting() and time.time() - t < timeout:
+            time.sleep(1)
+    else:
+        subprocess.run([sys.executable, '-I', os.path.join(REPO, 'scancut.py'), ROOT], capture_output=True, timeout=timeout * 10)
 
 
 def addons():

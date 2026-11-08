@@ -15,6 +15,16 @@ re-cut or renamed automatically, text is rewritten into their metadata, and the 
 in the history (`studio-data/replaced/`, `event` table). Scan, cut and text are three things with
 links between them: a part points to its texts, a cut points to the texts of its part.
 
+## The only store
+
+The library is not a copy of the studio's data: it is the studio's data. The editor's state of a scan
+(its parts, edits, rotation, inclusion, colour, text, secondary and loose areas, the "Earlier" versions)
+is composed from the library's rows and written back to them (`studio/library/store.py`), and every
+consequence starts there (re-cut, embedded text, journal). There are no other stores to fall out of step.
+The consistency check (Library › Check, `bridge.check`, last step of `tools/health.js`) proves it: every
+file where the catalog says and unchanged, every cut of a live part present, linked, carrying its part's
+current text, and (deep) identical pixel for pixel to a fresh cut of its part.
+
 ## A library
 
 A library is a package (a folder macOS shows as one file), `Name.scanlib/`:

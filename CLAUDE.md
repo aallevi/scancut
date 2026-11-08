@@ -90,4 +90,7 @@ numbering each time it opens, so a taken name gets the next free number.
   coloured paper on the white lid keeps a ~1 px light edge.
 - Scan Studio shares the pipeline: `cut_scan` returns each sheet's mask as a 6th
   tuple item `(mask, holes, exact)`; untouched studio exports must stay byte-identical
-  to the agent's. Studio data lives in `<root>/.scancut/studio-data/` (not in git).
+  to the agent's. On the `library` branch every part, cut and text lives only in the library
+  (`<root>/Library.scanlib`, code in `studio/library/`): `core.load_state`/`save_state` read and
+  write its rows. Never add another store; `studio-data/` holds only caches and settings. Library › Check
+  (and the end of tools/health.js) must report nothing.

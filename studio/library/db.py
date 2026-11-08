@@ -11,7 +11,9 @@ import os, json, uuid as _uuid, shutil, sqlite3, hashlib, time, threading
 from datetime import datetime, timezone
 
 SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.sql')
+PLACES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'places.sql')
 SCHEMA_VERSION = 1
+CATEGORIES = [('drawing', 'Drawing'), ('document', 'Document'), ('photograph', 'Digital photograph'), ('scan', 'Digital scan'), ('print', 'Print'), ('painting', 'Painting'), ('book', 'Book'), ('object', 'Object'), ('installation', 'Installation'), ('sculpture', 'Sculpture'), ('model', '3D model'), ('video', 'Digital video'), ('sound', 'Sound recording')]
 AGENT = 'Scan Studio'
 KEEP_SNAPSHOTS = 10
 
@@ -49,6 +51,8 @@ class Library:
         if create:
             c = self.db
             c.executescript(open(SCHEMA).read())
+            c.executescript(open(PLACES).read())
+            c.executemany('INSERT INTO category (key, label, position) VALUES (?,?,?)', [(k, l, i) for i, (k, l) in enumerate(CATEGORIES)])
             with c:
                 c.executemany('INSERT INTO meta VALUES (?, ?)', [
                     ('schema_version', str(SCHEMA_VERSION)), ('uuid', new_uuid()),
@@ -103,9 +107,32 @@ class Library:
         # un file entra nella libreria: gestito (copiato nello store per checksum) o referenziato (resta li')
         src = os.path.abspath(src)
         digest, size = sha256(src), os.path.getsize(src)
-        old = self.db.execute('SELECT * FROM asset WHERE sha256 = ?', (digest,)).fetchone()
-        if old:
-            return old['id'], False                      # gia' in libreria, stessi byte: nessun doppione
+        if managed:
+            # gestiti: il nome e' il contenuto, stessi byte = lo stesso file (nessun doppione)
+            old = self.db.execute("SELECT * FROM asset WHERE sha256 = ? AND storage = 'managed'", (digest,)).fetchone()
+            if old:
+                return old['id'], False
+        else:
+            # referenziati: un percorso e' un file. Stessi byte in due posti sono due file; lo stesso percorso
+            # con byte diversi e' un file cambiato (chi lo cambia sposta prima il record di prima nella storia)
+            real = os.path.realpath(src)
+            old = self.db.execute('SELECT * FROM asset WHERE path IN (?, ?)', (src, real)).fetchone()
+            if old and old['sha256'] == digest:
+                return old['id'], False
+            if old:
+                self.db.execute('UPDATE asset SET sha256 = ?, size = ? WHERE id = ?', (digest, size, old['id']))
+                self.db.commit()
+                self.log('changed', 'asset', old['uuid'], path=src, old_sha256=old['sha256'], new_sha256=digest)
+                return old['id'], False
+            # lo stesso file spostato (il vecchio percorso non c'e' piu'): il record segue il file
+            gone = [r for r in self.db.execute("SELECT * FROM asset WHERE sha256 = ? AND storage = 'referenced'", (digest,)).fetchall()
+                    if not os.path.exists(r['path'])]
+            if gone:
+                self.db.execute('UPDATE asset SET path = ? WHERE id = ?', (real, gone[0]['id']))
+                self.db.commit()
+                self.log('move', 'asset', gone[0]['uuid'], old_path=gone[0]['path'], new_path=real)
+                return gone[0]['id'], False
+            src = real
         ext = os.path.splitext(src)[1].lower()
         if managed:
             rel = os.path.join('store', digest[:2], digest + ext)
@@ -236,6 +263,47 @@ class Library:
                 self.db.executescript('DROP INDEX IF EXISTS item_batch; ALTER TABLE item DROP COLUMN batch;')
             self.db.commit()
             self.log('migrate', 'library', self.meta('uuid'), added='series (from item.batch)')
+        if 'editstate' not in have:
+            self.db.executescript('''CREATE TABLE editstate (asset_id INTEGER PRIMARY KEY REFERENCES asset(id) ON DELETE CASCADE,
+                version INTEGER NOT NULL DEFAULT 0, engine TEXT, params TEXT CHECK (params IS NULL OR json_valid(params)), cut_at REAL,
+                history TEXT CHECK (history IS NULL OR json_valid(history)), saved_at REAL) STRICT;''')
+            if 'removed_at' not in {r[1] for r in self.db.execute('PRAGMA table_info(region)')}:
+                self.db.executescript('ALTER TABLE region ADD COLUMN removed_at TEXT; CREATE INDEX IF NOT EXISTS region_asset ON region(asset_id, removed_at, position);')
+            # le zone segnate a mano come tolte (versione di prima) diventano tolte davvero
+            self.db.execute("UPDATE region SET removed_at = modified_at, label = NULLIF(TRIM(REPLACE(REPLACE(label, '(removed in studio)', ''), 'removed in studio', '')), '') "
+                            "WHERE label LIKE '%removed in studio%'")
+            self.db.commit()
+            self.log('migrate', 'library', self.meta('uuid'), added='editstate, region.removed_at')
+        if 'trash' not in have:
+            self.db.executescript('''CREATE TABLE trash (
+  id          INTEGER PRIMARY KEY,
+  uuid        TEXT NOT NULL UNIQUE,
+  what        TEXT NOT NULL CHECK (what IN ('item', 'cut')),
+  ref         TEXT NOT NULL,                        -- uuid dell'oggetto o dell'asset del taglio
+  title       TEXT,
+  files       TEXT NOT NULL CHECK (json_valid(files)),     -- [{asset, from, to}]
+  regions_off TEXT CHECK (regions_off IS NULL OR json_valid(regions_off)),   -- parti tolte dal taglio con lui
+  trashed_at  TEXT NOT NULL
+) STRICT;
+''')
+            self.log('migrate', 'library', self.meta('uuid'), added='trash')
+        if 'place' not in have:
+            cols = {r[1] for r in self.db.execute('PRAGMA table_info(region)')}
+            self.db.executescript(open(PLACES).read().split('CREATE TRIGGER')[0])
+            if 'place_id' not in cols:
+                self.db.executescript('ALTER TABLE region ADD COLUMN place_id INTEGER REFERENCES place(id) ON DELETE SET NULL; '
+                                      'ALTER TABLE region ADD COLUMN place_number INTEGER; ALTER TABLE region ADD COLUMN category TEXT; '
+                                      'ALTER TABLE item ADD COLUMN place_id INTEGER REFERENCES place(id) ON DELETE SET NULL; ALTER TABLE item ADD COLUMN category TEXT;')
+            self.db.executescript('CREATE TRIGGER' + 'CREATE TRIGGER'.join(open(PLACES).read().split('CREATE TRIGGER')[1:]))
+            self.db.executemany('INSERT OR IGNORE INTO category (key, label, position) VALUES (?,?,?)', [(k, l, i) for i, (k, l) in enumerate(CATEGORIES)])
+            self.db.commit()
+            self.log('migrate', 'library', self.meta('uuid'), added='place, category')
+        if 'capture' not in have:
+            self.db.executescript('''CREATE TABLE capture (id INTEGER PRIMARY KEY, uuid TEXT NOT NULL UNIQUE, sha256 TEXT NOT NULL,
+                asset_id INTEGER REFERENCES asset(id) ON DELETE SET NULL, how TEXT NOT NULL, name TEXT, series TEXT, device TEXT,
+                settings TEXT CHECK (settings IS NULL OR json_valid(settings)), captured_at TEXT NOT NULL) STRICT;
+                CREATE INDEX capture_sha ON capture(sha256); CREATE INDEX capture_asset ON capture(asset_id);''')
+            self.log('migrate', 'library', self.meta('uuid'), added='capture')
         if 'text_link' not in have:
             self.db.executescript('''CREATE TABLE text_link (reading_id INTEGER NOT NULL REFERENCES reading(id) ON DELETE CASCADE,
                 asset_id INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE, PRIMARY KEY (reading_id, asset_id)) STRICT;

@@ -4,8 +4,9 @@
   const R = window.__errs, T0 = Date.now(), ok = (c, m) => R.push(((Date.now() - T0) / 1000).toFixed(1) + (c ? ' PASS ' : ' FAIL ') + m), wait = ms => new Promise(r => setTimeout(r, ms));
   const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (f()) return true; await wait(100); } return false; };
   // la prima scansione degli originali e il primo ritaglio: solo su una COPIA della radice
-  const firstIn = async top => { for (const d of (await api.get('list', { dir: top })).filter(i => i.dir)) { const f = (await api.get('list', { dir: d.rel })).find(i => !i.dir); if (f) return [d.rel, f.rel]; } return []; };
-  const [DIR, SCAN] = await firstIn('originals'), [, CUT] = await firstIn('cut');
+  const firstIn = async (top, ok = () => true) => { for (const d of (await api.get('list', { dir: top })).filter(i => i.dir)) { const f = (await api.get('list', { dir: d.rel })).find(i => !i.dir && ok(i.rel)); if (f) return [d.rel, f.rel]; } return []; };
+  // un taglio PNG (si gira senza perdita; un JPEG portato da fuori no)
+  const [DIR, SCAN] = await firstIn('originals'), [, CUT] = await firstIn('cut', r => /\.png$/i.test(r));
   const img = async url => { const r = await fetch(url); const b = await createImageBitmap(await r.blob()); return [b.width, b.height]; };
   // mai sulle app vere (8765 Scan Studio, 8766 l'anteprima): detecta, taglia e gira file sul serio
   if (['8765', '8766'].includes(location.port)) { R.push('FAIL refused: run the health check on a scratch server (a copy of the scans), not on port ' + location.port); return; }
@@ -68,6 +69,9 @@
     ok(JSON.stringify(p2) === JSON.stringify(exp), 'selection turned with the image');
     ok(V.img.naturalWidth / V.img.naturalHeight > 1 === (S.info.w > S.info.h), 'preview image is the rotated one');
     await rotateOpenFile(-90); await until(() => S.info && S.info.w === W, 20000);
+    // alla fine: tutto cio' che deriva dalla libreria le corrisponde (tagli, testo nei tagli, pixel)
+    const probs = await api.get('library/check', { deep: 1 }).catch(e => [{ kind: 'error', what: e.message }]);
+    ok(!probs.length, 'library consistent (pixels included)' + (probs.length ? ': ' + probs.map(x => x.kind + ' ' + x.what).join('; ') : ''));
   } catch (e) { R.push('FAIL exception: ' + e.message + ' ' + (e.stack || '').split('\n')[1]); }
   R.push('DONE');
 })(); 0;
