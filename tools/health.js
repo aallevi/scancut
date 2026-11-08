@@ -7,6 +7,8 @@
   const firstIn = async top => { for (const d of (await api.get('list', { dir: top })).filter(i => i.dir)) { const f = (await api.get('list', { dir: d.rel })).find(i => !i.dir); if (f) return [d.rel, f.rel]; } return []; };
   const [DIR, SCAN] = await firstIn('originals'), [, CUT] = await firstIn('cut');
   const img = async url => { const r = await fetch(url); const b = await createImageBitmap(await r.blob()); return [b.width, b.height]; };
+  // mai sulle app vere (8765 Scan Studio, 8766 l'anteprima): detecta, taglia e gira file sul serio
+  if (['8765', '8766'].includes(location.port)) { R.push('FAIL refused: run the health check on a scratch server (a copy of the scans), not on port ' + location.port); return; }
   try {
     // galleria e pagine dello studio
     await openDir(DIR); await wait(500);
