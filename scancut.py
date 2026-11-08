@@ -14,21 +14,34 @@
 import os, re, sys, time, shutil, hashlib, fcntl, subprocess, traceback, warnings
 import numpy as np, cv2
 from PIL import Image
+try:
+    import pillow_jxl                  # Pillow legge e scrive JPEG XL (i file dentro la libreria)
+except ImportError:
+    pass
 
 Image.MAX_IMAGE_PIXELS = None
 warnings.simplefilter('ignore', RuntimeWarning)   # nanmedian su tratti vuoti
 
+PACKAGE = 'Library.DocuLib'
+
+
 def set_root(root):
     # la radice si sceglie da riga di comando; lo studio (importandolo) la passa qui
-    global ROOT, INBOX, CUT, ORIG, FAIL, DONE, LOG
+    # Dopo il passaggio alla libreria (un pacchetto <radice>/Library.DocuLib, che il Finder mostra come un file solo)
+    # originali, ritagli e failed/ stanno dentro il pacchetto, in JPEG XL senza perdita; fuori resta solo l'inbox
+    global ROOT, INBOX, CUT, ORIG, FAIL, DONE, LOG, PKG, PACKED
     ROOT = os.path.expanduser(root)
-    INBOX, CUT, ORIG, FAIL = (os.path.join(ROOT, d) for d in ('inbox', 'cut', 'originals', 'failed'))
+    PKG = os.path.join(ROOT, PACKAGE)
+    PACKED = os.path.isdir(os.path.join(PKG, 'originals'))
+    files = PKG if PACKED else ROOT
+    INBOX = os.path.join(ROOT, 'inbox')
+    CUT, ORIG, FAIL = (os.path.join(files, d) for d in ('cut', 'originals', 'failed'))
     DONE = os.path.join(ROOT, '.scancut', 'done.tsv')   # scansioni gia' ritagliate
     LOG = os.path.join(ROOT, '.scancut', 'log.txt')
 
 
 set_root(sys.argv[1] if __name__ == '__main__' and len(sys.argv) > 1 else '~/Scans')
-EXT = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp'}
+EXT = {'.png', '.jpg', '.jpeg', '.tif', '.tiff', '.bmp', '.jxl'}
 WORK = 4.0            # px/mm della copia ridotta su cui si cercano i tagli
 STABLE_S = 4          # il file deve stare fermo tanto prima di toccarlo
 MAX_RUN_S = 3 * 3600   # niente giri a orario: un lotto grosso va finito nello stesso giro
@@ -62,7 +75,7 @@ def disk(d):
 def load(path, ppm_known=None):
     im = Image.open(path)
     icc = im.info.get('icc_profile')
-    dpi = im.info.get('dpi', (0, 0))[0] or 0
+    dpi = im.info.get('dpi', (0, 0))[0] or (dpi_of(path) if path.lower().endswith('.jxl') else 0)
     if im.mode in ('I;16', 'I;16B', 'I;16L', 'I'):
         # grigio a 16 bit: convert('RGB') di Pillow lo fa tutto bianco; per cercare i bordi
         # basta il byte alto (i pixel dei ritagli a 16 bit li prende lo studio dall'originale)
@@ -762,6 +775,9 @@ def unique(path):
 def same_png(path, rgba):
     # c'e' gia' un ritaglio identico con questo nome? (un giro rifatto non fa doppioni)
     try:
+        if path.lower().endswith('.jxl'):
+            m = pixels(path) if os.path.exists(path) else None
+            return m is not None and m.shape == rgba.shape and np.array_equal(cv2.cvtColor(m, cv2.COLOR_BGRA2RGBA), rgba)
         return os.path.exists(path) and np.array_equal(np.asarray(Image.open(path)), rgba)
     except Exception:
         return False
@@ -782,6 +798,92 @@ def sha(path):
         for block in iter(lambda: f.read(1 << 20), b''):
             h.update(block)
     return h.hexdigest()
+
+
+# ---------------------------------------------------------------- JPEG XL senza perdita
+# Gli stessi pixel in meta' spazio. Un file si converte solo se il JPEG XL, decodificato, da' gli stessi
+# identici valori (anche a 16 bit, anche l'alfa); i metadati (profilo colore, dpi, EXIF, XMP) passano con lui.
+# Un JPEG resta JPEG: e' gia' compresso, ricodificarlo non toglie nulla senza perdere.
+
+def jxl_tools():
+    return all(shutil.which(t) for t in ('cjxl', 'djxl'))
+
+
+def pixels(path):
+    # i valori esatti di un file (uint8 o uint16, con l'alfa se c'e'), come li legge OpenCV; None se illeggibile
+    f = path
+    if path.lower().endswith('.jxl'):
+        f = os.path.join(os.path.dirname(path), f'.{os.path.basename(path)}.{os.getpid()}.px.png')
+        if subprocess.run(['djxl', path, f, '--quiet'], capture_output=True).returncode:
+            return None
+    try:
+        return cv2.imread(f, cv2.IMREAD_UNCHANGED)
+    finally:
+        if f != path and os.path.exists(f):
+            os.remove(f)
+
+
+def dpi_of(path):
+    try:
+        with Image.open(path) as im:
+            d = (im.info.get('dpi') or (0, 0))[0]
+            if not d:
+                x = im.getexif().get(282)       # XResolution (un JPEG XL lo porta nell'EXIF)
+                d = float(x) if x else 0
+        return round(float(d), 3) if d else 0
+    except Exception:
+        return 0
+
+
+def pack(path):
+    # PNG o TIFF -> <nome>.jxl accanto, controllato; ritorna il percorso nuovo, o None se resta com'e'.
+    # Il file di partenza non si tocca: lo toglie (o lo mette da parte) chi chiama
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in ('.png', '.tif', '.tiff') or not jxl_tools():
+        return None
+    src = pixels(path)
+    if src is None:
+        return None
+    out = unique(os.path.splitext(path)[0] + '.jxl')
+    hide = lambda p, end: os.path.join(os.path.dirname(p), '.' + os.path.basename(p) + end)   # nascosti: nessuno li prende per scansioni
+    part, tmp = hide(out, '.part.jxl'), None
+    try:
+        feed = path
+        if ext != '.png':                       # cjxl non legge il TIFF: prima un PNG con gli stessi valori
+            tmp = hide(path, f'.{os.getpid()}.src.png')
+            if not cv2.imwrite(tmp, src, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+                return None
+            feed = tmp
+        if subprocess.run(['cjxl', feed, part, '-d', '0', '-e', '7', '--quiet'], capture_output=True, timeout=3600).returncode:
+            return None
+        back = pixels(part)
+        if back is None or back.dtype != src.dtype or not np.array_equal(back, src):
+            return None
+        if shutil.which('exiftool'):
+            d = dpi_of(path)
+            subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', path, '-all', '-icc_profile']
+                           + ([f'-EXIF:XResolution={d}', f'-EXIF:YResolution={d}', '-EXIF:ResolutionUnit=inches',
+                               f'-XMP-tiff:XResolution={d}', f'-XMP-tiff:YResolution={d}', '-XMP-tiff:ResolutionUnit=inches'] if d else [])
+                           + [part], capture_output=True, timeout=600)
+            back = pixels(part)                 # i metadati non devono toccare i pixel
+            if back is None or not np.array_equal(back, src):
+                return None
+        st = os.stat(path)
+        os.utime(part, (st.st_atime, st.st_mtime))
+        if os.path.lexists(out):
+            return None
+        os.rename(part, out)
+        return out
+    finally:
+        for f in (part, tmp):
+            if f and os.path.exists(f):
+                os.remove(f)
+
+
+def note_packed(old_sha, new_path):
+    # il file e' cambiato di byte (non di pixel): lo studio ritrova cosi' le registrazioni fatte col checksum di prima
+    with open(os.path.join(ROOT, '.scancut', 'packed.tsv'), 'a') as f:
+        f.write(f'{old_sha}\t{sha(new_path)}\t{os.path.relpath(new_path, ORIG)}\n')
 
 
 def twin(path, od):
@@ -835,6 +937,14 @@ def take(path):
     os.remove(path)
     rel = os.path.relpath(dst, ORIG)
     log(f'{name} -> originals/{rel}' + ('' if new + ext == name else '  (renamed: name already used or odd)'))
+    if PACKED:
+        # nella libreria: JPEG XL senza perdita, controllato; il PNG/TIFF si toglie solo dopo il controllo
+        j = pack(dst)
+        if j:
+            note_packed(sha(dst), j)
+            os.remove(dst)
+            log(f'  -> {os.path.basename(j)} (lossless JPEG XL, same pixels, {os.path.getsize(j) >> 10} KB)')
+            dst = j
     return dst
 
 
@@ -879,7 +989,7 @@ def to_failed(path, why):
 # i pixel del ritaglio vengono dall'originale a 16 bit (stessa sagoma, raddrizzo, taglio).
 
 def load16(path):
-    m = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    m = pixels(path)
     if m is None or m.dtype != np.uint16 or (m.ndim == 3 and m.shape[2] != 3):
         return None
     return cv2.cvtColor(m, cv2.COLOR_BGR2RGB) if m.ndim == 3 else m
@@ -962,7 +1072,7 @@ def process(keep):
                 write16(out, rgba16, dpi, icc, gray=deep.ndim == 2)
                 log(f'  {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  16 bit  tilt {ang:+.2f}')
                 continue
-        if same_png(out, rgba):
+        if same_png(out, rgba) or (PACKED and same_png(os.path.splitext(out)[0] + '.jxl', rgba)):
             log(f'  {os.path.relpath(out, ROOT)}  already there, identical'); continue
         out = unique(out)
         tmp = out + '.part'
@@ -970,6 +1080,10 @@ def process(keep):
         if icc: kw['icc_profile'] = icc
         Image.fromarray(rgba, 'RGBA').save(tmp, 'PNG', compress_level=4, **kw)
         os.replace(tmp, out)
+        if PACKED:                                # nella libreria: JPEG XL senza perdita, controllato
+            j = pack(out)
+            if j:
+                os.remove(out); out = j
         note = '' if rect >= 0.9 else f'  CHECK: shape {rect:.2f} rectangular, sheets may overlap'
         log(f'  {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}{note}')
     log(f'{name}: {len(sheets)} sheet(s) in {time.time()-t0:.1f}s' + ('  (Apple Vision: paper same color as background)' if ai else ''))

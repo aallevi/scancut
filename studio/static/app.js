@@ -104,6 +104,7 @@ function toggleSel(id) {
 }
 function selectIds(ids, add) {
   if (!add) S.selSet = new Set();
+  if (S.focus && S.focus.src === S.rel) ids = ids.filter(i => i === S.focus.part);    // ritocco dal taglio: solo la sua parte
   ids.forEach(i => S.selSet.add(i));
   S._primary = ids.length ? ids[ids.length - 1] : ([...S.selSet].pop() || null);
 }
@@ -301,6 +302,7 @@ async function renderLibrary() {
     h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
     LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cuts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
     h('button', { class: 'btn small', title: 'Add new scans from the scans folder (nothing is copied, nothing duplicated)', onclick: libImport }, 'Update from folder'),
+    LIB.info.packed ? null : h('button', { class: 'btn small', title: 'Move the sources and cuts inside the library (lossless JPEG XL, half the space): only the inbox stays as a folder', onclick: libSwitch }, 'Move files in…'),
     h('button', { class: 'btn small', title: 'Is everything consistent with the library? Files, cuts, their text, the journal. ⌥-click: also re-renders every cut and compares pixels', onclick: e => libCheck(e.altKey) }, 'Check')));
   main.append(h('div', { class: 'gallery libgrid', id: 'libgrid' }));
   libLoad();
@@ -458,6 +460,26 @@ async function libCheck(deep) {
     p.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Where'), h('th', {}, '')),
       ...p.map(x => h('tr', {}, h('td', {}, x.kind), h('td', {}, x.what), h('td', { class: 'small muted' }, (x.detail || '').split('/').slice(-2).join('/')))))
       : h('div', {}, `Every file is where the library says and unchanged; every cut matches its part${deep ? ' pixel for pixel' : ''} and carries its current text; nothing lives outside the library.`)));
+}
+// i file dentro la libreria: prima il piano (niente cambia), poi, confermato, il lavoro (con la barra)
+async function libSwitch() {
+  const p = await api.get('library/switch').catch(e => ({ error: e.message }));
+  if (p.error) return status(p.error);
+  if (p.packed) return status('The files are already inside the library');
+  const mb = b => `${Math.round(b / 1048576)} MB`;
+  const where = p.package.split('/').slice(-2).join('/');
+  const text = `${p.files} files (${mb(p.bytes)}) from Sources, Cuts and To check go inside ${where}, which the Finder shows as one file. ` +
+    `${p.convert} PNG/TIFF become lossless JPEG XL, each checked pixel for pixel; ${p.keep} other files (JPEG…) stay as they are. ` +
+    `About ${mb(p.estimate_bytes)} afterwards. Only the inbox stays as a folder; folders come back when you export. ` +
+    `The files as they are now are kept aside (studio-data/replaced) until you remove them.` +
+    (p.tools ? '' : ' JPEG XL tools are missing: install them first (Add-ons).');
+  if (!p.tools || await choose('Move files into the library', `Move ${p.files} files in?`, text, [['yes', 'Move them in', true], [null, 'Cancel']]) !== 'yes') return;
+  const j = await api.post('jobs', { kind: 'switch' }); pollJobs();
+  status('Moving the files into the library… (see Jobs)');
+  let x = j;
+  while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 1200)); x = await api.get('job', { id: j.id }); }
+  status(x.status === 'done' ? `${x.result.files} files inside the library, ${mb(x.result.saved_bytes)} less` : 'Moving failed: see Jobs');
+  S.tree = (await api.get('tree')).tree; renderLibrary();
 }
 async function libImport() {
   const j = await api.post('jobs', { kind: 'libimport' }); pollJobs();
@@ -938,7 +960,7 @@ function renderTextPane() {
   if (!S.textPane || S.view !== 'editor' || !S.st) return;
   if (pane.contains(document.activeElement) && document.activeElement.tagName === 'TEXTAREA') return;   // non mentre si scrive
   pane.innerHTML = '';
-  const sheets = S.st.sheets, on = sheets.filter(x => x.on !== false), sel = selSheets();
+  const sheets = S.st.sheets.filter(inFocus), on = sheets.filter(x => x.on !== false), sel = selSheets();
   const letter = s => on.length > 1 ? 'abcdefghijklmnopqrstuvwxyz'[on.indexOf(s)] || '' : '';
   const reader = h('select', { class: 'f', onchange: async e => {
     if (e.target.value === '__more') { e.target.value = S.settings.ocr_engine || 'vision'; return go('addons'); }
@@ -1372,7 +1394,8 @@ function whereGroup() {
       w.part ? h('span', {}, ' › ', h('span', { class: 'sw', style: { display: 'inline-block', width: '9px', height: '9px', background: w.color, margin: '0 4px' } }), w.part) : null),
     h('div', { class: 'btns' },
       w.original ? h('button', { class: 'btn small default', title: 'Click: here · ⌘-click: new tab', onclick: async e => { await openLoc('scan:' + w.original, e); if (w.part_id && S.st?.sheets.some(x => x.id === w.part_id)) { selectIds([w.part_id]); renderSide(); draw(); } } }, 'Open source (its part selected)')
-        : h('span', { class: 'small muted' }, w.original_missing ? 'The source is not on this Mac (offline or released).' : 'No source recorded.')));
+        : h('span', { class: 'small muted' }, w.original_missing ? 'The source is not on this Mac (offline or released).' : 'No source recorded.')),
+    w.original && w.part_id && cutOfPart() ? h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens the scan on this part only (the real pixels are there): add back or cut away, then Done', onclick: () => editPart() }, 'Edit its part')) : null);
   return group('In the library',
     h('div', { class: 'small' }, link(w.title || 'Its source', () => { LIB.mode = 'objects'; go('library').then(() => libSelect(w.item)); }, 'Its source in the library'),
       ` · ${w.cuts?.length || 0} cut${(w.cuts || []).length === 1 ? '' : 's'}`),
@@ -1382,6 +1405,10 @@ function whereGroup() {
 function sideEditor(side) {
   if (!S.info) return;
   const st = S.st;
+  if (S.focus && S.focus.src === S.rel) side.append(group('Editing for its cut',
+    h('div', { class: 'small' }, `Only ${S.focus.name || 'this part'} changes; the other parts are hidden. Brush, lasso, rectangle, wand: add back or cut away, with the real pixels of the scan.`),
+    h('div', { class: 'btns' }, h('button', { class: 'btn default', onclick: focusDone }, 'Done: back to the cut'),
+      h('button', { class: 'btn', onclick: () => { S.focus = null; renderSide(); draw(); } }, 'Show all parts'))));
   const wg = whereGroup(); if (wg) side.append(wg);
   side.append(group('Engine', engineChooser(), h('div', { class: 'btns' },
     h('button', { class: 'btn default', onclick: detect }, 'Detect'),
@@ -1499,7 +1526,7 @@ async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
   useRemembered(rel);
-  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; S.libTexts = []; S.where = null; V.tile = V.mtile = null;
+  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; if (S.focus && S.focus.src !== rel) S.focus = null; S.libTexts = []; S.where = null; V.tile = V.mtile = null;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
@@ -1539,11 +1566,17 @@ async function openScan(rel) {
     api.get('library/texts_for', { rel }).then(t => { if (S.rel !== rel) return; S.libTexts = t || []; if (S.libTexts.length) toggleTextPane(true); renderTextPane(); renderMirror(); }).catch(() => {});
     if (BUSY[rel]) busy(true, BUSY[rel], rel);
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
-    if (!st.sheets.length) status('No sheets yet: choose an engine and press Detect (or draw one).');
+    if (!st.sheets.length && !/^cut\//.test(rel)) status('No sheets yet: choose an engine and press Detect (or draw one).');
   } catch (e) {
     // il file non c'e' piu' (spostato dall'agente o cancellato): si torna alla cartella
     if (S.rel !== rel) return;
     const gone = /No such file|not found|FileNotFound/i.test(e.message);
+    // passato in JPEG XL dentro la libreria: stesso nome, .jxl (una scheda o un collegamento di prima lo ritrova)
+    const jxl = gone && /\.(png|tiff?)$/i.test(rel) ? rel.replace(/\.(png|tiff?)$/i, '.jxl') : null;
+    if (jxl && await api.get('info', { rel: jxl }).then(() => true, () => false)) {
+      const t = TABS.list[TABS.i]; if (t && t.loc === 'scan:' + rel) t.loc = 'scan:' + jxl;
+      return openScan(jxl);
+    }
     S.rel = null; S.info = null; S.st = null; $('#title').textContent = 'Scan Studio';
     await openDir(S.dir || 'originals');
     alertDialog(gone ? 'This scan is no longer there' : 'Could not open this scan',
@@ -1611,6 +1644,8 @@ function renderOptions() {
 }
 function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); if (S.view === 'gallery') renderGallery(); draw(); }
 function setTool(t) {
+  // su un taglio: gli strumenti di selezione lavorano sulla sua parte, nella scansione (lì ci sono i pixel veri)
+  if (S.view === 'editor' && cutOfPart() && ['brush', 'lasso', 'rect', 'wand', 'points', 'poly'].includes(t)) return editPart(t);
   if (t === 'text' && !S.textPane) setTimeout(() => toggleTextPane(true), 0);     // lo strumento Testo apre il suo pannello
   S.tool = t; S.poly = null; S.sam = null; renderOptions(); $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw();
 }
@@ -1684,7 +1719,7 @@ function draw() {
   const tileOk = t => t && t.rel === S.rel && t.box.length === 4;
   if (tileOk(V.tile)) { c.imageSmoothingEnabled = false; const [a, b] = toScr(V.tile.box[0], V.tile.box[1]); c.drawImage(V.tile.bmp, a, b, (V.tile.box[2] - V.tile.box[0]) * V.s, (V.tile.box[3] - V.tile.box[1]) * V.s); }
   if (S.plain) return;                       // solo l'immagine: niente parti, ombreggiature, riquadri
-  const sheets = S.st?.sheets || [];
+  const sheets = (S.st?.sheets || []).filter(inFocus);       // ritocco dal taglio: le altre parti non si vedono
   // cio' che verra' tolto: scurito. Da vicino la maschera vera, da lontano i contorni
   const covers = t => { const [a, b] = toImg(0, 0), [e, f] = toImg(V.cw, V.ch); return t.box[0] <= Math.max(0, a) + 1 && t.box[1] <= Math.max(0, b) + 1 && t.box[2] >= Math.min(S.info.w, e) - 1 && t.box[3] >= Math.min(S.info.h, f) - 1; };
   if (S.showCut && sheets.length) {
@@ -1790,7 +1825,7 @@ function inside(pt, poly) {
 }
 const area = p => Math.abs(p.reduce((a, q, i) => { const r = p[(i + 1) % p.length]; return a + q[0] * r[1] - r[0] * q[1]; }, 0) / 2);
 function sheetAt(pt) {
-  const hit = (S.st?.sheets || []).filter(s => inside(pt, s.poly));
+  const hit = (S.st?.sheets || []).filter(s => inFocus(s) && inside(pt, s.poly));
   return hit.sort((a, b) => area(a.poly) - area(b.poly))[0];
 }
 function nearestVertex(s, sx, sy, r = 7) {
@@ -1973,7 +2008,33 @@ function newOpsSheet(op, outline, engine) {
   // un foglio nuovo fatto solo di questa selezione (es. il solo inchiostro: la carta resta trasparente)
   return { id: newId(), src: null, base: 'ops', engine, poly0: null, poly: outline, ops: [Object.assign({}, op, { op: 'add' })], on: true, label: '', holes: [] };
 }
+// un taglio e' una parte della sua scansione: per ritoccarlo si apre la scansione inquadrata su quella parte,
+// sola (le altre nascoste e intoccabili); "Done" rifa' solo il suo taglio e torna al taglio
+const cutOfPart = () => S.where?.role === 'cutout' && S.where.original && S.where.part_id && !(S.st?.sheets || []).length;
+async function editPart(tool) {
+  const w = S.where, back = S.rel;
+  S.focus = { src: w.original, part: w.part_id, back, name: w.part };
+  await openScan(w.original);
+  const sh = S.st?.sheets.find(x => x.id === w.part_id);
+  if (!sh) { S.focus = null; return status('Its part is no longer on the scan'); }
+  selectIds([sh.id]); if (tool) setTool(tool);
+  requestAnimationFrame(() => { resize(); fitPart(sh); draw(); });
+  status(`Editing ${w.part} for its cut: only this part changes. Done when finished.`);
+}
+async function focusDone() {
+  const f = S.focus; if (!f) return;
+  await flushSave();
+  status('Cutting this part…', true);
+  const r = await api.post('recut_part', { rel: f.src, id: f.part }).catch(e => ({ error: e.message }));
+  S.focus = null;
+  if (r.error) return status(r.error);
+  const to = r.rel || f.back, t = TABS.list[TABS.i]; if (t) t.loc = 'scan:' + to;
+  await openScan(to); status('Cut redone from its part');
+}
+const inFocus = s => !S.focus || S.focus.src !== S.rel || s.id === S.focus.part;
 function applyRegion(op, mode) {
+  const fs = S.focus?.src === S.rel && S.st.sheets.find(x => x.id === S.focus.part);
+  if (fs) return commit(() => fs.ops.push({ op: mode === 'new' ? 'add' : mode, ...op }));
   const ob = bbox(op.pts).map((v, i) => v + (i < 2 ? -1 : 1) * (op.r || 0));
   const sheets = S.st.sheets;
   if (mode === 'new') {
@@ -1997,6 +2058,8 @@ async function wandAt(pt, mode) {
   try { op = await api.post('wand', { rel: S.rel, x: Math.round(pt[0]), y: Math.round(pt[1]), tol: S.wandTol, contig: S.wandContig }); }
   catch (e) { return status('Wand: ' + e.message); }
   status(`Wand: ${(op.area / S.info.ppm / S.info.ppm / 100).toFixed(1)} cm² selected, tolerance ${op.tol}${op.contig ? '' : ', not contiguous'}`);
+  const fs = S.focus?.src === S.rel && S.st.sheets.find(x => x.id === S.focus.part);
+  if (fs) { op.op = mode === 'new' ? 'add' : mode; return commit(() => fs.ops.push(op)); }
   const sheets = S.st.sheets;
   const outline = op.outline.reduce((a, p) => area(p) > area(a) ? p : a, op.outline[0]);
   if (mode === 'new') return commit(() => { const s = newOpsSheet(op, op.contig ? outline : [[op.pts[0][0], op.pts[0][1]], [op.pts[1][0], op.pts[0][1]], [op.pts[1][0], op.pts[1][1]], [op.pts[0][0], op.pts[1][1]]], 'wand'); sheets.push(s); S.selSheet = s.id; });

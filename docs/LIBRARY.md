@@ -27,16 +27,23 @@ current text, and (deep) identical pixel for pixel to a fresh cut of its part.
 
 ## A library
 
-A library is a package (a folder macOS shows as one file), `Name.scanlib/`:
+A library is a package (a folder macOS shows as one file, type `io.github.aallevi.scanstudio.doculib`),
+`<root>/Library.DocuLib/`:
 
 ```
-Name.scanlib/
+Library.DocuLib/
   library.sqlite        the catalog (studio/library/schema.sql)
-  store/ab/<sha256>.tif the managed files, named by their checksum (no duplicates, fixity built in)
-  store/ab/<sha256>.tif.json   sidecar: what the catalog knows about that file
+  originals/<series>/   the sources, after "Move files in…": lossless JPEG XL (JPEGs as they came)
+  cut/<series>/         the cuts, lossless JPEG XL
+  failed/               links to sources that need a look
+  store/ab/<sha256>.*   files added as edited versions (named by checksum)
   snapshots/            copies of the catalog (last 10): at every open and before big changes
   cache/                previews and masks; safe to delete
 ```
+
+Inside, files keep readable names (series folders), not checksums: the catalog already holds every
+file's SHA-256, and the package stays understandable without the app. Before the switch, `originals/`
+and `cut/` are folders in the root and the catalog references them in place.
 
 - **Managed or referenced files.** Managed files are hard-linked or copied into `store/` and checked
   byte for byte. Referenced files stay where they are (e.g. `~/Scans/originals`), the catalog keeps

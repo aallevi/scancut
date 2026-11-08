@@ -52,6 +52,21 @@ cat > "$TMP/$NAME.app/Contents/Info.plist" <<EOF
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
+  <key>UTExportedTypeDeclarations</key><array><dict>
+    <key>UTTypeIdentifier</key><string>io.github.aallevi.scanstudio.doculib</string>
+    <key>UTTypeDescription</key><string>Scan Studio Library</string>
+    <key>UTTypeConformsTo</key><array><string>com.apple.package</string><string>public.composite-content</string></array>
+    <key>UTTypeIconFile</key><string>AppIcon</string>
+    <key>UTTypeTagSpecification</key><dict><key>public.filename-extension</key><array><string>doculib</string></array></dict>
+  </dict></array>
+  <key>CFBundleDocumentTypes</key><array><dict>
+    <key>CFBundleTypeName</key><string>Scan Studio Library</string>
+    <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Owner</string>
+    <key>LSTypeIsPackage</key><true/>
+    <key>CFBundleTypeIconFile</key><string>AppIcon</string>
+    <key>LSItemContentTypes</key><array><string>io.github.aallevi.scanstudio.doculib</string></array>
+  </dict></array>
 </dict></plist>
 EOF
 

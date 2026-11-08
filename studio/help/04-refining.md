@@ -24,3 +24,14 @@ between the old and the new outline. Everything can be undone (⌘Z).
   elsewhere becomes a PNG with exactly the same pixels when turned (the JPEG stays in the history).
 - Holes punched in the paper become transparent by themselves.
 - **Cut view** (O) darkens what will be cut away.
+
+## Refining a cut
+
+A cut is a part of its scan, and the real pixels are in the scan. In a cut, **Edit its part** (or
+picking the brush, lasso, rectangle, wand or points) opens the scan framed on that part, alone: the
+other parts are hidden and nothing else can change. Edit as usual (fast, ⌘Z works), then **Done: back
+to the cut**: only that cut is redone, and you are back on it. Add back what was cut away, or cut more
+away; nothing is invented. A cut with parts of its own (a cut of a cut) is refined like a scan.
+
+When only a part's outline or edits change, only its cut is redone; renaming, reordering or
+excluding parts redoes all the cuts of the scan, since their names change.

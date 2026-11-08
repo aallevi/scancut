@@ -2,5 +2,6 @@
 numpy>=1.26
 opencv-python-headless>=4.9,<5   # 5.x rounds the deskew differently: not yet tested
 pillow>=10.0
+pillow-jxl-plugin>=1.3     # JPEG XL: sources and cuts inside the library
 tifffile>=2024.1
 # optional, installed from the app (Add-ons): ultralytics (SAM 3), huggingface_hub (model download)

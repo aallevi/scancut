@@ -444,6 +444,73 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(lib.db.execute('SELECT 1 FROM asset WHERE path = ?', (os.path.realpath(core.abspath(done[0])),)).fetchone())
         self.assertEqual(bridge.check(lib), [])
 
+    def test_files_move_into_the_package_as_same_pixels(self):
+        # il passaggio: originali e tagli dentro Library.DocuLib, in JPEG XL senza perdita, stessi pixel; fuori solo
+        # l'inbox; lo studio, il catalogo e l'agente seguono (stato, testo, done.tsv, registrazioni dello scanner)
+        import shutil, numpy as np
+        from helpers import run_agent
+        from studio import core
+        from studio.library import bridge, store
+        if not core.sc.jxl_tools():
+            self.skipTest('cjxl/djxl missing')
+        lib = bridge.library()
+        cuts0 = sorted(os.listdir(os.path.join(self.root, 'cut', 'card')))
+        px = {r: core.sc.pixels(os.path.join(self.root, r)) for r in [self.rel] + [f'cut/card/{c}' for c in cuts0]}
+        dpi0 = core.image(self.rel)[2]
+        plan = bridge.switch_plan(lib)
+        self.assertFalse(plan['packed'])
+        self.assertEqual(plan['convert'], len(px))
+        self.assertTrue(os.path.isdir(os.path.join(self.root, 'originals')))          # il piano non cambia niente
+        r = bridge.switch_storage(lib, log=lambda *a: None)
+        self.assertEqual(r['converted'], len(px))
+        self.assertEqual(sorted(x for x in os.listdir(self.root) if not x.startswith('.')), ['Library.DocuLib', 'inbox'])
+        pkg = os.path.realpath(os.path.join(self.root, 'Library.DocuLib'))
+        new = 'originals/card/card 1.jxl'
+        self.assertEqual(core.abspath(new), os.path.join(pkg, new))
+        for rel, a in px.items():
+            j = os.path.splitext(rel)[0] + '.jxl'
+            self.assertTrue(np.array_equal(core.sc.pixels(core.abspath(j)), a), j)
+            self.assertTrue(os.path.exists(os.path.join(r['aside'], rel)))           # il file di prima, da parte
+        self.assertEqual(store.load(new)['sheets'][0]['ocr'], 'hello sketchbook')
+        self.assertEqual(core.tree()[0]['children'][0]['rel'], 'originals/card')
+        self.assertEqual(bridge.check(lib), [])
+        self.assertTrue(core.sc.is_done(core.sc.read_done(), 'card/card 1.jxl', core.abspath(new)))   # l'agente non lo rifa'
+        self.assertAlmostEqual(core.image(new)[2], dpi0, places=1)                    # il dpi passa (nell'EXIF del JPEG XL)
+        # una scansione nuova: l'agente la mette nel pacchetto, gia' in JPEG XL, e lo scanner la ritrova
+        fake_scan(os.path.join(self.root, 'inbox', 'card 2.png'), sheets=[(0.5, 0.5, 80, 200, 0, (250, 250, 248))])
+        bridge.record_capture(lib, os.path.join(self.root, 'inbox', 'card 2.png'), 'scanner', device='test', settings={'res': 300})
+        run_agent(self.root)
+        self.assertTrue(os.path.exists(os.path.join(pkg, 'originals', 'card', 'card 2.jxl')))
+        self.assertFalse(os.path.exists(os.path.join(self.root, 'originals')))
+        bridge.register_new(lib)
+        a = lib.db.execute("SELECT id FROM asset WHERE path = ?", (os.path.join(pkg, 'originals', 'card', 'card 2.jxl'),)).fetchone()
+        self.assertEqual(bridge.capture_of(lib, a['id'])['device'], 'test')
+        # un taglio fatto dopo: JPEG XL, nel pacchetto
+        st, _ = core.detect('originals/card/card 2.jxl', 'auto')
+        core.export('originals/card/card 2.jxl', log=lambda *a: None)
+        self.assertTrue(any(f.startswith('card 2') and f.endswith('.jxl') for f in os.listdir(os.path.join(pkg, 'cut', 'card'))))
+        self.assertEqual(bridge.check(lib), [])
+
+    def test_editing_one_part_redoes_only_its_cut(self):
+        # ritoccare la sagoma di una parte rifa' solo il suo taglio: gli altri restano gli stessi file
+        from studio import core
+        from studio.library import bridge, store
+        lib = bridge.library()
+        bridge.cut(self.rel)
+        cuts = {w['id']: w['path'] for w in core.export(self.rel, log=lambda *a: None)}
+        st = store.load(self.rel)
+        sid, other = st['sheets'][0]['id'], st['sheets'][1]['id']
+        stat0 = os.stat(cuts[other])
+        before = open(cuts[sid], 'rb').read()
+        c = [sum(p) / len(p) for p in zip(*st['sheets'][0]['poly'])]
+        st['sheets'][0].setdefault('ops', []).append({'op': 'sub', 'kind': 'stroke', 'pts': [c, [c[0] + 1, c[1]]], 'r': 8})
+        store.save(st)
+        self.assertEqual(bridge._recut_only.get(self.rel), {sid})             # in attesa: solo quella parte
+        bridge.recut_now(self.rel, {sid})
+        self.assertEqual((os.stat(cuts[other]).st_ino, os.stat(cuts[other]).st_mtime), (stat0.st_ino, stat0.st_mtime))
+        self.assertNotEqual(open(cuts[sid], 'rb').read(), before)
+        self.assertEqual(bridge.check(lib), [])
+
 class OneSourceTest(unittest.TestCase):
     # la libreria e' l'unico posto: niente file di stato, niente cache; tutto cio' che deriva le corrisponde
     def setUp(self):

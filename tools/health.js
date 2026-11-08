@@ -5,8 +5,8 @@
   const until = async (f, ms = 15000) => { const t = Date.now(); while (Date.now() - t < ms) { if (f()) return true; await wait(100); } return false; };
   // la prima scansione degli originali e il primo ritaglio: solo su una COPIA della radice
   const firstIn = async (top, ok = () => true) => { for (const d of (await api.get('list', { dir: top })).filter(i => i.dir)) { const f = (await api.get('list', { dir: d.rel })).find(i => !i.dir && ok(i.rel)); if (f) return [d.rel, f.rel]; } return []; };
-  // un taglio PNG (si gira senza perdita; un JPEG portato da fuori no)
-  const [DIR, SCAN] = await firstIn('originals'), [, CUT] = await firstIn('cut', r => /\.png$/i.test(r));
+  // un taglio PNG o JPEG XL (si gira senza perdita; un JPEG portato da fuori diventa un PNG)
+  const [DIR, SCAN] = await firstIn('originals'), [, CUT] = await firstIn('cut', r => /\.(png|jxl)$/i.test(r));
   const img = async url => { const r = await fetch(url); const b = await createImageBitmap(await r.blob()); return [b.width, b.height]; };
   // mai sulle app vere (8765 Scan Studio, 8766 l'anteprima): detecta, taglia e gira file sul serio
   if (['8765', '8766'].includes(location.port)) { R.push('FAIL refused: run the health check on a scratch server (a copy of the scans), not on port ' + location.port); return; }

@@ -99,12 +99,12 @@ def search(q, limit=8):
     if not words:
         return out
     for top in ('originals', 'cut', 'failed', 'inbox'):
-        d = os.path.join(core.ROOT, top)
+        d = core.abspath(top)
         for base, dirs, files in os.walk(d):
             dirs[:] = [x for x in dirs if not x.startswith('.')]
             for f in files:
                 if core.is_image(f) and all(w in f.lower() for w in words):
-                    out['files'].append({'rel': os.path.relpath(os.path.join(base, f), core.ROOT), 'name': f})
+                    out['files'].append({'rel': core.relpath(os.path.join(base, f)), 'name': f})
             if len(out['files']) >= limit * 3:
                 break
     out['files'] = sorted(out['files'], key=lambda x: (not x['rel'].startswith('originals'), x['name'].lower()))[:limit]

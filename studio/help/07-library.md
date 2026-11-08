@@ -10,6 +10,20 @@ The library holds everything about sources, parts, cuts and texts. Its views are
 
 The panel on the right shows where a file belongs: its source, its parts, their cuts and texts.
 
+## Files inside the library
+
+At first sources and cuts are folders next to the inbox (`originals/`, `cut/`). **Move files in…** (top of
+the library) puts them inside the library itself, `Library.DocuLib` in the scans folder, which the
+Finder shows as one file. First it shows what will happen, then it moves them only when you confirm:
+
+- PNG and TIFF become **lossless JPEG XL**: the same pixels in about half the space. Each one is
+  checked pixel for pixel before the old file is let go; colour profile, resolution and metadata go
+  with it. JPEGs stay as they are.
+- Only the **inbox** stays as a folder. New scans go straight into the library, already in JPEG XL.
+- Folders come back when you **export** (Outputs › Export cuts: by place, series or flat).
+- The files as they were are kept in `.scancut/studio-data/replaced/switch-<date>/` until you remove them.
+- Affinity and Preview open `.jxl` directly. Eagle does not, so cuts sent to Eagle go as PNG.
+
 ## Trash
 
 **Move to Trash** (on a source, or on a cut) takes it out of every view: a source goes with its cuts; a

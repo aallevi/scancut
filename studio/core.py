@@ -20,6 +20,7 @@ except OSError:
     VERSION = '?'
 
 ROOT = DATA = None
+FILES = None                      # dove stanno originals/, cut/, failed/: la radice, o (dopo il passaggio) il pacchetto della libreria
 
 # partito dal Dock il PATH e' quello corto di macOS: exiftool, cjxl, djxl stanno in Homebrew,
 # claude (Chiedi a Claude) nei posti dove lo mette il suo installatore
@@ -32,10 +33,12 @@ _engine_lock = threading.Lock()   # un motore alla volta (file temporanei, memor
 
 
 def set_root(root):
-    global ROOT, DATA
+    global ROOT, DATA, FILES
     # il percorso vero (senza collegamenti): abspath() confronta con questo
     ROOT = os.path.realpath(os.path.expanduser(root))
+    _rename_old_package(ROOT)
     sc.set_root(ROOT)
+    FILES = os.path.realpath(sc.PKG) if sc.PACKED else ROOT
     DATA = os.path.join(ROOT, '.scancut', 'studio-data')
     for d in ('cache', 'previews', 'replaced'):
         os.makedirs(os.path.join(DATA, d), exist_ok=True)
@@ -48,18 +51,54 @@ def set_root(root):
     bridge._safe(bridge.empty_trash, bridge.library(), int(settings().get('trash_days') or 91))
 
 
+def _rename_old_package(root):
+    # il pacchetto si chiamava Library.scanlib: prende il nome nuovo, una volta (i percorsi dentro il catalogo seguono)
+    old, new = os.path.join(root, 'Library.scanlib'), os.path.join(root, sc.PACKAGE)
+    if os.path.isdir(old) and not os.path.exists(new):
+        os.rename(old, new)
+        import sqlite3
+        db = sqlite3.connect(os.path.join(new, 'library.sqlite'))
+        for t in ('asset', 'cut'):
+            try:
+                db.execute(f'UPDATE {t} SET path = ? || substr(path, ?) WHERE path LIKE ?', (new, len(old) + 1, old + '/%'))
+            except sqlite3.Error:
+                pass
+        db.commit(); db.close()
+
+
 # ---------------------------------------------------------------- percorsi
+# Un file dello studio si chiama sempre con lo stesso nome relativo (originals/<serie>/<file>, cut/..., failed/...,
+# inbox/...), dovunque stia: prima del passaggio nella radice, dopo dentro il pacchetto della libreria.
+INSIDE = ('originals', 'cut', 'failed')
+
 
 def abspath(rel):
-    # solo file dentro la radice: rel e' relativo a ROOT (o assoluto ma dentro)
-    p = os.path.realpath(os.path.join(ROOT, rel))
+    # solo file dentro la radice (il pacchetto ci sta dentro): rel e' relativo, o assoluto ma dentro
+    rel = rel or ''
+    top = rel.split('/', 1)[0]
+    p = os.path.realpath(os.path.join(FILES if top in INSIDE and not os.path.isabs(rel) else ROOT, rel))
     if not (p == ROOT or p.startswith(ROOT + os.sep)):
         raise ValueError('path outside the scans folder')
     return p
 
 
 def relpath(p):
-    return os.path.relpath(os.path.realpath(p), ROOT)
+    p = os.path.realpath(p)
+    if FILES != ROOT and (p == FILES or p.startswith(FILES + os.sep)):
+        return os.path.relpath(p, FILES)
+    return os.path.relpath(p, ROOT)
+
+
+def inside(p):
+    # il nome relativo di un percorso della radice (o del pacchetto), o None se sta fuori
+    p = os.path.realpath(p)
+    return relpath(p) if p.startswith(ROOT + os.sep) else None
+
+
+def files_dir(d):
+    # una cartella d'uscita relativa (out_root, cut/...): nel pacchetto dopo il passaggio
+    d = os.path.expanduser(d)
+    return d if os.path.isabs(d) else os.path.join(FILES if d.split('/', 1)[0] in INSIDE else ROOT, d)
 
 
 def file_key(rel):
@@ -70,7 +109,7 @@ def file_key(rel):
 def tree():
     out = []
     for top in ('originals', 'cut', 'failed', 'inbox'):
-        d = os.path.join(ROOT, top)
+        d = abspath(top)
         node = {'name': top, 'rel': top, 'count': 0, 'children': []}
         if os.path.isdir(d):
             for b in sorted(os.listdir(d), key=str.lower):
@@ -164,7 +203,7 @@ def image16(rel):
     # la scansione a 16 bit per canale (48 bit colore o 16 bit grigio), o None se e' a 8 bit
     k = file_key(rel)
     if k not in _deep:
-        m = cv2.imread(abspath(rel), cv2.IMREAD_UNCHANGED)
+        m = sc.pixels(abspath(rel))
         if m is None or m.dtype != np.uint16:
             m = None
         elif m.ndim == 3 and m.shape[2] == 3:
@@ -186,7 +225,7 @@ def alpha(rel):
 def is_recut(rel):
     # si ritaglia un ritaglio (cut/ o la cartella d'uscita): i pezzi nuovi gli vanno accanto
     out = settings()['out_root']
-    out = out if os.path.isabs(os.path.expanduser(out)) else os.path.join(ROOT, out)
+    out = files_dir(out)
     p = abspath(rel)
     roots = [os.path.realpath(os.path.expanduser(out))] + [os.path.realpath(os.path.expanduser(v)) for v in settings()['batch_folders'].values()]
     return rel.startswith('cut/') or any(p.startswith(r + os.sep) for r in roots)
@@ -1225,9 +1264,14 @@ def settings():
     s['autocut'] = autocut()
     if os.path.exists(p):
         try:
-            s.update(json.load(open(p)))
+            mine = json.load(open(p))
+            s.update(mine)
         except ValueError:
-            pass
+            mine = {}
+    else:
+        mine = {}
+    if sc.PACKED and 'export_format' not in mine:
+        s['export_format'] = 'jxl'                # nella libreria i tagli sono JPEG XL senza perdita, come gli originali
     return s
 
 
@@ -1271,7 +1315,7 @@ def out_names(rel, st=None):
                 for j, x in enumerate(on)]
     batch = batch_of(rel)
     root = s['batch_folders'].get(batch) or s['out_root']
-    root = root if os.path.isabs(os.path.expanduser(root)) else os.path.join(ROOT, root)
+    root = files_dir(root)
     names = []
     for j, x in enumerate(on):
         letter = '' if len(on) == 1 else 'abcdefghijklmnopqrstuvwxyz'[j % 26]
@@ -1432,7 +1476,7 @@ def same_cutout(path, rgba):
     return sc.same_png(path, rgba)
 
 
-def export(rel, replace=None, log=print, subfolder=None):
+def export(rel, replace=None, log=print, subfolder=None, only=None):
     # scrive i ritagli. Un ritaglio con lo stesso nome non si sovrascrive mai: se identico
     # resta; se diverso, il nuovo prende " (2)" (o, con export_existing=replace, il vecchio
     # va in studio-data/replaced/). subfolder: i ritagli in una sottocartella della loro.
@@ -1450,20 +1494,23 @@ def export(rel, replace=None, log=print, subfolder=None):
     try:
         stamp = time.strftime('%Y%m%d-%H%M%S')
         for sid, out in out_names(rel, st):
-            res = cut_sheet(rel, sheets[sid], deep=s_.get('keep_16bit', True))
-            if res is None:
-                continue
-            rgba, ang, rect = res
             if subfolder:
                 out = os.path.join(os.path.dirname(out), sc.clean_stem(subfolder), os.path.basename(out))
             if fmt == 'jxl':
                 out = os.path.splitext(out)[0] + '.jxl'
+            if only is not None and sid not in only and os.path.exists(out):
+                # parte non toccata (si rifa' solo quella cambiata): il suo taglio resta com'e'
+                written.append({'id': sid, 'path': out, 'status': 'identical'}); continue
+            res = cut_sheet(rel, sheets[sid], deep=s_.get('keep_16bit', True))
+            if res is None:
+                continue
+            rgba, ang, rect = res
             os.makedirs(os.path.dirname(out), exist_ok=True)
             if same_cutout(out, rgba):
                 written.append({'id': sid, 'path': out, 'status': 'identical'}); continue
             moved = None
             if os.path.exists(out) and replace:
-                moved = os.path.join(DATA, 'replaced', stamp, os.path.relpath(out, ROOT) if out.startswith(ROOT) else os.path.basename(out))
+                moved = os.path.join(DATA, 'replaced', stamp, relpath(out) if out.startswith(ROOT) else os.path.basename(out))
                 os.makedirs(os.path.dirname(moved), exist_ok=True)
                 moved = sc.unique(moved)
                 os.rename(out, moved)
@@ -1477,8 +1524,8 @@ def export(rel, replace=None, log=print, subfolder=None):
                     log(f'OCR: {e}')
             written.append({'id': sid, 'path': out, 'status': 'written', 'size': list(rgba.shape[1::-1]),
                             'tilt': round(ang, 2), 'rect': round(rect, 3), 'moved_old': moved})
-            sc.log(f'studio: {os.path.relpath(out, ROOT)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'
-                   + (f'  (old one moved to {os.path.relpath(moved, ROOT)})' if moved else ''))
+            sc.log(f'studio: {relpath(out)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'
+                   + (f'  (old one moved to {relpath(moved)})' if moved else ''))
         # l'agente non deve rifarla: la scansione e' fatta
         if rel.startswith('originals/') and written:
             sc.mark_done(rel[len('originals/'):], 'studio')
@@ -1680,7 +1727,7 @@ def ocr_files(rels, log=print):
 
 
 def _backup(path, stamp):
-    b = os.path.join(DATA, 'replaced', stamp, os.path.relpath(path, ROOT) if path.startswith(ROOT) else os.path.basename(path))
+    b = os.path.join(DATA, 'replaced', stamp, relpath(path) if path.startswith(ROOT) else os.path.basename(path))
     os.makedirs(os.path.dirname(b), exist_ok=True)
     b = sc.unique(b)
     shutil.copy2(path, b)
@@ -1797,7 +1844,7 @@ def rotate_files(rels, deg, log=print):
             store.moved(rel, relpath(new))
             turn_state(relpath(new), W0, H0, q)
             done.append(relpath(new))
-            log(f'{rel}: rotated {90 * q}° into {os.path.basename(new)} (same pixels, PNG); the JPEG is kept in {os.path.relpath(back, ROOT)}')
+            log(f'{rel}: rotated {90 * q}° into {os.path.basename(new)} (same pixels, PNG); the JPEG is kept in {relpath(back)}')
             continue
         if ext != '.png':
             W0, H0 = info(rel)['w'], info(rel)['h']
@@ -1834,7 +1881,7 @@ def rotate_files(rels, deg, log=print):
             subprocess.run(cmd + [path], capture_output=True, timeout=120)
         turn_state(rel, W0, H0, q)
         done.append(rel)
-        log(f'{rel}: rotated {90 * q}°, previous version kept in {os.path.relpath(back, ROOT)}')
+        log(f'{rel}: rotated {90 * q}°, previous version kept in {relpath(back)}')
     return done
 
 
@@ -1855,10 +1902,10 @@ def trash_files(rels, log=print):
 
 def mark_checked(rels, log=print):
     # "controllato": il collegamento in failed/ se ne va; l'originale resta in originals/
-    fail = os.path.join(ROOT, 'failed')
+    fail = abspath('failed')
     targets = set()
     for rel in rels:
-        p = os.path.join(ROOT, rel)
+        p = abspath(rel)
         targets.add(os.path.realpath(p))
     done = []
     for f in os.listdir(fail) if os.path.isdir(fail) else []:
@@ -1921,7 +1968,20 @@ def merge_tiff(rels, log=print):
                      description=os.path.basename(p), software='Scan Studio', metadata=None, **extra)
             log(f'  page: {os.path.basename(p)}  {arr.shape[1]}x{arr.shape[0]}  {arr.dtype}')
     os.replace(out + '.part', out)
-    sc.log(f'studio: merged {len(paths)} cutouts into {os.path.relpath(out, ROOT)}')
+    sc.log(f'studio: merged {len(paths)} cutouts into {relpath(out)}')
+    return out
+
+
+def eagle_copy(p):
+    # Eagle non legge il JPEG XL: gli si da' un PNG con gli stessi pixel e gli stessi metadati (lui lo copia nella sua libreria)
+    if not p.lower().endswith('.jxl'):
+        return p
+    d = os.path.join(DATA, 'cache', 'eagle'); os.makedirs(d, exist_ok=True)
+    out = os.path.join(d, os.path.splitext(os.path.basename(p))[0] + '.png')
+    if subprocess.run(['djxl', p, out, '--quiet'], capture_output=True).returncode:
+        return p
+    if tool('exiftool'):
+        subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', '-tagsFromFile', p, '-all', out], capture_output=True, timeout=120)
     return out
 
 
@@ -1931,6 +1991,7 @@ def eagle_add(paths, log=print):
     if not paths:
         return
     s = settings()
+    paths = [eagle_copy(p) for p in paths]
     body = {'items': [{'path': p, 'name': os.path.splitext(os.path.basename(p))[0]} for p in paths]}
     if s.get('eagle_folder'):
         body['folderId'] = s['eagle_folder']
@@ -2023,7 +2084,7 @@ def addons():
         {'id': 'exiftool', 'name': 'ExifTool', 'ok': bool(tool('exiftool')),
          'line': 'Carries resolution, colour profile and text into exported files.', 'cmd': 'brew install exiftool', 'blocked': nobrew},
         {'id': 'jxl', 'name': 'JPEG XL', 'ok': bool(tool('cjxl')),
-         'line': 'Lossless .jxl export.', 'cmd': 'brew install jpeg-xl', 'blocked': nobrew},
+         'line': 'Lossless JPEG XL: sources and cuts inside the library at half the space, and .jxl export.', 'cmd': 'brew install jpeg-xl', 'blocked': nobrew},
         {'id': 'ultralytics', 'name': 'Ultralytics', 'ok': has_module('ultralytics'), 'group': 'SAM 3',
          'line': 'Runs SAM 3 on the Apple GPU. About 1 GB with PyTorch.',
          'cmd': f'{os.path.basename(sys.executable)} -m pip install ultralytics', 'blocked': None},

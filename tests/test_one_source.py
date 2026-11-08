@@ -158,11 +158,11 @@ class OneSource(Base):
         bridge.set_journal_dir(lib, jd); bridge.write_journal(lib)
         after = snap()
         changed = [p for p in after if before.get(p) != after[p]]
-        allowed = (r'^Library\.scanlib/', r'^cut/', r'^journal/', r'^\.scancut/studio-data/(cache|previews|replaced|models)/',
+        allowed = (r'^Library\.DocuLib/', r'^cut/', r'^journal/', r'^\.scancut/studio-data/(cache|previews|replaced|models)/',
                    r'^\.scancut/studio-data/settings\.json$', r'^\.scancut/(log\.txt|done\.tsv|lock)$')
         bad = [p for p in changed if not any(re.match(a, p) for a in allowed)]
         self.assertEqual(bad, [], 'written outside the library, the cuts, caches, history and settings')
-        self.assertTrue(any(p.startswith('Library.scanlib/') for p in changed))
+        self.assertTrue(any(p.startswith('Library.DocuLib/') for p in changed))
         self.assertFalse(glob.glob(os.path.join(core.DATA, 'state', '*')) or glob.glob(os.path.join(core.DATA, 'text', '*')))
 
     # 3) andata e ritorno con molte sessioni a caso (il confronto e' dentro session(), a ogni passo)
@@ -279,7 +279,7 @@ class TheCheckCanFail(Base):
         for t in list(bridge._recut_timers.values()):
             t.cancel()
         bridge._recut_timers.clear()
-        bridge.schedule_recut = lambda rel, delay=0: None            # il ritaglio NON si rifa': simula un taglio rimasto indietro
+        bridge.schedule_recut = lambda rel, delay=0, only=None: None            # il ritaglio NON si rifa': simula un taglio rimasto indietro
         try:
             core.save_state(st)
         finally:

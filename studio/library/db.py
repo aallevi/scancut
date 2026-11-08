@@ -1,10 +1,10 @@
-# libreria di Scan Studio: un pacchetto <nome>.scanlib/ con
+# libreria di Scan Studio: un pacchetto <radice>/Library.DocuLib/ (il Finder lo mostra come un file solo) con
 #   library.sqlite   il catalogo (schema.sql)
 #   store/ab/<sha256>.<ext>   i file "gestiti", per contenuto: il nome e' il checksum (niente doppioni)
 #   store/ab/<sha256>.<ext>.json   il sidecar: cio' che il catalogo sa di quel file, scritto solo quando cambia
 #   snapshots/       copie del catalogo (le ultime 10), prima di ogni modifica grossa e all'apertura
 #   cache/           anteprime e maschere, si possono cancellare
-# I file "referenziati" restano dove sono (es. ~/Scans/originals): il catalogo ne tiene percorso e checksum.
+# I file "referenziati" restano dove sono: ~/Scans/originals, o (dopo "Move files in…") originals/ e cut/ dentro il pacchetto.
 # Regole di sempre: un file non si sovrascrive mai, non si perde mai, i pixel non cambiano.
 
 import os, json, uuid as _uuid, shutil, sqlite3, hashlib, time, threading
@@ -37,13 +37,13 @@ def sha256(path):
 class Library:
     def __init__(self, path, create=False, name=None):
         self.path = os.path.abspath(os.path.expanduser(path))
-        if not self.path.endswith('.scanlib'):
-            self.path += '.scanlib'
+        if not self.path.lower().endswith(('.doculib', '.scanlib')):
+            self.path += '.DocuLib'
         self.db_path = os.path.join(self.path, 'library.sqlite')
         if create:
             if os.path.exists(self.db_path):
                 raise FileExistsError(f'{self.path} is already a library')
-            for d in ('store', 'snapshots', 'cache'):
+            for d in ('snapshots', 'cache'):
                 os.makedirs(os.path.join(self.path, d), exist_ok=True)
         elif not os.path.exists(self.db_path):
             raise FileNotFoundError(f'no library at {self.path}')

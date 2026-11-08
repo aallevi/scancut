@@ -175,7 +175,7 @@ def mark_cut(rel):
 def moved(old_rel, new_rel):
     # il file e' stato spostato (un ritaglio ritagliato entra nella sua cartella): il catalogo segue il file
     lib = _lib()
-    old = os.path.realpath(os.path.join(core.ROOT, old_rel))
+    old = core.abspath(old_rel)
     new = os.path.realpath(core.abspath(new_rel))
     with _lock:
         lib.db.execute('UPDATE asset SET path = ? WHERE path = ?', (new, old))

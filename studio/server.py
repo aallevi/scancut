@@ -98,7 +98,7 @@ class Jobs:
                     j['current'] = os.path.basename(rel) + ' · export'
                     ws = bridge.cut(rel, log=say)
                     for w in ws:
-                        say(f'  {w["status"]}: {os.path.relpath(w["path"], core.ROOT)}')
+                        say(f'  {w["status"]}: {core.relpath(w["path"])}')
             except Exception as e:
                 say(f'{rel}: ERROR {e}')
             j['done'] = start + (2 if a.get('export') else 1)
@@ -282,6 +282,14 @@ class Jobs:
         r = bridge.import_root(lib, prog, log=say)
         j['result'] = r; j['done'] = 1
 
+    def do_switch(self, j, say):
+        # i file dentro la libreria, in JPEG XL senza perdita (dopo il piano, confermato)
+        lib = bridge.library(create=True)
+        def prog(f, name):
+            j['pct'] = f * 100; j['current'] = name
+        j['result'] = bridge.switch_storage(lib, prog, log=say)
+        j['done'] = 1
+
     def do_pull(self, j, say):
         def prog(st, pct):
             if pct is not None:
@@ -300,7 +308,7 @@ class Jobs:
             j['current'] = os.path.basename(rel)
             w = bridge.cut(rel, log=say)
             for x in w:
-                say(f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}')
+                say(f'{x["status"]}: {core.relpath(x["path"])}')
             j['done'] += 1
 
     def do_claude(self, j, say):
@@ -353,7 +361,7 @@ JOBS = None
 def next_scan_name(batch):
     # "<lotto> <numero>.tif", il primo numero libero fra inbox e originals/<lotto>
     used = [0]
-    for d in (os.path.join(core.ROOT, 'inbox'), os.path.join(core.ROOT, 'originals', batch)):
+    for d in (os.path.join(core.ROOT, 'inbox'), core.abspath(os.path.join('originals', batch))):
         if os.path.isdir(d):
             for f in os.listdir(d):
                 b, n = core.sc.split_name(core.sc.clean_stem(os.path.splitext(f.replace('.part', ''))[0]))
@@ -441,7 +449,7 @@ class Handler(BaseHTTPRequestHandler):
         if not core.is_image(name) and not name.lower().endswith('.pdf'):
             self.rfile.read(n)
             return self.send({'error': f'{name}: not an image'}, code=400)
-        d = os.path.join(core.ROOT, 'inbox' if to == 'sources' else os.path.join('cut', 'added'))
+        d = core.abspath('inbox' if to == 'sources' else os.path.join('cut', 'added'))
         os.makedirs(d, exist_ok=True)
         part = os.path.join(d, '.' + name + f'.{os.getpid()}-{threading.get_ident()}.part')
         left = n
@@ -543,6 +551,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/journal':
             lib = bridge.library(create=False)
             return self.send({'dir': bridge.journal_dir(lib) if lib else None})
+        if path == 'library/switch':
+            return self.send(bridge.switch_plan(bridge.library(create=True)))
         if path == 'library/check':
             lib = bridge.library(create=False)
             return self.send(bridge.check(lib, deep=q.get('deep') == '1') if lib else [])
@@ -579,7 +589,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(core.engines())
         if path == 'state':
             st = core.load_state(rel)
-            st['names'] = {sid: os.path.relpath(p, core.ROOT) if p.startswith(core.ROOT) else p
+            if st is None:
+                raise FileNotFoundError(rel)
+            st['names'] = {sid: core.relpath(p) if p.startswith(core.ROOT) else p
                            for sid, p in core.out_names(rel, st)}
             return self.send(st)
         if path == 'settings':
@@ -653,6 +665,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
             return self.send(core.save_state(st))                  # salvare = scrivere la libreria
+        if path == 'recut_part':
+            # "Fatto" dopo aver ritoccato una parte venendo dal suo taglio: si rifa' solo quel taglio, subito
+            bridge.recut_now(b['rel'], {b['id']})
+            lib = bridge.library()
+            a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(core.abspath(b['rel'])),)).fetchone()
+            c = lib.db.execute("SELECT x.path FROM cut x JOIN region r ON r.id = x.region_id WHERE r.asset_id = ? AND json_extract(r.source, '$.studio_id') = ? "
+                               "AND r.removed_at IS NULL AND x.path NOT LIKE '%/studio-data/%' ORDER BY x.id DESC LIMIT 1", (a['id'], b['id'])).fetchone() if a else None
+            return self.send({'rel': core.relpath(c['path']) if c and os.path.exists(c['path']) else None})
         if path == 'cutouts':
             # ritagli gia' salvati: girare (senza perdita), testo nei metadati, nel Cestino
             rels, act = b.get('rels') or [], b.get('action')
@@ -741,7 +761,7 @@ class Handler(BaseHTTPRequestHandler):
                 bridge.set_journal_dir(lib, b['dir'])
             r = bridge.write_journal(lib)
             if r and r['dir'].startswith(core.ROOT):
-                r['rel'] = os.path.relpath(r['dir'], core.ROOT)
+                r['rel'] = core.relpath(r['dir'])
             if r and b.get('reveal'):
                 subprocess.run(['open', r['dir']])
             return self.send(r or {'error': 'no folder chosen'})
@@ -759,13 +779,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'save_text':
             # il testo letto in un file Markdown accanto ai ritagli, mai sopra uno che c'e' gia'
             names = core.out_names(rel)
-            d = os.path.dirname(names[0][1]) if names else os.path.join(core.ROOT, 'cut', core.batch_of(rel))
+            d = os.path.dirname(names[0][1]) if names else core.abspath(os.path.join('cut', core.batch_of(rel)))
             os.makedirs(d, exist_ok=True)
             out = core.sc.unique(os.path.join(d, core.sc.clean_stem(os.path.splitext(os.path.basename(rel))[0]) + '.md'))
             with open(out + '.part', 'w', encoding='utf-8') as f:
                 f.write(str(b.get('text', '')))
             os.replace(out + '.part', out)
-            return self.send({'path': os.path.relpath(out, core.ROOT) if out.startswith(core.ROOT) else out})
+            return self.send({'path': core.relpath(out) if out.startswith(core.ROOT) else out})
         if path == 'ocr_sheets':
             return self.send(core.ocr_sheets(rel, b.get('ids') or []))
         if path == 'checked':
@@ -784,13 +804,13 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS.track('export', rel=rel) as j:
                 # una copia congelata (sottocartella) non e' il taglio della parte: la libreria non la segue
                 w = bridge.cut(rel, follow=not b.get('subfolder'), replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
-                j['log'] += [f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}' for x in w]
+                j['log'] += [f'{x["status"]}: {core.relpath(x["path"])}' for x in w]
             return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('readcuts', 'libimport', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install'):
+            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':

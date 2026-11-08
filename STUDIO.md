@@ -101,7 +101,8 @@ or white lid (dark paper); those fill pixels are never saved.
 
 ## Data
 
-**Everything about sources, parts, cuts and texts lives in the library** (`<root>/Library.scanlib/`,
+**Everything about sources, parts, cuts and texts lives in the library** (`<root>/Library.DocuLib/`, a package the Finder shows as one file;
+after **Move files in…** it also holds `originals/`, `cut/`, `failed/` as lossless JPEG XL;
 see docs/LIBRARY.md): the editor's state of a scan is built from its rows and written back to them
 (`studio/library/store.py`). Nothing else holds it: no JSON state files, no private text cache. Older
 `studio-data/state/` and `studio-data/text/` are moved in once, then set aside as `*.migrated-<date>`.

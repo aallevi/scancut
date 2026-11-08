@@ -21,7 +21,7 @@ def series_of(rel):
 
 
 def library_path():
-    p = core.settings().get('library') or os.path.join(core.ROOT, 'Library.scanlib')
+    p = core.settings().get('library') or os.path.join(core.ROOT, core.sc.PACKAGE)
     return os.path.expanduser(p)
 
 
@@ -43,14 +43,14 @@ def library(create=True):
 def rel_of(lib, asset):
     # il percorso dentro la radice (per anteprime e studio), se c'e'
     p = os.path.realpath(lib.asset_path(asset))
-    return os.path.relpath(p, core.ROOT) if p.startswith(core.ROOT + os.sep) else None
+    return core.relpath(p) if p.startswith(core.ROOT + os.sep) else None
 
 
 # ---------------------------------------------------------------- import della cartella di oggi
 
 def import_root(lib, progress=None, log=print):
     files = []
-    for base, dirs, fs in os.walk(os.path.join(core.ROOT, 'originals')):
+    for base, dirs, fs in os.walk(core.abspath('originals')):
         dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
         files += [os.path.join(base, f) for f in sorted(fs) if core.is_image(f)]
     added = 0
@@ -101,14 +101,21 @@ def register_new(lib, force=True):
     _reg_last[0] = time.time()
     known = {r[0] for r in lib.db.execute("SELECT path FROM asset WHERE storage = 'referenced'")}
     new = []
-    for base, dirs, fs in os.walk(os.path.join(core.ROOT, 'originals')):
+    for base, dirs, fs in os.walk(core.abspath('originals')):
         dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
         for f in sorted(fs):
             p = os.path.realpath(os.path.join(base, f))
             if core.is_image(f) and p not in known:
                 iid, aid = item_for(lib, core.relpath(os.path.join(base, f)))
                 new.append((iid, aid))
-    # gli arrivi registrati prima, ora con il loro file
+    # gli arrivi registrati prima, ora con il loro file (un file passato in JPEG XL ha un checksum nuovo: packed.tsv)
+    led = os.path.join(core.ROOT, '.scancut', 'packed.tsv')
+    if os.path.exists(led):
+        for line in open(led):
+            p = line.rstrip('\n').split('\t')
+            if len(p) >= 2:
+                lib.db.execute('UPDATE capture SET sha256 = ? WHERE sha256 = ? AND asset_id IS NULL', (p[1], p[0]))
+        lib.db.commit()
     for c in lib.db.execute('SELECT * FROM capture WHERE asset_id IS NULL').fetchall():
         a = lib.db.execute("SELECT a.id, a.uuid, a.dpi FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE a.sha256 = ? AND a.path NOT LIKE '%/studio-data/replaced/%' AND a.path NOT LIKE '%/studio-data/trash/%' "
                            "ORDER BY a.id DESC LIMIT 1", (c['sha256'],)).fetchone()
@@ -306,7 +313,7 @@ def categories(lib):
 # cancella davvero, file e righe.
 
 def _to_trash(lib, path, stamp):
-    dst = core.sc.unique(os.path.join(core.DATA, 'trash', stamp, os.path.relpath(path, core.ROOT) if path.startswith(core.ROOT + os.sep) else os.path.basename(path)))
+    dst = core.sc.unique(os.path.join(core.DATA, 'trash', stamp, core.relpath(path) if path.startswith(core.ROOT + os.sep) else os.path.basename(path)))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     os.rename(path, dst)
     lib.db.execute('UPDATE asset SET path = ? WHERE path = ?', (dst, path))
@@ -370,7 +377,7 @@ def trash_list(lib):
         files = json.loads(t['files'])
         f0 = files[0]['to'] if files else None
         out.append({'uuid': t['uuid'], 'what': t['what'], 'title': t['title'], 'at': t['trashed_at'], 'files': len(files),
-                    'rel': os.path.relpath(f0, core.ROOT) if f0 and f0.startswith(core.ROOT + os.sep) and os.path.exists(f0) else None,
+                    'rel': core.relpath(f0) if f0 and f0.startswith(core.ROOT + os.sep) and os.path.exists(f0) else None,
                     'empties': time.strftime('%Y-%m-%d', time.localtime(time.mktime(time.strptime(t['trashed_at'][:19], '%Y-%m-%dT%H:%M:%S')) + days * 86400))})
     return out
 
@@ -645,7 +652,7 @@ def item_detail(lib, uuid):
         g['cutout'] = None
         if e and os.path.exists(e['path']):
             p = os.path.realpath(e['path'])
-            g['cutout'] = {'rel': os.path.relpath(p, core.ROOT) if p.startswith(core.ROOT + os.sep) else None,
+            g['cutout'] = {'rel': core.relpath(p) if p.startswith(core.ROOT + os.sep) else None,
                            'name': os.path.basename(p), 'at': e['created_at']}
     events = [dict(r) for r in lib.db.execute(
         "SELECT at, type, outcome, detail FROM event WHERE entity_uuid IN (SELECT uuid FROM asset WHERE id IN (SELECT asset_id FROM item_asset WHERE item_id = ?)) OR entity_uuid = ? ORDER BY at DESC LIMIT 30",
@@ -663,7 +670,7 @@ def info(lib):
     return {'path': lib.path, 'name': lib.meta('name'), 'uuid': lib.meta('uuid'),
             'items': q('SELECT COUNT(*) FROM item WHERE trashed_at IS NULL'), 'files': q('SELECT COUNT(*) FROM asset'),
             'texts': q('SELECT COUNT(*) FROM reading'), 'cutouts': q("SELECT COUNT(*) FROM item_asset WHERE role = 'cutout'"),
-            'edits': q("SELECT COUNT(*) FROM item_asset WHERE role = 'edit'")}
+            'edits': q("SELECT COUNT(*) FROM item_asset WHERE role = 'edit'"), 'packed': core.sc.PACKED}
 
 
 # ---------------------------------------------------------------- sincronia con lo studio (dal vivo)
@@ -695,6 +702,7 @@ def apply_state(lib, rel, st, iid, aid):
         "json_extract(source, '$.holes') AS holes, json_extract(source, '$.src') AS src, json_extract(source, '$.poly0') AS poly0 "
         "FROM region WHERE asset_id = ? AND parent_id IS NULL AND kind = 'sheet' ORDER BY (removed_at IS NULL), id", (aid,))}
     seen, recut_needed = set(), False
+    only = set()                 # parti cambiate solo nella sagoma (contorno, ritocchi, buchi): si rifa' solo il loro taglio
     has_cut = bool(lib.db.execute('SELECT 1 FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) LIMIT 1', (aid,)).fetchone())
     for i, sh in enumerate(st.get('sheets') or []):
         seen.add(sh['id'])
@@ -733,9 +741,12 @@ def apply_state(lib, rel, st, iid, aid):
                 # girata: i tagli gia' fatti girano anche loro (senza perdita)
                 lib.db.execute('UPDATE region SET rotation = ? WHERE id = ?', (rot, rid)); lib.db.commit()
                 rotate_region_cutouts(lib, rid, (rot - int(r['rotation'] or 0)) % 360)
-            if (r['geometry'], r['ops'], r['export_on'], r['label'], r['position']) != (geom, ops, on, label, i) \
-                    or json.loads(r['holes'] or 'null') != sh.get('holes'):
-                recut_needed = recut_needed or has_cut           # cambia il taglio: contorno, ritocchi, buchi, nome, ordine, inclusione
+            if (r['export_on'], r['label'], r['position']) != (on, label, i):
+                recut_needed = recut_needed or has_cut           # nome, ordine, inclusione: cambiano i nomi, si rifanno tutti
+                lib.log('edit', 'region', None, studio_id=sh['id'])
+            elif (r['geometry'], r['ops']) != (geom, ops) or json.loads(r['holes'] or 'null') != sh.get('holes'):
+                if has_cut:
+                    only.add(sh['id'])                           # solo la sagoma: solo il suo taglio
                 lib.log('edit', 'region', None, studio_id=sh['id'])
         lib.db.execute("UPDATE region SET geometry = ?, ops = ?, rotation = ?, export_on = ?, label = ?, position = ?, color = ?, modified_at = ?, "
                        "source = json_set(COALESCE(source, '{}'), '$.holes', json(?), '$.poly0', json(?), '$.src', json(?), '$.engine', ?, '$.studio_rel', ?) "
@@ -786,6 +797,8 @@ def apply_state(lib, rel, st, iid, aid):
     pending = [r[0] for r in lib.db.execute('SELECT DISTINCT region_id FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?)', (aid,))]
     if recut_needed:
         schedule_recut(rel)
+    elif only:
+        schedule_recut(rel, only=only)
     schedule_journal()
     if iid:
         lib.touched(iid)
@@ -860,7 +873,7 @@ def import_cutouts(lib, rel):
         return
     found = [{'id': sid, 'path': p, 'status': 'identical'} for sid, p in names if os.path.exists(p)]
     stem = os.path.splitext(os.path.basename(rel))[0]
-    d = os.path.join(core.ROOT, 'cut', core.batch_of(rel))
+    d = core.abspath(os.path.join('cut', core.batch_of(rel)))
     if not found and os.path.isdir(d):              # ritagli dell'agente senza stato dello studio
         import re
         # solo "<nome>.png" o "<nome> a.png", "<nome> b.png"…: "quaderno 6" non e' un pezzo di "quaderno"
@@ -1203,11 +1216,17 @@ def on_cutouts_rotated(rels, deg):
 _recut_timers = {}
 
 
-def schedule_recut(rel, delay=2.5):
+_recut_only = {}                 # rel -> parti da rifare (None: tutte), sommate fra un ritocco e l'altro
+
+
+def schedule_recut(rel, delay=2.5, only=None):
     t = _recut_timers.pop(rel, None)
     if t:
         t.cancel()
-    t = threading.Timer(delay, lambda: _safe(recut, rel))
+        prev = _recut_only.get(rel, None)
+        only = None if prev is None or only is None else set(prev) | set(only)
+    _recut_only[rel] = set(only) if only is not None else None
+    t = threading.Timer(delay, lambda: _safe(recut, rel, _recut_only.pop(rel, None)))
     t.daemon = True
     _recut_timers[rel] = t
     t.start()
@@ -1222,12 +1241,22 @@ def cut(rel, follow=True, **kw):
         return w
 
 
-def recut(rel):
+def recut(rel, only=None):
     with files_lock:                                      # tutto il taglio rifatto: un solo scrittore di file
-        _recut(rel)
+        _recut(rel, only)
 
 
-def _recut(rel):
+def recut_now(rel, only=None):
+    # subito (es. "Fatto" dopo aver ritoccato una parte venendo dal suo taglio), senza aspettare il timer
+    t = _recut_timers.pop(rel, None)
+    if t:
+        t.cancel()
+        prev = _recut_only.pop(rel, None)
+        only = None if prev is None or only is None else set(prev) | set(only)
+    recut(rel, only)
+
+
+def _recut(rel, only=None):
     lib = library(create=False)
     if not lib:
         return
@@ -1241,7 +1270,7 @@ def _recut(rel):
         (a['id'],)) if os.path.exists(r['path'])}
     if not before and not lib.db.execute('SELECT 1 FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) LIMIT 1', (a['id'],)).fetchone():
         return                                            # mai tagliata: niente da seguire (gia' tagliata, anche se ora tutto e' nella storia: si segue)
-    written = core.export(rel, replace=True, log=lambda m: None)
+    written = core.export(rel, replace=True, log=lambda m: None, only=only)
     on_export(rel, written, superseded=before)
 
 
@@ -1250,7 +1279,7 @@ def _supersede(lib, path, why):
     if not os.path.exists(path) or '/studio-data/replaced/' in path or '/studio-data/trash/' in path:
         return
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    dst = core.sc.unique(os.path.join(core.DATA, 'replaced', stamp, os.path.relpath(path, core.ROOT) if path.startswith(core.ROOT) else os.path.basename(path)))
+    dst = core.sc.unique(os.path.join(core.DATA, 'replaced', stamp, core.relpath(path) if path.startswith(core.ROOT) else os.path.basename(path)))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     os.rename(path, dst)
     a = lib.db.execute('SELECT id, uuid FROM asset WHERE path = ?', (path,)).fetchone()
@@ -1288,7 +1317,7 @@ def where(lib, rel):
     else:
         cuts = lib.db.execute("SELECT a.original_name AS name, a.path FROM asset a JOIN item_asset ia ON ia.asset_id = a.id "
                               "WHERE ia.role = 'cutout' AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY a.original_name", (a['id'],)).fetchall()
-        out['cuts'] = [{'name': c['name'], 'rel': os.path.relpath(c['path'], core.ROOT) if c['path'].startswith(core.ROOT + os.sep) else None} for c in cuts]
+        out['cuts'] = [{'name': c['name'], 'rel': core.relpath(c['path']) if c['path'].startswith(core.ROOT + os.sep) else None} for c in cuts]
     return out
 
 
@@ -1408,3 +1437,176 @@ def check(lib, deep=False):
             if not body or (first and first not in body):
                 add('journal out of date', it['title'], f)
     return problems
+
+
+# ---------------------------------------------------------------- i file dentro la libreria
+# Il passaggio: originals/, cut/ e failed/ entrano nel pacchetto della libreria (<radice>/Library.DocuLib, un file
+# solo nel Finder); PNG e TIFF diventano JPEG XL senza perdita, ognuno controllato pixel per pixel prima di
+# lasciare il file di prima. Fuori resta solo l'inbox. Il file di prima non si cancella: va in
+# studio-data/replaced/switch-<ora>/, finche' non si decide di toglierlo. Prima il piano (niente cambia), poi il passaggio.
+
+SWITCH_TOPS = ('originals', 'cut', 'failed')
+
+
+def switch_plan(lib):
+    pkg = os.path.join(core.ROOT, core.sc.PACKAGE)
+    out = {'packed': core.sc.PACKED, 'package': pkg, 'tools': core.sc.jxl_tools(), 'exiftool': bool(core.tool('exiftool')),
+           'tops': {}, 'files': 0, 'bytes': 0, 'convert': 0, 'convert_bytes': 0, 'keep': 0, 'keep_bytes': 0, 'links': 0}
+    if core.sc.PACKED:
+        return out
+    for top in SWITCH_TOPS:
+        d = os.path.join(core.ROOT, top)
+        t = {'files': 0, 'bytes': 0}
+        for base, dirs, fs in os.walk(d):
+            dirs[:] = [x for x in dirs if not x.startswith('.')]
+            for f in fs:
+                p = os.path.join(base, f)
+                if f.startswith('.'):
+                    continue
+                if os.path.islink(p):
+                    out['links'] += 1; continue
+                n = os.path.getsize(p)
+                t['files'] += 1; t['bytes'] += n
+                if os.path.splitext(f)[1].lower() in ('.png', '.tif', '.tiff'):
+                    out['convert'] += 1; out['convert_bytes'] += n
+                else:
+                    out['keep'] += 1; out['keep_bytes'] += n
+        out['tops'][top] = t
+        out['files'] += t['files']; out['bytes'] += t['bytes']
+    # meta' circa per i PNG delle scansioni (misurato), un TIFF senza compressione ancora meno; il resto uguale
+    out['estimate_bytes'] = int(out['convert_bytes'] * 0.5) + out['keep_bytes']
+    return out
+
+
+def switch_storage(lib, progress=None, log=print):
+    if core.sc.PACKED:
+        raise RuntimeError('the files are already inside the library')
+    if not core.sc.jxl_tools():
+        raise RuntimeError('JPEG XL tools missing (brew install jpeg-xl)')
+    plan = switch_plan(lib)
+    root, pkg = core.ROOT, os.path.realpath(os.path.join(core.ROOT, core.sc.PACKAGE))
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    aside = os.path.join(core.DATA, 'replaced', f'switch-{stamp}')
+    lib.snapshot('before the files move into the library')
+    lib.log('switch', 'library', lib.meta('uuid'), 'start', files=plan['files'], bytes=plan['bytes'])
+    moved, links, done_map = [], [], {}
+    stage = os.path.join(pkg, '.moving')                 # dentro il pacchetto, finche' non e' tutto al suo posto
+    with core.agent_lock(), files_lock:
+        # 1. ogni file nel pacchetto (stesso disco: si sposta il nome, niente copia); il catalogo segue
+        for top in SWITCH_TOPS:
+            d = os.path.join(root, top)
+            for base, dirs, fs in os.walk(d):
+                dirs[:] = [x for x in dirs if not x.startswith('.')]
+                for f in sorted(fs):
+                    p = os.path.join(base, f)
+                    rel = os.path.relpath(p, root)
+                    if f.startswith('.'):
+                        continue
+                    if os.path.islink(p):
+                        links.append((rel, os.path.realpath(p))); continue
+                    dst = os.path.join(stage, rel)
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.rename(p, dst)
+                    moved.append((rel, os.path.realpath(p), dst))
+        final = lambda rel: os.path.join(pkg, rel)
+        for rel, old, dst in moved:
+            lib.db.execute('UPDATE asset SET path = ? WHERE path = ?', (final(rel), old))
+            lib.db.execute('UPDATE cut SET path = ? WHERE path = ?', (final(rel), old))
+        for t in lib.db.execute('SELECT id, files FROM trash').fetchall():
+            fl = json.loads(t['files'])
+            for f in fl:
+                for top in SWITCH_TOPS:
+                    if f['from'].startswith(os.path.join(root, top) + os.sep):
+                        f['from'] = os.path.join(pkg, os.path.relpath(f['from'], root))
+            lib.db.execute('UPDATE trash SET files = ? WHERE id = ?', (json.dumps(fl), t['id']))
+        lib.db.commit()
+        for top in SWITCH_TOPS:
+            src = os.path.join(stage, top)
+            os.makedirs(src, exist_ok=True)
+            os.rename(src, os.path.join(pkg, top))
+        os.rmdir(stage) if os.path.isdir(stage) and not os.listdir(stage) else None
+        # 2. le cartelle di prima, vuote, se ne vanno (un .DS_Store non le tiene in vita)
+        for top in SWITCH_TOPS:
+            d = os.path.join(root, top)
+            for base, dirs, fs in sorted(os.walk(d, topdown=False), key=lambda x: -len(x[0])):
+                for f in fs:
+                    if f == '.DS_Store' or os.path.islink(os.path.join(base, f)):
+                        os.remove(os.path.join(base, f))
+                try:
+                    os.rmdir(base)
+                except OSError:
+                    pass
+        core.set_root(root)                              # ora i nomi relativi portano dentro il pacchetto
+        core.save_settings({'export_format': 'jxl'})     # i tagli nuovi come gli altri: JPEG XL senza perdita
+        # 3. failed/: i collegamenti puntano ai file nel pacchetto
+        for rel, target in links:
+            t = target
+            for top in SWITCH_TOPS:
+                if target.startswith(os.path.join(root, top) + os.sep):
+                    t = os.path.join(pkg, os.path.relpath(target, root))
+            lp = os.path.join(pkg, rel)
+            os.makedirs(os.path.dirname(lp), exist_ok=True)
+            if not os.path.lexists(lp):
+                os.symlink(t, lp)
+    # 4. PNG e TIFF in JPEG XL senza perdita, uno alla volta (si puo' interrompere: cio' che e' fatto resta fatto)
+    todo = [(rel, final(rel)) for rel, _, _ in moved if os.path.splitext(rel)[1].lower() in ('.png', '.tif', '.tiff')]
+    saved = conv = 0
+    for i, (rel, p) in enumerate(todo):
+        if progress:
+            progress(i / max(1, len(todo)), f'{i + 1}/{len(todo)} {os.path.basename(p)}')
+        r = pack_file(lib, p, aside, done_map)
+        if r:
+            conv += 1; saved += r
+        else:
+            log(f'kept as it is: {rel}')
+    _rewrite_done(done_map)
+    lib.log('switch', 'library', lib.meta('uuid'), files=len(moved), converted=conv, saved_bytes=saved, kept_aside=aside)
+    log(f'{len(moved)} files now inside {os.path.basename(pkg)}; {conv} turned into lossless JPEG XL, '
+        f'{saved >> 20} MB less. The files as they were are kept in {aside} until you remove them.')
+    schedule_journal()
+    return {'files': len(moved), 'converted': conv, 'saved_bytes': saved, 'aside': aside}
+
+
+def pack_file(lib, p, aside, done_map=None):
+    # un file del pacchetto in JPEG XL: il catalogo, le registrazioni e done.tsv seguono. Ritorna i byte risparmiati
+    from .db import sha256 as _sha
+    with files_lock:
+        j = core.sc.pack(p)
+        if not j:
+            return 0
+        old_sha, old_size = _sha(p), os.path.getsize(p)
+        dst = core.sc.unique(os.path.join(aside, core.relpath(p)))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.rename(p, dst)                                # il file di prima, da parte (non cancellato)
+        new_sha, new_size = _sha(j), os.path.getsize(j)
+        a = lib.db.execute('SELECT id, uuid FROM asset WHERE path = ?', (os.path.realpath(p),)).fetchone()
+        if a:
+            lib.db.execute("UPDATE asset SET path = ?, sha256 = ?, size = ?, mime = 'image/jxl', file_mtime = ?, original_name = ? WHERE id = ?",
+                           (os.path.realpath(j), new_sha, new_size, now(), os.path.basename(j), a['id']))
+            lib.log('convert', 'asset', a['uuid'], old_sha256=old_sha, new_sha256=new_sha, to='lossless JPEG XL, same pixels', kept=dst)
+        lib.db.execute("UPDATE cut SET path = ?, sha256 = ?, format = 'jxl' WHERE path = ?", (os.path.realpath(j), new_sha, os.path.realpath(p)))
+        lib.db.execute('UPDATE capture SET sha256 = ? WHERE sha256 = ?', (new_sha, old_sha))
+        lib.db.commit()
+        rel = core.relpath(j)
+        if rel.startswith('originals/') and done_map is not None:
+            done_map[core.relpath(p)[len('originals/'):]] = rel[len('originals/'):]
+        return old_size - new_size
+
+
+def _rewrite_done(done_map):
+    # done.tsv segue i file (nome nuovo, misura nuova; l'ora del file resta quella di prima)
+    if not done_map or not os.path.exists(core.sc.DONE):
+        return
+    lines = []
+    for line in open(core.sc.DONE):
+        p = line.rstrip('\n').split('\t')
+        if len(p) >= 4 and p[0] in done_map:
+            q = os.path.join(core.sc.ORIG, done_map[p[0]])
+            if os.path.exists(q):
+                st = os.stat(q)
+                p = [done_map[p[0]], str(st.st_size), str(int(st.st_mtime))] + p[3:]
+        lines.append('\t'.join(p) + '\n')
+    tmp = core.sc.DONE + '.part'
+    open(tmp, 'w').writelines(lines)
+    os.replace(tmp, core.sc.DONE)
+
