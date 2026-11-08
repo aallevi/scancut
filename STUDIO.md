@@ -58,7 +58,7 @@ studio.py export "originals/sketchbook/sketchbook 4.png"   # saves the edited st
   masks. Reloaded on every run.
 
 Each batch remembers the engine and settings (SAM prompt, threshold, tolerance) of its last
-export; opening a scan or folder of that batch selects them again. Nothing is learned or
+cut; opening a scan or folder of that series selects them again. Nothing is learned or
 uploaded; SAM 3's weights never change. The agent keeps its own fixed cut.
 
 ## How edits work
@@ -67,21 +67,21 @@ Each engine result is cached as exact masks (`studio-data/cache`). The editor sh
 simplified outline (`poly0`). Moving points changes only the area between the old and
 the new outline; lasso/brush add or cut away; everything else keeps the engine's
 pixels (fibres, tears). New sheets can be drawn by polygon, lasso, or a box detected
-with any engine. Export runs `scancut.cutout`, so untouched sheets give the same
+with any engine. Cut runs `scancut.cutout`, so untouched parts give the same
 bytes as the agent.
 
-Export: a changed cutout with the same name is moved to
+Cut: a changed cut with the same name is moved to
 `studio-data/replaced/<time>/` (never overwritten); identical ones are left; the
 scan is added to `done.tsv` as `studio` so the agent doesn't redo it. It takes the
 agent's lock. Optional: also import into Eagle (local API, Settings).
 
-## Export, rotation, history, automatic cutting
+## Cut, rotation, history, automatic cutting
 
-- Settings > Export: PNG or JPEG XL lossless (`cjxl -d 0`, alpha kept; each file is decoded
+- Settings > Cuts: PNG or JPEG XL lossless (`cjxl -d 0`, alpha kept; each file is decoded
   back and compared pixel by pixel, else PNG is written). A different cutout whose name is
   taken gets " (2)" and the old one stays (or, if chosen, the old one goes to replaced/).
-  "To extra/" exports the same cutouts into a subfolder.
-- ⟲/⟳ 90°: lossless rotation of the cutout at export (pixels moved, never resampled).
+  "Freeze a copy in extra/" writes the cuts as they are now into a subfolder; that copy does not follow its parts.
+- ⟲/⟳ 90°: lossless rotation of the part; its cuts turn with it (pixels moved, never resampled).
 - Detect never throws away sheets made by hand, and keeps the previous sheets in
   "Earlier" (last 15) to restore. Detection runs only when you press Detect.
 - "Format from a corner": no detection, an exact A3–A7, Letter or photo rectangle from the
@@ -140,7 +140,7 @@ prompt's results instead. Every SAM result gets a second pass on a crop around i
 its final edge from the real pixels (wand against the local background, within 2 mm).
 
 Magic wand: like Photoshop's, on the 3x3-blurred scan, per-channel tolerance (the
-automatic cut uses ~13-15), contiguous or not. Stored as seed + tolerance, so export
+automatic cut uses ~13-15), contiguous or not. Stored as seed + tolerance, so every cut
 recomputes it at full resolution. Clicking paper with no sheet there makes a new sheet.
 View menu: background (light blue, white, grey, dark, checker). Pane edges drag;
 double-click resets.
@@ -157,9 +157,9 @@ Everything is in the **Text pane** beside the drawing (Text › Show text pane, 
 - Read a box (T): drag a box over any writing; the result appears at the top of the pane: Copy, or
   Add to sheet (appended to the sheet under the box).
 - Copy all, Save .md (a Markdown file next to the cutouts, never over an existing one), and
-  "read at every export".
+  "read at every cut".
 - Where it is stored: while editing, in the scan's edit state (studio-data/state, the sheet's `ocr`);
-  at export, inside the cutout file: XMP Description, IPTC Caption and EXIF ImageDescription.
+  in its cut, inside the file: XMP Description, IPTC Caption and EXIF ImageDescription.
 - Side by side (checkbox in the pane, or Text menu): a second view the size of the scan, zooming and
   scrolling with it; each text sits where its sheet or box is, in the same colour, formatted
   (headings, lists, tables; pictures a model marks are shown from the real pixels).
@@ -170,7 +170,7 @@ Everything is in the **Text pane** beside the drawing (Text › Show text pane, 
   reader changes. Long pages are read in strips cut between lines.
 - The downloaded readers load on first use (a few seconds) and free their memory after 10 idle
   minutes, like SAM 3; SAM 3 › Unload frees them at once.
-- Every OCR run is listed in Jobs, like Detect, SAM, Compare and Export.
+- Every OCR run is listed in Jobs, like Detect, SAM, Compare and Cut.
 
 ## Local assistant and search
 
@@ -188,7 +188,7 @@ Everything is in the **Text pane** beside the drawing (Text › Show text pane, 
 Like IE7: tabs sit in the title bar. A click opens in the current tab; ⌘-click, middle-click or
 right-click › Open in new tab opens a new one (gallery items, folders, the tree). ⌘T new tab,
 ⌘W close, ⌃Tab / ⌃⇧Tab next/previous. Each tab keeps its place, back/forward, and for a scan
-its zoom, selection, tool and undo. Detect, SAM, text and export keep running when you switch:
+its zoom, selection, tool and undo. Detect, SAM, text and cuts keep running when you switch:
 the tab shows a spinner and the result is saved to that scan. Tabs come back after a restart
 (browser storage). In the Dock app the window drags from the empty part of the title bar.
 
@@ -204,7 +204,7 @@ V select · H pan (or hold Space) · A edit points (double-click edge adds, ⌥-
 removes) · P polygon (Enter closes) · M rectangle · L lasso · W Magic Wand (options in the bar above the scan) · B brush ·
 K / E lasso / brush in Cut mode · X swap Add/Cut (⌥ while clicking does the other) ·
 R box detect · [ ] brush size · C compare · O cut view · Tab next sheet ·
-⇧/⌘-click or drag on empty space selects several sheets · ⌃-click (or ⌥-click, right-click) a sheet: only that one is exported, again: all back on · Text (OCR) on the selected sheets reads their text into an editable box, written into the cutout's description at export · ⌘A all · ⇧⌘I invert (everything except the selected sheets; inverting again gives them back) · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
+⇧/⌘-click or drag on empty space selects several sheets · ⌃-click (or ⌥-click, right-click) a part: only that one is in the cut, again: all back on · Text (OCR) on the selected sheets reads their text into an editable box, written into the cutout's description at export · ⌘A all · ⇧⌘I invert (everything except the selected sheets; inverting again gives them back) · Delete deletes the selected (⌘Z undoes) · ⌘Z/⇧⌘Z · ⌘S export · ⌘0 fit · ⌘1 actual pixels · ←/→ scans.
 Pinch zooms, two-finger scroll pans, a mouse wheel zooms.
 Address bar: every folder is clickable, ▸ lists its subfolders; back/forward with the round
 buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
@@ -228,7 +228,7 @@ next page, or timed). Scans go to the inbox like any other. Tested with a Canon 
   errors are printed. Read the PNG to check.
 - UI health check: `tools/snap "http://127.0.0.1:8799/" out.png 1400 880 60 tools/health.js` on a
   scratch root (it detects, exports and rotates files): every view, units, sheet rotation, invert,
-  densitometer, tabs, export, rotating a cutout with its selection. Prints PASS/FAIL per step.
+  densitometer, tabs, cut, rotating a cut with its part. Prints PASS/FAIL per step.
   Restart the scratch server after changing Python code.
 - Made-up drawings for screenshots: `tools/make_demo_scans.py` (in an empty inbox).
 - Pipeline changes: run the HEAD copy and the new `scancut.py` on the same inbox in two

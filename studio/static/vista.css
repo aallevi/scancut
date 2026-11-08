@@ -560,3 +560,16 @@ html.native .window { overflow: hidden; }
 .textpane .tarea .tbh small { margin-left: 4px; }
 .libfilter { display: block; margin-bottom: 2px; }
 .libregion.hilite { background: var(--sel-bg); box-shadow: inset 0 0 0 1px var(--sel-border); }
+.wcuts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; } .wcuts img { width: 52px; height: 52px; object-fit: contain; border: 1px solid #d5dfe9; cursor: pointer; }
+.pic.mosaic { display: grid; gap: 2px; padding: 4px; box-sizing: border-box; }
+.pic.mosaic.n2 { grid-template-columns: 1fr 1fr; } .pic.mosaic.n3, .pic.mosaic.n4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.pic.mosaic img { width: 100%; height: 100%; object-fit: contain; min-height: 0; }
+.libcuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.libcuts img { width: 100%; aspect-ratio: 1; object-fit: contain; border: 1px solid #d5dfe9; cursor: pointer; }
+.badge.uncut { background: #e9eef4; color: #6a7a8c; border: 1px solid #c3d1e0; }
+.libbar { flex-wrap: nowrap; }
+.libbar > b, .libbar > .muted { white-space: nowrap; }
+.libbar .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.libsort { display: inline-flex; gap: 4px; flex: none; }
+.libbar .btn { white-space: nowrap; flex: none; }
+.libbar .search { flex: 0 1 260px; min-width: 120px; }

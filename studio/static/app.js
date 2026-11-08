@@ -133,7 +133,7 @@ const TIPS = {
   cutview: 'Darkens what will be cut away. Zoomed in, it shows the exact final edge pixel by pixel, not the simplified outline. O toggles it.',
   modes: 'What lasso, rectangle and wand do, like Photoshop: □ New makes a separate sheet from the selection (e.g. only the ink: wand with contig. off, click a black line), + adds to the sheet, − cuts away, ∩ keeps only the overlap (e.g. only the ink inside this page). While clicking: ⇧ adds, ⌥ cuts, ⇧⌥ intersects. X swaps + and −.',
   hist: 'How many pixels have each lightness (grey) and each R, G, B value. The dashed line is the lid colour the automatic cut found. Read-only; click to switch linear/log.',
-  template: 'How cutouts are named: {batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. A / makes subfolders.',
+  template: 'How cuts are named: {batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. A / makes subfolders.',
   densit: 'Values of the real scan pixel under the cursor (or the 3×3 / 5×5 average, View menu). "vs lid" is the colour distance the automatic cut measures; under the tolerance it counts as lid.',
 };
 
@@ -205,7 +205,7 @@ function renderCmdbar() {
         { label: S.samLoaded ? 'Unload SAM 3 (free 3.4 GB)' : 'SAM 3 not loaded (loads on first use)', disabled: !S.samLoaded, do: () => api.post('sam_unload').then(() => { S.samLoaded = false; status('SAM 3 unloaded'); }) },
       ];
     } }),
-    cmd('Fix', null, { title: 'Corrections that change pixels: always a separate copy, never the original or the cutout', menu: () => [
+    cmd('Fix', null, { title: 'Corrections that change pixels: always a separate copy, never the source or its cuts', menu: () => [
       { label: 'About “fake pixels”…', do: fakePixelsDialog, note: 'Why these make extra copies and the rest of the studio never changes a pixel.' },
       '-',
       { label: 'Descreen (moiré on printed paper)', disabled: true, note: 'Coming. Notch filter on the image spectrum (FFT), like pro descreening. Saves a separate copy · fake pixels.' },
@@ -214,22 +214,29 @@ function renderCmdbar() {
       '-',
       { label: 'Dust and scratch removal', disabled: true, note: 'Not available: the LiDE 400 has no infrared channel, so dust cannot be told apart from ink. Software removal paints invented pixels over every speck.' },
     ] }),
-    cmd('Text', null, { title: 'Read the writing on sheets and cutouts (OCR)', menu: () => {
+    cmd('Text', null, { title: 'Read the writing on sheets and cuts (OCR)', menu: () => {
       const sel = ed ? selSheets() : [], cuts = !ed ? [...S.sel].filter(r => r.startsWith('cut/')) : [];
       return [
         { label: 'Show text pane', kbd: 'T', check: !!S.textPane, disabled: !ed, do: () => toggleTextPane() },
         { label: 'Text side by side with the scan', check: !!S.textView, disabled: !ed, do: () => toggleTextView(), note: 'Each text where it is on the page, in its selection’s colour. Zoom and scroll move both.' },
         '-',
-        { label: `Read text of the selected sheet${sel.length > 1 ? 's' : ''} (${sel.length})`, disabled: !ed || !sel.length, do: () => ocrSheets(sel), note: 'Apple Vision, on this Mac. The text appears under the sheet, editable, and goes into the cutout at export.' },
+        { label: `Read text of the selected sheet${sel.length > 1 ? 's' : ''} (${sel.length})`, disabled: !ed || !sel.length, do: () => ocrSheets(sel), note: 'Apple Vision, on this Mac. The text appears under the sheet, editable, and goes into its cut and follows every correction.' },
         { label: `Read text of all sheets (${ed ? S.st?.sheets.length || 0 : 0})`, disabled: !ed || !S.st?.sheets.length, do: () => ocrSheets(S.st.sheets) },
-        { label: ed ? 'Read the whole scan' : `Read the whole document${S.sel.size > 1 ? 's' : ''} (${S.sel.size})`, disabled: ed ? false : !S.sel.size, do: () => ed ? readWholeScan() : readDocs([...S.sel]), note: 'Every word on the page, shown in a reader. Originals are never changed.' },
-        { label: `Read into the cutout files (${cuts.length})`, disabled: ed || !cuts.length, do: () => readDocs(cuts, true), note: 'Also writes the text into each file’s description (XMP, IPTC, EXIF).' },
+        { label: ed ? 'Read the whole scan' : `Read the whole document${S.sel.size > 1 ? 's' : ''} (${S.sel.size})`, disabled: ed ? false : !S.sel.size, do: () => ed ? readWholeScan() : readDocs([...S.sel]), note: 'Every word on the page, shown in a reader. Sources are never changed.' },
+        { label: `Read into the cut files (${cuts.length})`, disabled: ed || !cuts.length, do: () => readDocs(cuts, true), note: 'Also writes the text into each file’s description (XMP, IPTC, EXIF).' },
         '-',
         { label: 'Read text automatically when cutting', check: !!S.settings?.ocr_on_export, do: async () => { S.settings = await api.post('settings', { ocr_on_export: !S.settings.ocr_on_export }); } },
         { label: 'Where the text is stored…', do: () => openHelp('where is the OCR text stored') },
       ];
     } }),
-    cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cutouts of the parts (⌘S). After that they follow every change of their part.' }),
+    cmd('Outputs', null, { title: 'What the library gives to other tools: text for nvim and LaTeX, files, the archive site', menu: () => [
+      { label: 'Transcriptions for nvim (LaTeX)…', do: journalDialog, note: 'One .tex per source, by date, read-only; rewritten whenever a text changes.' },
+      { label: 'Show the transcriptions folder', do: () => api.post('library/journal', { reveal: true }).then(r => r.error && status('Choose a folder first')) },
+      '-',
+      { label: 'Searchable PDF', disabled: true, note: 'Coming: the cut with its text laid over it, selectable.' },
+      { label: 'Send to the archive site (Directus)', disabled: true, note: 'Coming: cuts, transcriptions and where they come from, one way.' },
+    ] }),
+    cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cuts of the parts (⌘S). After that they follow every change of their part.' }),
     cmd('Batch', null, { menu: () => [
       { label: `Detect selected (${S.sel.size}) with ${engName(S.engine)}`, disabled: !S.sel.size, do: () => batch(false) },
       { label: `Detect and cut selected (${S.sel.size})`, disabled: !S.sel.size, do: () => batch(true) },
@@ -272,7 +279,7 @@ function libSortBar() {
     h('select', { title: 'Filter by resolution', onchange: e => { LIB.dpi = e.target.value; store('libdpi', LIB.dpi); libLoad(); } },
       [['', 'Any dpi'], ['300', '≥ 300 dpi'], ['600', '≥ 600 dpi'], ['1200', '≥ 1200 dpi'], ['<300', '< 300 dpi']].map(([v, l]) => h('option', { value: v, selected: LIB.dpi === v }, l))));
 }
-function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.series = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
+function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
   LIB.info = await api.get('library').catch(() => null);
@@ -283,16 +290,16 @@ async function renderLibrary() {
   if (!LIB.info?.exists) {
     head.append(h('div', { class: 'libempty' },
       h('div', { class: 'big' }, 'No library yet'),
-      h('div', { class: 'muted' }, `A library is an archive of your scans: each object with its views, selections, text and history, searchable. Originals stay where they are. It will be created at ${LIB.info?.path || ''}.`),
+      h('div', { class: 'muted' }, `A library is an archive of your scans: each source with its parts, cuts, texts and history, searchable. Sources stay where they are. It will be created at ${LIB.info?.path || ''}.`),
       h('button', { class: 'btn default', onclick: libImport }, 'Create it from the scans folder')));
     return renderSide();
   }
   const search = h('input', { class: 'search', placeholder: LIB.mode === 'texts' ? 'Search the texts…' : 'Search the library (text, titles, labels)…', value: LIB.q,
     oninput: e => { LIB.q = e.target.value; clearTimeout(LIB.t); LIB.t = setTimeout(libLoad, 200); } });
   head.append(h('div', { class: 'libbar' }, h('b', {}, LIB.info.name),
-    h('span', { class: 'muted' }, ` · ${LIB.info.items} objects · ${LIB.info.cutouts} cutouts · ${LIB.info.texts} texts · ${LIB.info.edits} edited copies`),
+    h('span', { class: 'muted' }, ` · ${LIB.info.items} sources · ${LIB.info.cutouts} cuts · ${LIB.info.texts} texts · ${LIB.info.edits} edited copies`),
     h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
-    LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cutouts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
+    LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cuts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
     h('button', { class: 'btn small', title: 'Add new scans from the scans folder (nothing is copied, nothing duplicated)', onclick: libImport }, 'Update from folder')));
   main.append(h('div', { class: 'gallery libgrid', id: 'libgrid' }));
   libLoad();
@@ -307,20 +314,21 @@ async function libLoad() {
   for (const it of LIB.items) g.append(h('div', { class: 'thumb' + (LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
       onclick: () => libSelect(it.uuid), ondblclick: e => libOpen(it.uuid, e) },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
-      it.files > 1 ? h('span', { class: 'badge edit', title: `${it.files} files (views, edited copies)` }, `${it.files} ▣`) : null),
-    h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
+      it.cuts ? h('span', { class: 'badge edit', title: `${it.cuts} cut(s)` }, `${it.cuts} ✂`) : h('span', { class: 'badge uncut', title: 'Not cut yet' }, 'uncut')),
+    it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
+      : h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
     h('div', { class: 'cap' }, it.title || '(untitled)', h('small', {}, [it.date, it.regions ? `${it.regions} sel.` : ''].filter(Boolean).join(' · ')))));
 }
 // ritagli: ognuno con i testi che mostra (gli stessi della sua zona sulla scansione)
 async function libLoadCutouts() {
-  let list = await api.get('library/cutouts').catch(() => []);
+  let list = await api.get('library/cutouts', LIB.series ? { series: LIB.series } : {}).catch(() => []);
   if (LIB.q) { const q = LIB.q.toLowerCase(); list = list.filter(c => (c.name + ' ' + c.title + ' ' + c.texts.map(t => t.plain).join(' ')).toLowerCase().includes(q)); }
   LIB.cuts = list = libArrange(list);
   libReadLabel();
   const g = $('#libgrid'); if (!g) return;
   g.innerHTML = '';
-  if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'No cutouts yet: export from the editor.'));
-  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cutout)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e) },
+  if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'No cuts yet: open a source, find its parts, Cut.'));
+  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e) },
     h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
     h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
     h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')))));
@@ -340,10 +348,10 @@ async function libReadCuts() {
   const uuids = LIB.picks.size ? [...LIB.picks] : (LIB.cuts || []).map(c => c.uuid);
   if (!uuids.length) return;
   const j = await api.post('jobs', { kind: 'readcuts', uuids }); pollJobs();
-  status(`Reading ${uuids.length} cutout(s) with ${ocrName()}… (see Jobs)`);
+  status(`Reading ${uuids.length} cut(s) with ${ocrName()}… (see Jobs)`);
   let x = j;
   while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 900)); x = await api.get('job', { id: j.id }); }
-  status(x.status === 'done' ? `Read ${x.result.length} cutout(s)` : 'Reading failed: see Jobs');
+  status(x.status === 'done' ? `Read ${x.result.length} cut(s)` : 'Reading failed: see Jobs');
   if (S.view === 'library') { libLoad(); if (LIB.cut) libSelectCut((LIB.cuts || []).find(c => c.uuid === LIB.cut) || {}, true); }
 }
 async function libSelectCut(c, keepPicks) {
@@ -365,13 +373,13 @@ async function libLoadTexts() {
     ` Hide “no text found”${hidden ? ` (${hidden} hidden)` : ''}`));
   if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : all.length ? 'Only empty texts here.' : 'No texts yet: read some in the editor (Text pane).'));
   for (const t of list) g.append(h('div', { class: 'ltext' + (LIB.sel === t.item ? ' sel' : ''), style: { borderLeftColor: t.region?.color || '#8a96a6' },
-      title: 'Click: go to its object · double-click: open its scan with this part', onclick: () => libGoItem(t.item, t.region?.uuid), ondblclick: e => libOpenPart(t, e) },
+      title: 'Click: go to its source in the library · double-click: open the source with this part', onclick: () => libGoItem(t.item, t.region?.uuid), ondblclick: e => libOpenPart(t, e) },
     h('div', { class: 'lth' }, h('b', {}, t.title || '(untitled)'), h('span', { class: 'muted' }, ' › ' + (t.whole ? 'whole scan' : t.region.label)),
       h('span', { class: 'muted small', style: { marginLeft: 'auto' } }, `${t.model || t.engine}${t.version ? ` · corrected ×${t.version}` : ''} · ${new Date(t.at).toLocaleDateString()}`)),
     h('div', { class: 'ltbody' },
       h('div', { class: 'mtext', html: t.plain ? mdToHtml(t.plain, null) : '<p class="mnone">no text found</p>' }),
       t.cutouts.length ? h('div', { class: 'ltcuts' }, ...t.cutouts.map(c => c.rel ? h('img', { title: c.name + ' (shows this text) · double-click opens it', ondblclick: e => { e.stopPropagation(); openLoc('scan:' + c.rel, e); }, src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss() } }) : null))
-        : h('div', { class: 'small muted' }, 'No cutout yet.'))));
+        : h('div', { class: 'small muted' }, 'No cut yet.'))));
 }
 // da un testo al suo oggetto (Oggetti, scelto e in vista, la sua zona evidenziata)
 async function libGoItem(item, regionUuid) {
@@ -406,7 +414,7 @@ async function libImport() {
   status('Building the library from the scans folder… (see Jobs)');
   let x = j;
   while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 600)); x = await api.get('job', { id: j.id }); }
-  status(x.status === 'done' ? `Library: ${x.result.files} originals, ${x.result.new_items} new` : 'Import failed: see Jobs');
+  status(x.status === 'done' ? `Library: ${x.result.files} sources, ${x.result.new_items} new` : 'Import failed: see Jobs');
   if (S.view === 'library') renderLibrary();
 }
 async function libEditIn(asset, app) {
@@ -425,19 +433,21 @@ function sideLibrary(side) {
         h('div', { class: 'small lrtext' }, t.plain || '(no text found)'), h('div', { class: 'small muted' }, `${t.model || t.engine}${t.corrected_version ? ` · corrected ×${t.corrected_version}` : ''}${t.earlier ? ` · ${t.earlier} earlier reading(s) kept` : ''}`)))
         : [h('div', { class: 'small muted' }, 'No text read for this part yet.')])),
       group('Actions', h('div', { class: 'btns' },
-        c.rel ? h('button', { class: 'btn small default', title: 'Opens this cutout in the editor', onclick: e => openLoc('scan:' + c.rel, e) }, 'Open cutout') : null,
-        h('button', { class: 'btn small', title: 'Opens the scan it was cut from', onclick: async e => { await libSelect(c.item); libOpen(c.item, e); } }, 'Open its scan'),
+        c.rel ? h('button', { class: 'btn small default', title: 'Opens this cut in the editor', onclick: e => openLoc('scan:' + c.rel, e) }, 'Open cut') : null,
+        h('button', { class: 'btn small', title: 'Opens the source it was cut from', onclick: async e => { await libSelect(c.item); libOpen(c.item, e); } }, 'Open its source'),
         ...(LIB.editors || []).slice(0, 2).map(app => h('button', { class: 'btn small', onclick: () => libEditIn(c, app) }, `Edit in ${app}`)),
         c.rel ? h('button', { class: 'btn small', onclick: () => api.post('open', { what: 'finder', rel: c.rel }) }, 'Show in Finder') : null)));
     return;
   }
-  if (!d) return side.append(group('Library', h('div', { class: 'muted' }, 'Select an object. Double-click opens it in the editor.')));
+  if (!d) return side.append(group('Library', h('div', { class: 'muted' }, 'Select a source. Double-click opens it in the editor.')));
   const it = d.item;
-  const roleName = { view: 'View', front: 'Front', back: 'Back', detail: 'Detail', edit: 'Edited copy', cutout: 'Cutout' };
+  const roleName = { view: 'Source', front: 'Front', back: 'Back', detail: 'Detail', edit: 'Edited copy', cutout: 'Cut' };
   side.append(group(it.title || '(untitled)',
     h('div', { class: 'small muted' }, [it.kind, it.date, it.batch].filter(Boolean).join(' · ')),
     h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens here; ⌘-click: in a new tab', onclick: e => libOpen(it.uuid, e) }, 'Open'))),
-    group(`Files (${d.assets.length})`, ...d.assets.map(a => h('div', { class: 'libasset' },
+    (() => { const cuts = d.assets.filter(a => a.role === 'cutout'); return group(`Cuts (${cuts.length})`, cuts.length ? h('div', { class: 'libcuts' }, ...cuts.map(a => a.rel ? h('img', { title: a.original_name + ' · click: open · ⌘-click: new tab', src: `/api/thumb?${qs({ rel: a.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss() }, onclick: e => openLoc('scan:' + a.rel, e) }) : null))
+      : h('div', { class: 'small muted' }, 'Not cut yet: open it, find the parts, Cut.')); })(),
+    group(`Source and other files (${d.assets.filter(a => a.role !== 'cutout').length})`, ...d.assets.filter(a => a.role !== 'cutout').map(a => h('div', { class: 'libasset' },
       a.rel ? h('img', { src: `/api/thumb?${qs({ rel: a.rel, size: 256 })}&v=${PREV_V}` }) : h('div', { class: 'noimg' }),
       h('div', { class: 'f' }, h('b', {}, roleName[a.role] || a.role), a.made_with ? h('span', { class: 'muted' }, ` · ${a.made_with}`) : null,
         h('div', { class: 'small muted' }, `${a.width || '?'} × ${a.height || '?'} px${a.dpi ? ` · ${Math.round(a.dpi)} dpi` : ''} · ${a.bits || 8} bit · ${fmtSize(a.size)}`),
@@ -446,11 +456,11 @@ function sideLibrary(side) {
           a.rel ? h('button', { class: 'btn small', onclick: e => openLoc('scan:' + a.rel, e) }, 'Cut / read') : null))))),
     group(`Selections (${d.regions.length})`, ...(d.regions.length ? d.regions.map((g, i) => h('div', { class: 'libregion' + (LIB.hilite === g.uuid ? ' hilite' : ''), 'data-region': g.uuid, style: { borderLeftColor: g.color || COLORS[i % COLORS.length] } },
       h('div', { class: 'lrh' }, h('span', { class: 'sw', style: { background: g.color || COLORS[i % COLORS.length] } }), h('b', {}, g.label || `${g.kind} ${i + 1}`),
-        g.export_on ? null : h('span', { class: 'muted small' }, ' · not exported')),
+        g.export_on ? null : h('span', { class: 'muted small' }, ' · out of the cut')),
       // il ritaglio di questa zona e il suo testo, insieme
       h('div', { class: 'lrbody' },
         g.cutout?.rel ? h('img', { class: 'lrcut', title: g.cutout.name, src: `/api/thumb?${qs({ rel: g.cutout.rel, size: 256 })}&v=${PREV_V}&t=${encodeURIComponent(g.cutout.at)}`, style: { background: bgCss() } })
-          : h('div', { class: 'lrcut none', title: 'Not exported yet' }, 'no cutout'),
+          : h('div', { class: 'lrcut none', title: 'Not cut yet' }, 'no cut'),
         h('div', { class: 'f' },
           g.cutout ? h('div', { class: 'small muted' }, g.cutout.name) : null,
           g.text ? h('div', { class: 'small lrtext' }, g.text.plain.slice(0, 400) + (g.text.plain.length > 400 ? '…' : '')) : h('div', { class: 'small muted' }, 'No text read.'),
@@ -480,7 +490,7 @@ function searchBox() {
     items = [];
     const sect = (title, list) => { if (list.length) { pop.append(h('div', { class: 'sh' }, title)); list.forEach(x => { items.push(x); pop.append(h('div', { class: 'si', onmousedown: e => { e.preventDefault(); pop.classList.remove('on'); x.do(e); } }, x.label, x.sub ? h('small', {}, x.sub) : null)); }); } };
     pop.innerHTML = '';
-    sect('Scans and cutouts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel) : openScan(f.rel)) })));
+    sect('Scans and cuts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel) : openScan(f.rel)) })));
     sect('Labels and text', r.text.map(t => ({ label: t.rel.split('/').pop() + (t.label ? ' · ' + t.label : ''), sub: '…' + t.snippet + '…', do: async () => { await openScan(t.rel); selectIds([t.sheet]); renderSide(); draw(); } })));
     sect('Help', r.help.map(x => ({ label: x.title, sub: x.snippet, do: () => showHelpTopic(x.title) })));
     sect('Ask', [{ label: `Ask the assistant: “${q}”`, sub: 'local model, on this Mac', do: () => openHelp(q) },
@@ -513,21 +523,21 @@ function renderNavTree() {
   };
   const tree = h('div', { class: 'tree' });
   for (const t of S.tree) {
-    const label = { originals: 'Originals', cut: 'Cutouts', failed: 'To check', inbox: 'Inbox' }[t.name];
+    const label = { originals: 'Sources', cut: 'Cuts', failed: 'To check', inbox: 'Inbox' }[t.name];
     tree.append(node(label, ICON_TOP[t.name], t.rel, {
       count: t.count || null, sel: S.view === 'gallery' && S.dir === t.rel, onclick: () => openDir(t.rel),
       kids: t.children.map(c => node(c.name, I.folder, c.rel, { count: c.count, sel: (S.view === 'gallery' || S.view === 'editor') && S.dir === c.rel, onclick: () => openDir(c.rel) })),
     }));
   }
   nav.append(h('h4', {}, 'Library'), h('div', { class: 'tree' },
-      node('Objects', I.pics, 'v:library', { sel: S.view === 'library' && LIB.mode === 'objects', onclick: () => libMode('objects') }),
-      node('Cutouts', I.cut, 'v:library-cutouts', { sel: S.view === 'library' && LIB.mode === 'cutouts', onclick: () => libMode('cutouts') }),
+      node('Sources', I.pics, 'v:library', { sel: S.view === 'library' && LIB.mode === 'objects', onclick: () => libMode('objects') }),
+      node('Cuts', I.cut, 'v:library-cutouts', { sel: S.view === 'library' && LIB.mode === 'cutouts', onclick: () => libMode('cutouts') }),
       node('Texts', I.script, 'v:library-texts', { sel: S.view === 'library' && LIB.mode === 'texts', onclick: () => libMode('texts') })),
     // le serie vengono dal catalogo (non dalle cartelle)
     (LIB.seriesList || []).length ? h('h4', {}, 'Series') : null,
     (LIB.seriesList || []).length ? h('div', { class: 'tree' }, ...LIB.seriesList.filter(x => x.items).map(x =>
-      node(x.name || 'No series', I.folder, 'series:' + (x.uuid || 'none'), { count: x.items, sel: S.view === 'library' && LIB.mode === 'objects' && LIB.series === (x.uuid || 'none'),
-        onclick: () => { LIB.series = (LIB.series === (x.uuid || 'none')) ? null : (x.uuid || 'none'); LIB.mode = 'objects'; store('libmode', 'objects'); if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); } }))) : null,
+      node(x.name || 'No series', I.folder, 'series:' + (x.uuid || 'none'), { count: x.items, sel: S.view === 'library' && LIB.series === (x.uuid || 'none'),
+        onclick: () => { LIB.series = (LIB.series === (x.uuid || 'none')) ? null : (x.uuid || 'none'); if (LIB.mode === 'texts') LIB.mode = 'cutouts'; store('libmode', LIB.mode); if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); } }))) : null,
     h('h4', {}, 'Scans'), tree, h('h4', {}, 'Studio'), h('div', { class: 'tree' },
     node('Jobs', I.jobs, 'v:jobs', { sel: S.view === 'jobs', onclick: () => go('jobs'), count: '' }),
     node('Scanners', I.scanner, 'v:scanners', { sel: S.view === 'scanners', onclick: () => go('scanners') }),
@@ -560,7 +570,7 @@ async function useRemembered(rel) {
   const e = m.engine && S.engines.find(x => x.id === m.engine);
   if (!e?.available) return;
   S.engine = e.id; Object.assign(S.params, m.params || {});
-  status(`${m.batch}: ${e.name}${m.params?.prompt ? ` “${m.params.prompt}”` : ''}, as in your last export from this batch`);
+  status(`${m.batch}: ${e.name}${m.params?.prompt ? ` “${m.params.prompt}”` : ''}, as in your last cut of this series`);
   renderSide(); if (S.view === 'editor') renderOptions();
 }
 async function openDir(rel) {
@@ -572,7 +582,7 @@ async function openDir(rel) {
   go('gallery');
 }
 const crumbs = (...parts) => h('div', { class: 'crumbs' }, ...parts);
-const TOP_NAMES = { originals: 'Originals', cut: 'Cutouts', failed: 'To check', inbox: 'Inbox' };
+const TOP_NAMES = { originals: 'Sources', cut: 'Cuts', failed: 'To check', inbox: 'Inbox' };
 S.navBack = []; S.navFwd = []; S._here = null; S._navigating = false;
 function remember(target) {
   if (!S._navigating && S._here && S._here !== target) { S.navBack.push(S._here); if (S.navBack.length > 100) S.navBack.shift(); S.navFwd = []; }
@@ -644,8 +654,12 @@ async function newTab(loc) {
   snapTab();
   loc = loc || (S.dir ? 'dir:' + S.dir : 'dir:originals');
   const have = loc.startsWith('scan:') ? TABS.list.findIndex(t => t.loc === loc) : -1;
-  if (have >= 0) return switchTab(have);
-  TABS.list.splice(TABS.i + 1, 0, { loc, back: [], fwd: [] });
+  if (have >= 0) {
+    // gia' aperta: ci si va, e "indietro" riporta qui
+    if (have !== TABS.i) TABS.list[have].opener = TABS.list[TABS.i];
+    return switchTab(have);
+  }
+  TABS.list.splice(TABS.i + 1, 0, { loc, back: [], fwd: [], opener: TABS.list[TABS.i] || null });
   TABS.i += 1; S.navBack = []; S.navFwd = []; S._here = null;
   tabsSave(); renderTabs();
   await goLoc(loc);
@@ -672,7 +686,16 @@ async function openLoc(loc, e) {
   return go(arg);
 }
 function tabMenu(el, loc, here) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }]); }
-async function navBack() { if (!S.navBack.length) return; S.navFwd.push(S._here); await goLoc(S.navBack.pop()); }
+const tabOpener = () => { const o = TABS.list[TABS.i]?.opener; return o && TABS.list.includes(o) ? o : null; };
+async function navBack() {
+  if (!S.navBack.length) {
+    const o = tabOpener(); if (!o) return;
+    const cur = TABS.list[TABS.i];
+    await switchTab(TABS.list.indexOf(o));             // la scheda che l'aveva aperta, com'era
+    return closeTab(TABS.list.indexOf(cur));           // e questa si chiude
+  }
+  S.navFwd.push(S._here); await goLoc(S.navBack.pop());
+}
 async function navFwd() { if (!S.navFwd.length) return; S.navBack.push(S._here); await goLoc(S.navFwd.pop()); }
 function addressBar(dir, file, right) {
   // dir: 'originals/sketchbook' (o null per le pagine dello studio), file: nome della scansione aperta
@@ -704,7 +727,7 @@ function addressBar(dir, file, right) {
   }
   const nb = (dirn, en, fn, tip) => h('div', { class: 'addr-nav' + (en ? '' : ' off'), title: tip, onclick: fn }, svg(dirn < 0 ? I.prev : I.next));
   return h('div', { class: 'addr' },
-    h('div', { class: 'addr-navs' }, nb(-1, S.navBack.length, navBack, 'Back (⌘[)'), nb(1, S.navFwd.length, navFwd, 'Forward (⌘])')),
+    h('div', { class: 'addr-navs' }, nb(-1, S.navBack.length || tabOpener(), navBack, S.navBack.length || !tabOpener() ? 'Back (⌘[)' : `Back to “${tabLabel(tabOpener().loc)}” (closes this tab) (⌘[)`), nb(1, S.navFwd.length, navFwd, 'Forward (⌘])')),
     box, right && dir != null ? h('span', { class: 'sub' }, right) : null);
 }
 const visibleItems = () => S.items.filter(i => !i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
@@ -736,9 +759,9 @@ function renderGallery() {
   items.forEach((it, idx) => {
     const badges = [];
     if (it.done === 'ok') badges.push(h('span', { class: 'badge ok', title: 'Cut by the agent' }, 'cut'));
-    if (it.done === 'studio') badges.push(h('span', { class: 'badge studio', title: 'Exported from the studio' }, 'studio'));
+    if (it.done === 'studio') badges.push(h('span', { class: 'badge studio', title: 'Cut in the studio' }, 'studio'));
     if (it.done === 'failed' || S.dir.startsWith('failed')) badges.push(h('span', { class: 'badge fail' }, 'check'));
-    if (it.sheets != null && !it.exported) badges.push(h('span', { class: 'badge edit', title: 'Edited, not exported yet' }, `${it.sheets} ✎`));
+    if (it.sheets != null && !it.exported) badges.push(h('span', { class: 'badge edit', title: 'Edited, not cut yet' }, `${it.sheets} ✎`));
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
       onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel) : openScan(it.rel)),
       onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
@@ -797,7 +820,7 @@ function renderTextPane() {
     h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: t.color } }), h('b', {}, t.title), h('small', {}, '› ' + t.region),
       h('small', { style: { marginLeft: 'auto' } }, `${t.model}${t.version ? ` · corrected ×${t.version}` : ''}`)),
     h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
-      onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cutouts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
+      onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cuts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
     t.item ? h('div', { class: 'small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); LIB.mode = 'objects'; go('library').then(() => libSelect(t.item)); } }, 'Show in the library')) : null));
   pane.append(
     h('div', { class: 'tph' }, h('b', {}, 'Text'),
@@ -809,7 +832,7 @@ function renderTextPane() {
       h('button', { class: 'btn small', disabled: !sheets.length, onclick: () => ocrSheets(sheets) }, `Read all (${sheets.length})`),
       h('button', { class: 'btn small' + (S.tool === 'text' ? ' on' : ''), title: 'Drag a box over any writing (T)', onclick: () => setTool('text') }, '▭ Read a box'),
       h('button', { class: 'btn small', title: 'Every word on the whole scan, as one page', onclick: readWholeScan }, 'Read whole scan')),
-    lib.length ? h('div', { class: 'small muted', style: { margin: '6px 0 2px' } }, 'The text of this cutout (from the library; corrections go everywhere it appears):') : null,
+    lib.length ? h('div', { class: 'small muted', style: { margin: '6px 0 2px' } }, 'The text of this cut (from the library; corrections go everywhere it appears):') : null,
     ...lib,
     ...boxes.map((b, i) => h('div', { class: 'tblock box' },
       h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: '#888' } }), h('b', {}, b.whole ? 'Whole scan' : 'From a box'), h('small', {}, `${Math.round((b.box[2] - b.box[0]) / S.info.ppm)} × ${Math.round((b.box[3] - b.box[1]) / S.info.ppm)} mm`),
@@ -819,7 +842,7 @@ function renderTextPane() {
         b.sheet && sheets.some(x => x.id === b.sheet) ? h('button', { class: 'btn small', onclick: () => { const sh = sheets.find(x => x.id === b.sheet); commit(() => { sh.ocr = ((sh.ocr || '').trim() + '\n' + b.text).trim(); }); boxes.splice(i, 1); renderTextPane(); } }, `Add to sheet ${letter(sheets.find(x => x.id === b.sheet)) || ''}`) : null))),
     ...sheets.map((sh, i) => h('div', { class: 'tblock' + (isSel(sh.id) ? ' sel' : '') + (sh.on === false ? ' off' : '') },
       h('div', { class: 'tbh', onclick: () => { selectIds([sh.id]); renderSide(); draw(); renderTextPane(); } },
-        h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not exported'),
+        h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not cut yet'),
         h('span', { class: 'rr', title: 'Read this sheet again', onclick: e => { e.stopPropagation(); ocrSheets([sh]); } }, '↻')),
       sh.ocr === undefined ? h('div', { class: 'small muted' }, (sh.areas || []).length ? 'Whole sheet not read (only its areas).' : 'Not read yet.')
         : h('textarea', { rows: Math.min(14, Math.max(2, (sh.ocr || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
@@ -829,10 +852,10 @@ function renderTextPane() {
           h('span', { class: 'x', title: 'Remove this area', onclick: () => commit(() => { sh.areas.splice(k, 1); }) }, '✕')),
         h('textarea', { rows: Math.min(8, Math.max(2, (a.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { a.text = e.target.value; }) }, a.text || ''))))),
     h('div', { class: 'tpf' },
-      h('div', { class: 'small muted' }, 'Each part’s text goes into its cutout file (description: XMP, IPTC, EXIF) and follows every correction.'),
+      h('div', { class: 'small muted' }, 'Each part’s text goes into its cut file (description: XMP, IPTC, EXIF) and follows every correction.'),
       h('div', { class: 'btns' },
         h('button', { class: 'btn small', onclick: () => { navigator.clipboard?.writeText(allText()); status('All text copied'); } }, 'Copy all'),
-        h('button', { class: 'btn small', title: 'A Markdown file next to the cutouts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
+        h('button', { class: 'btn small', title: 'A Markdown file next to the cuts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
         h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
 }
 // ------------------------------------------------------------ vista del testo, grande come la scansione
@@ -933,7 +956,7 @@ function renderMirror() {
   });
   (S.boxTexts[S.rel] || []).forEach(t => block(t.box, '#888888', t.text, 'box', v => { t.text = v; renderMirror(); renderTextPane(); }));
   if (!sheets.some(x => x.ocr !== undefined)) (S.libTexts || []).forEach(t => block([0, 0, S.info.w, S.info.h], t.color || '#8a96a6', t.plain, `${t.title} › ${t.region}`,
-    async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cutouts'); renderMirror(); renderTextPane(); }));
+    async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cuts'); renderMirror(); renderTextPane(); }));
   if (!pg.children.length) pg.append(h('div', { class: 'mempty', style: { fontSize: 4 * ppm + 'px', padding: 10 * ppm + 'px' } }, 'Read some text (Text pane) and it appears here, where it is on the scan.'));
   placeMirror();
 }
@@ -970,6 +993,14 @@ async function readWholeScan() {
   } catch (e) { alertDialog('Read text', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return;
   toggleTextPane(true); renderMirror(); draw();
+}
+async function journalDialog() {
+  const cur = (await api.get('library/journal').catch(() => ({}))).dir;
+  const inp = h('input', { type: 'text', class: 'f', value: cur || '~/Documents/Scan Studio transcriptions' });
+  dialog('Transcriptions for nvim', 'LaTeX, read-only, always current', h('div', { style: { width: '520px', lineHeight: 1.5 } },
+    h('div', {}, 'Every transcription goes into a folder: one .tex file per source (named by date), journal.tex that \\inputs them all by date, and scanstudio.sty with plain default commands your own config can redefine. Correct the text here: the folder is rewritten a few seconds after every change. Pictures of the cuts are referenced, not copied.'),
+    h('div', { class: 'row', style: { marginTop: '10px' } }, h('label', {}, 'Folder'), inp)),
+    [['Write and keep updated', async () => { const r = await api.post('library/journal', { dir: inp.value.trim(), reveal: true }).catch(e => ({ error: e.message })); status(r.error || `Transcriptions: ${r.files} source(s) in ${r.dir}`); }, true], ['Cancel', () => true]]);
 }
 function allText() {
   const on = S.st.sheets.filter(x => x.on !== false);
@@ -1064,7 +1095,7 @@ function sideGallery(side) {
       h('div', { class: 'row' }, h('label', {}, 'Name'), h('div', { class: 'f' }, it.name)),
       h('div', { class: 'row' }, h('label', {}, 'Size'), h('div', { class: 'f' }, fmtSize(it.size))),
       h('div', { class: 'row' }, h('label', {}, 'Date'), h('div', { class: 'f' }, new Date(it.mtime * 1000).toLocaleString())),
-      h('div', { class: 'row' }, h('label', {}, 'Status'), h('div', { class: 'f' }, it.done ? (it.done === 'ok' ? 'Cut by the agent' : it.done === 'studio' ? 'Exported from the studio' : 'Failed, needs a look') : 'Not cut yet')),
+      h('div', { class: 'row' }, h('label', {}, 'Status'), h('div', { class: 'f' }, it.done ? (it.done === 'ok' ? 'Cut by the agent' : it.done === 'studio' ? 'Cut in the studio' : 'Failed, needs a look') : 'Not cut yet')),
       h('div', { class: 'btns' }, h('button', { class: 'btn default', onclick: () => openScan(it.rel) }, 'Open'), h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: it.rel }) }, 'Show in Finder'))));
   } else {
     side.append(group('Folder', h('div', { class: 'muted' }, sel.length ? `${sel.length} scans selected.` : 'Select scans (⌘-click, ⇧-click) to run a batch, or double-click one to open it.')));
@@ -1074,27 +1105,27 @@ function sideGallery(side) {
   if (sel.length) side.append(group('Text',
     h('div', { class: 'btns' },
       h('button', { class: 'btn small default', onclick: () => readDocs(sel.map(i => i.rel)) }, `Read ${sel.length > 1 ? sel.length + ' documents' : 'the whole document'}`),
-      inCut ? h('button', { class: 'btn small', title: 'Also writes the text into each cutout’s description (XMP, IPTC, EXIF); pixels never change', onclick: () => readDocs(sel.map(i => i.rel), true) }, 'Read into the files') : null,
-      info(`Reads every word on the page with ${ocrName()} (change it in Add-ons › Text (OCR)). Originals are never changed; the text is kept by the studio and shown in a reader.`))));
-  if (inCut) side.append(group('Cutouts',
+      inCut ? h('button', { class: 'btn small', title: 'Also writes the text into each cut’s description (XMP, IPTC, EXIF); pixels never change', onclick: () => readDocs(sel.map(i => i.rel), true) }, 'Read into the files') : null,
+      info(`Reads every word on the page with ${ocrName()} (change it in Add-ons › Text (OCR)). Sources are never changed; the text is kept by the studio and shown in a reader.`))));
+  if (inCut) side.append(group('Cuts',
     h('div', { class: 'btns' },
       h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate left, lossless', onclick: () => cutoutAction('rotate', sel, -90) }, '⟲ 90°'),
       h('button', { class: 'btn small', disabled: !sel.length, title: 'Rotate right, lossless', onclick: () => cutoutAction('rotate', sel, 90) }, '⟳ 90°'),
-      h('button', { class: 'btn small', disabled: sel.length < 2, title: 'One TIFF with a page per selected cutout, in name order', onclick: () => cutoutAction('merge', sel) }, 'Merge into multipage TIFF'),
+      h('button', { class: 'btn small', disabled: sel.length < 2, title: 'One TIFF with a page per selected cut, in name order', onclick: () => cutoutAction('merge', sel) }, 'Merge into multipage TIFF'),
       h('button', { class: 'btn small', disabled: !sel.length, onclick: () => cutoutAction('trash', sel) }, 'Move to Trash'),
-      info('Rotation moves pixels, never resamples; the previous file is kept in studio-data/replaced and the metadata (true size) is carried over. Text (OCR): Apple Vision reads any writing on the cutout and stores it in the file description (XMP, IPTC, EXIF), pixels untouched. Trash: the Mac Trash, so you can put files back.')),
-    h('div', { class: 'small muted', style: { marginTop: '4px' } }, sel.length ? `${sel.length} selected` : 'Select cutouts (⌘-click, ⇧-click, ⌘A).')));
+      info('Rotation moves pixels, never resamples; the previous file is kept in studio-data/replaced and the metadata (true size) is carried over. Text (OCR): Apple Vision reads any writing on the cut and stores it in the file description (XMP, IPTC, EXIF), pixels untouched. Trash: the Mac Trash, so you can put files back.')),
+    h('div', { class: 'small muted', style: { marginTop: '4px' } }, sel.length ? `${sel.length} selected` : 'Select cuts (⌘-click, ⇧-click, ⌘A).')));
   if (inFail) side.append(group('To check',
-    h('div', { class: 'small muted' }, 'Scans land here when the agent could not cut them, or Apple Vision cut them with an odd shape. Open one, fix it, export; then mark it checked.'),
+    h('div', { class: 'small muted' }, 'Scans land here when the agent could not cut them, or Apple Vision cut them with an odd shape. Open one, fix it, cut it; then mark it checked.'),
     h('div', { class: 'btns' }, h('button', { class: 'btn default', disabled: !sel.length, onclick: () => markChecked(sel.map(i => i.rel)) }, '✓ Mark as checked'),
       info('Removes it from To check. The scan itself stays in originals/; nothing is deleted.'))));
   side.append(group('Engine', engineChooser()),
     group('Batch',
       h('div', { class: 'btns' },
         h('button', { class: 'btn', disabled: !sel.length, onclick: () => batch(false) }, 'Detect'),
-        h('button', { class: 'btn default', disabled: !sel.length, onclick: () => batch(true) }, 'Detect + export'),
+        h('button', { class: 'btn default', disabled: !sel.length, onclick: () => batch(true) }, 'Detect + cut'),
         h('button', { class: 'btn', disabled: !sel.some(i => i.sheets), onclick: () => exportMany(sel.filter(i => i.sheets).map(i => i.rel)) }, 'Export edited')),
-      h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Batches run in the background; see Jobs. Existing cutouts are never overwritten: changed ones are moved to studio-data/replaced.')));
+      h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Batches run in the background; see Jobs. Existing cuts are never overwritten: changed ones are moved to studio-data/replaced.')));
 }
 
 let histData = null, histKey = '';
@@ -1121,7 +1152,7 @@ function drawHist(hc) {
 async function cutoutAction(action, items, deg) {
   const rels = items.map(i => i.rel).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   if (action === 'trash') {
-    const ok = await choose('Move to Trash', `Move ${rels.length} cutout(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. You can put them back from the Trash.', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
+    const ok = await choose('Move to Trash', `Move ${rels.length} cut(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. You can put them back from the Trash.', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
     if (!ok) return;
   }
   if (action === 'ocr') {
@@ -1130,15 +1161,15 @@ async function cutoutAction(action, items, deg) {
     while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 700)); x = await api.get('job', { id: j.id }); }
     const done = x.result || [];
     alertDialog('Text found', h('pre', { class: 'log' }, done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n') || x.log.join('\n')));
-    status(`${done.length} cutout(s) read`);
+    status(`${done.length} cut(s) read`);
     S.sel.clear(); await refreshItems(); return renderSide();
   }
   status({ rotate: 'Rotating…', trash: 'Moving to Trash…', merge: 'Merging…' }[action], true);
   try {
     const r = await api.post('cutouts', { action, rels, deg });
     if (action === 'ocr') alertDialog('Text found', h('pre', { class: 'log' }, r.done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n')));
-    status(action === 'merge' ? `Merged into ${r.done[0]}` : `${r.done.length} cutout(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
-  } catch (e) { alertDialog('Cutouts', e.message); }
+    status(action === 'merge' ? `Merged into ${r.done[0]}` : `${r.done.length} cut(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
+  } catch (e) { alertDialog('Cuts', e.message); }
   S.sel.clear(); await refreshItems(); renderSide();
 }
 async function rotateOpenFile(deg) {
@@ -1153,9 +1184,26 @@ async function markChecked(rels) {
   S.sel.clear(); await refreshItems(); const t = await api.get('tree'); S.tree = t.tree; renderNav(); renderSide();
 }
 function sheetEdited(s) { return s.ops.length || JSON.stringify(s.poly) !== JSON.stringify(s.poly0); }
+// in cima al pannello: dove sta questo file (un taglio: la sua zona e l'originale; un originale: i suoi tagli)
+function whereGroup() {
+  const w = S.where; if (!w?.known) return null;
+  const link = (label, fn, title) => h('a', { href: '#', title: title || 'Click: here · ⌘-click: new tab', onclick: e => { e.preventDefault(); fn(e); } }, label);
+  if (w.role === 'cutout') return group('Cut',
+    h('div', { class: 'small' }, 'Cut of ', link(w.title, () => { LIB.mode = 'objects'; go('library').then(() => libSelect(w.item)); }, 'Its source in the library'),
+      w.part ? h('span', {}, ' › ', h('span', { class: 'sw', style: { display: 'inline-block', width: '9px', height: '9px', background: w.color, margin: '0 4px' } }), w.part) : null),
+    h('div', { class: 'btns' },
+      w.original ? h('button', { class: 'btn small default', title: 'Click: here · ⌘-click: new tab', onclick: async e => { await openLoc('scan:' + w.original, e); if (w.part_id && S.st?.sheets.some(x => x.id === w.part_id)) { selectIds([w.part_id]); renderSide(); draw(); } } }, 'Open source (its part selected)')
+        : h('span', { class: 'small muted' }, w.original_missing ? 'The source is not on this Mac (offline or released).' : 'No source recorded.')));
+  return group('In the library',
+    h('div', { class: 'small' }, link(w.title || 'Its source', () => { LIB.mode = 'objects'; go('library').then(() => libSelect(w.item)); }, 'Its source in the library'),
+      ` · ${w.cuts?.length || 0} cut${(w.cuts || []).length === 1 ? '' : 's'}`),
+    (w.cuts || []).length ? h('div', { class: 'wcuts' }, ...w.cuts.filter(c => c.rel).map(c => h('img', { title: c.name + ' · click: open', src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss() },
+      onclick: e => openLoc('scan:' + c.rel, e) }))) : null);
+}
 function sideEditor(side) {
   if (!S.info) return;
   const st = S.st;
+  const wg = whereGroup(); if (wg) side.append(wg);
   side.append(group('Engine', engineChooser(), h('div', { class: 'btns' },
     h('button', { class: 'btn default', onclick: detect }, 'Detect'),
     h('button', { class: 'btn', onclick: toggleCompare }, S.compare ? 'Hide compare' : 'Compare'))));
@@ -1168,20 +1216,20 @@ function sideEditor(side) {
   const list = h('div');
   (st?.sheets || []).forEach((s, i) => {
     const name = S.names[s.id];
-    list.append(h('div', { class: 'sheet' + (isSel(s.id) ? ' sel' : ''), oncontextmenu: e => { e.preventDefault(); soloSheet(s.id); }, onclick: e => {
+    list.append(h('div', { class: 'sheet' + (isSel(s.id) ? ' sel' : ''), title: 'Double-click: open its cut', ondblclick: e => { if (!e.target.closest('button, input')) openCutOf(s, e); }, oncontextmenu: e => { e.preventDefault(); soloSheet(s.id); }, onclick: e => {
       if (e.altKey) { soloSheet(s.id); renderSide(); draw(); return; }
       if (e.metaKey) toggleSel(s.id);
       else if (e.shiftKey && S._primary) { const ids = st.sheets.map(x => x.id), a = ids.indexOf(S._primary), b = ids.indexOf(s.id); selectIds(ids.slice(Math.min(a, b), Math.max(a, b) + 1), true); S._primary = s.id; }
       else S.selSheet = s.id;
       renderSide(); draw();
     } },
-      h('input', { type: 'checkbox', checked: s.on !== false, title: 'Export this sheet · ⌃-click or ⌥-click: only this one',
+      h('input', { type: 'checkbox', checked: s.on !== false, title: 'In the cut · ⌃-click or ⌥-click: only this one',
         onclick: e => { e.stopPropagation(); if (e.ctrlKey) e.preventDefault(); else if (e.altKey) { e.preventDefault(); soloSheet(s.id); } },
         oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); soloSheet(s.id); },
         onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: sheetColor(S.st?.sheets?.[i], i) } }),
-      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not exported') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}${S.info && s.poly?.length && !isInverted(s) ? (() => { const b = bbox(s.poly); return ` · ≈ ${((b[2] - b[0]) / S.info.ppm).toFixed(0)} × ${((b[3] - b[1]) / S.info.ppm).toFixed(0)} mm`; })() : ''}`)),
-      h('div', {}, h('button', { class: 'btn small', title: 'Preview the cutout', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
+      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not cut yet') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}${S.info && s.poly?.length && !isInverted(s) ? (() => { const b = bbox(s.poly); return ` · ≈ ${((b[2] - b[0]) / S.info.ppm).toFixed(0)} × ${((b[3] - b[1]) / S.info.ppm).toFixed(0)} mm`; })() : ''}`)),
+      h('div', {}, h('button', { class: 'btn small', title: 'Preview the cut', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
   const many = selSheets();
@@ -1191,21 +1239,21 @@ function sideEditor(side) {
     h('div', { class: 'btns' },
       h('button', { class: 'btn small', title: 'Rotate 90° left, lossless', onclick: () => rotateSheets(many, -90) }, '⟲ 90°'),
       h('button', { class: 'btn small', title: 'Rotate 90° right, lossless', onclick: () => rotateSheets(many, 90) }, '⟳ 90°'),
-      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Export on'),
-      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Export off'),
+      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Into the cut'),
+      h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Out of the cut'),
       h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
       h('button', { class: 'btn small', title: 'Everything except these (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', disabled: !many.some(x => sheetEdited(x) && x.poly0), onclick: () => commit(() => many.forEach(x => { if (x.poly0) { x.poly = JSON.parse(JSON.stringify(x.poly0)); x.ops = []; } })) }, 'Undo their edits'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
     h('div', { class: 'row' }, h('label', {}, 'Label all'), h('input', { type: 'text', class: 'f', placeholder: 'same label on each', onchange: e => commit(() => many.forEach(x => x.label = e.target.value)) })),
-    h('div', { class: 'small muted' }, 'Lasso, rectangle, wand and brush in Cut mode act on all of them. ⌘-click toggles, ⇧-click adds a range, drag on empty space to box-select, ⌘A selects all. ⌃-click (or ⌥-click) one sheet: only that one is exported.')));
+    h('div', { class: 'small muted' }, 'Lasso, rectangle, wand and brush in Cut mode act on all of them. ⌘-click toggles, ⇧-click adds a range, drag on empty space to box-select, ⌘A selects all. ⌃-click (or ⌥-click) one part: only that one is in the cut.')));
   side.append(group('Sheets', list, sel ? h('div', { style: { marginTop: '6px' } },
     h('div', { class: 'row' }, h('label', {}, 'Label'), h('input', { type: 'text', class: 'f', value: sel.label || '', placeholder: 'used by {label} in names',
       onchange: e => commit(() => { sel.label = e.target.value; }) })),
     h('div', { class: 'btns' },
       h('button', { class: 'btn small', title: 'Rotate 90° left, lossless', onclick: () => rotateSheets([sel], -90) }, '⟲ 90°'),
       h('button', { class: 'btn small', title: 'Rotate 90° right, lossless', onclick: () => rotateSheets([sel], 90) }, '⟳ 90°'),
-      info('Turns the cutout by 90° at export: pixels are moved, never resampled, so nothing is lost.'),
+      info('Turns the part by 90°; its cut turns with it (pixels moved, never resampled: nothing is lost).'),
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
       h('button', { class: 'btn small', title: 'Everything except this sheet (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
@@ -1215,20 +1263,20 @@ function sideEditor(side) {
         h('option', { value: '' }, `${st.history.length} earlier version(s)…`),
         st.history.map((v, i) => h('option', { value: i }, `${new Date(v.time * 1000).toLocaleString()} · ${v.engine || 'manual'} · ${v.sheets.length} sheet(s)`))),
       info('Every time Detect replaces the sheets, the previous ones are kept here (the last 15). Sheets you made by hand are never replaced by Detect.')) : null));
-  side.append(group('Save',
+  side.append(group('Cut',
     h('div', { class: 'small muted' }, 'Names follow the template in Settings: ', h('code', {}, S.settings.template), ' ', info(TIPS.template)),
-    h('div', { class: 'small muted' }, `Format: ${S.settings.export_format === 'jxl' ? 'JPEG XL lossless' : 'PNG'} · a different cutout with a name already taken ${S.settings.export_existing === 'replace' ? 'replaces it (old one kept in studio-data/replaced)' : 'gets a new number, the old one stays'}. Change in Settings.`),
+    h('div', { class: 'small muted' }, `Format: ${S.settings.export_format === 'jxl' ? 'JPEG XL lossless' : 'PNG'} · a different cut with a name already taken ${S.settings.export_existing === 'replace' ? 'replaces it (old one kept in studio-data/replaced)' : 'gets a new number, the old one stays'}. Change in Settings.`),
     h('div', { class: 'btns' },
-      h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: () => doExport() }, 'Export'),
-      h('button', { class: 'btn', disabled: !st?.sheets.some(s => s.on !== false), title: 'The same cutouts in a subfolder, e.g. to keep an odd but interesting cut next to the normal one', onclick: () => doExport(S.settings.export_subfolder || 'extra') }, `To ${S.settings.export_subfolder || 'extra'}/`),
-      h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Original in Finder'),
+      h('button', { class: 'btn default', disabled: !st?.sheets.some(s => s.on !== false), onclick: () => doExport() }, 'Cut'),
+      h('button', { class: 'btn', disabled: !st?.sheets.some(s => s.on !== false), title: 'A copy of the cuts as they are now, in a subfolder: it stays like this and does not follow its parts (e.g. an odd but interesting version)', onclick: () => doExport(S.settings.export_subfolder || 'extra') }, `Freeze a copy in ${S.settings.export_subfolder || 'extra'}/`),
+      h('button', { class: 'btn', onclick: () => api.post('open', { what: 'finder', rel: S.rel }) }, 'Source in Finder'),
       S.rel.startsWith('failed/') ? h('button', { class: 'btn', onclick: () => markChecked([S.rel]) }, '✓ Checked') : null),
     // un ritaglio gia' salvato aperto qui: girare il file stesso (senza perdita)
-    S.rel.startsWith('cut/') && /\.(png|jxl)$/i.test(S.rel) ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'This file'),
-      h('button', { class: 'btn small', title: 'Rotate this cutout file left, lossless', onclick: () => rotateOpenFile(-90) }, '⟲ 90°'),
-      h('button', { class: 'btn small', title: 'Rotate this cutout file right, lossless', onclick: () => rotateOpenFile(90) }, '⟳ 90°'),
-      info('Rotates the saved file itself (pixels moved, never resampled). The previous version is kept in studio-data/replaced; metadata and true size carry over.')) : null,
-    st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Exported ' + new Date(st.exported * 1000).toLocaleString()) : null));
+    S.rel.startsWith('cut/') && /\.(png|jxl)$/i.test(S.rel) ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'This cut'),
+      h('button', { class: 'btn small', title: 'Rotate this cut and its part left, lossless', onclick: () => rotateOpenFile(-90) }, '⟲ 90°'),
+      h('button', { class: 'btn small', title: 'Rotate this cut and its part right, lossless', onclick: () => rotateOpenFile(90) }, '⟳ 90°'),
+      info('Rotates this cut and its part together, and the part’s other cuts (pixels moved, never resampled). Previous versions stay in studio-data/replaced; metadata and true size carry over.')) : null,
+    st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Cut ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
   side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
   loadHist(hc, sel);
@@ -1243,7 +1291,7 @@ function renderNavbar() {
   nb.append(
     h('div', { class: 'left' }, h('span', { class: 'status', id: 'status' }, ''), h('div', { class: 'progress', id: 'jobbar', style: { width: '90px', display: 'none' } }, h('i', { style: { width: '0%' } }))),
     h('div', { class: 'pair' }, btn(I.prev, 'Previous scan (←)', () => step(-1)), btn(I.next, 'Next scan (→)', () => step(1))),
-    h('div', { class: 'orb', title: ed ? 'Export the cutouts (⌘S)' : 'Open the selected scan', onclick: () => ed ? doExport() : S.sel.size && openScan([...S.sel][0]) }, svg(ed ? I.orb_cut : I.orb_open)),
+    h('div', { class: 'orb', title: ed ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Open the selected scan', onclick: () => ed ? doExport() : S.sel.size && openScan([...S.sel][0]) }, svg(ed ? I.orb_cut : I.orb_open)),
     h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo), btn(I.redo, 'Redo (⇧⌘Z)', redo)),
     ed ? h('div', { class: 'right' }, btn(I.zout, 'Zoom out (−)', () => zoomBy(1 / 1.4)),
       h('span', { class: 'zpct', id: 'zpct' }),
@@ -1272,7 +1320,7 @@ async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
   useRemembered(rel);
-  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; S.libTexts = []; V.tile = V.mtile = null;
+  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; S.libTexts = []; S.where = null; V.tile = V.mtile = null;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
@@ -1306,6 +1354,7 @@ async function openScan(rel) {
     if (S.rel !== rel) return;
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); restoreTab(rel); renderSide(); renderTextPane(); renderMirror(); renderCmdbar(); renderOptions(); draw();
+    api.get('library/where', { rel }).then(w => { if (S.rel === rel) { S.where = w; renderSide(); } }).catch(() => {});
     api.get('library/texts_for', { rel }).then(t => { if (S.rel !== rel) return; S.libTexts = t || []; if (S.libTexts.length) toggleTextPane(true); renderTextPane(); renderMirror(); }).catch(() => {});
     if (BUSY[rel]) busy(true, BUSY[rel], rel);
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
@@ -1369,7 +1418,7 @@ function renderOptions() {
         h('div', { class: 'segs' }, [['add', 'Add'], ['sub', 'Erase']].map(([m, l]) => h('div', { class: 'seg' + ((S.mode === m || (m === 'add' && S.mode !== 'sub')) ? ' on' : ''), onclick: () => setMode(m) }, svg(MODE_ICONS[m]), h('span', {}, l))))),
       numSlider('Size', S.brushMM, 0.2, 20, 0.1, 'mm' + (S.info ? ` · ${Math.round(S.brushMM * S.info.ppm)} px` : ''), v => { S.brushMM = v; const u = $('#optbar .ou'); if (u && S.info) u.textContent = `mm · ${Math.round(v * S.info.ppm)} px`; draw(); }, TIPS.brush),
       hint(S.mode === 'sub' ? 'Paint over what should become transparent.' : 'Paint over paper the cut missed. [ and ] change the size.'));
-  } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; ⌃-click: export only that one; Delete removes.'));
+  } else if (t === 'select') bar.append(hint('Click a sheet to select it. ⇧ or ⌘ click adds more; drag on empty space to select with a box; ⌃-click: cut only that one; Delete removes.'));
   else if (t === 'hand') bar.append(hint('Drag to move around. Also: hold Space with any tool, or scroll with two fingers.'));
   else if (t === 'points') bar.append(hint('Drag the points of the selected sheet. Double-click an edge to add a point, ⌥-click a point to remove it.'));
   else if (t === 'poly') bar.append(hint('Click the corners of a new sheet; Enter (or double-click) closes it, Esc cancels.'));
@@ -1677,7 +1726,7 @@ function bindCanvas(stage) {
       const ne = nearestEdge(s, pt); if (ne.d < 8) commit(() => s.poly.splice(ne.i + 1, 0, rnd(ne.p)));
       return;
     }
-    if (S.tool === 'select') { const s = sheetAt(pt); if (s) cutoutDialog(s); }
+    if (S.tool === 'select') { const s = sheetAt(pt); if (s) openCutOf(s, e); }
   });
   cv.addEventListener('wheel', e => {
     e.preventDefault();
@@ -1830,12 +1879,24 @@ async function ocrBox(box) {
   toggleTextPane(true); renderMirror(); draw();
 }
 const sheetLetter = sh => { const on = (S.st?.sheets || []).filter(x => x.on !== false); return on.length > 1 ? 'abcdefghijklmnopqrstuvwxyz'[on.indexOf(sh)] || '' : (sh.label || 'sheet'); };
+// dalla parte al suo taglio: il file gia' tagliato, in una scheda nuova (⌥: solo l'anteprima)
+function cutRelOf(sh) {
+  const name = (S.names?.[sh.id] || '').split('/').pop();
+  return name && (S.where?.cuts || []).find(c => c.name === name && c.rel)?.rel || null;
+}
+function openCutOf(sh, e) {
+  if (e?.altKey) return cutoutDialog(sh);
+  const rel = cutRelOf(sh);
+  if (rel) return newTab('scan:' + rel);
+  status(sh.on === false ? 'This part is not in the cut.' : 'Not cut yet: press Cut (⌘S). Showing the preview.');
+  cutoutDialog(sh);
+}
 function soloSheet(id) {
   const sh = S.st.sheets, me = sh.find(x => x.id === id); if (!me) return;
   const alreadySolo = me.on !== false && sh.every(x => x === me || x.on === false);
   commit(() => sh.forEach(x => { x.on = alreadySolo ? true : x === me; }));
   S.selSheet = id;
-  status(alreadySolo ? 'All sheets on again' : 'Only this sheet will be exported (⌃-click it again to turn all back on)');
+  status(alreadySolo ? 'All sheets on again' : 'Only this part is in the cut (⌃-click it again to put all back)');
 }
 async function ocrSheets(list) {
   await flushSave();
@@ -1856,7 +1917,7 @@ async function ocrSheets(list) {
     }
     commit(() => list.forEach(x => { if (r[x.id] !== undefined) x.ocr = r[x.id]; }));
     const n = Object.values(r).filter(Boolean).length;
-    status(n ? `Text found on ${n} sheet(s): it goes into the metadata at export` : 'No text found');
+    status(n ? `Text found on ${n} sheet(s): it goes into its cut` : 'No text found');
   toggleTextPane(true); renderMirror();
   } catch (e) { busy(false, null, rel); if (S.rel !== rel) return; alertDialog('Text (OCR)', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return; renderSide();
@@ -2051,7 +2112,7 @@ async function toggleCompare() {
 }
 function rotateSheets(list, deg) {
   commit(() => list.forEach(x => { x.rot = (((x.rot || 0) + deg) % 360 + 360) % 360; }));
-  status(`Rotated ${deg > 0 ? 'right' : 'left'} 90° (lossless, applied at export)`);
+  status(`Rotated ${deg > 0 ? 'right' : 'left'} 90° (lossless; its cut turns too)`);
 }
 function restoreVersion(i) {
   const v = S.st.history[i]; if (!v) return;
@@ -2067,20 +2128,20 @@ async function doExport(sub) {
   if (S.view !== 'editor' || !S.st?.sheets.length) return;
   await flushSave();
   const rel = S.rel;
-  busy(true, 'Saving the cutouts…');
+  busy(true, 'Saving the cuts…');
   try {
     const r = await api.post('export', { rel, subfolder: typeof sub === 'string' ? sub : null });
-    if (S.rel !== rel) { busy(false, null, rel); refreshItems(); return status(`${baseName(rel)}: exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`); }
+    if (S.rel !== rel) { busy(false, null, rel); refreshItems(); return status(`${baseName(rel)}: cut ${r.written.filter(w => w.status === 'written').length} cut(s)`); }
     const moved = r.written.find(w => w.status === 'moved');
     if (moved) { S.rel = moved.rel; S.dir = moved.rel.split('/').slice(0, -1).join('/'); }
     const st = await api.get('state', { rel: S.rel }); setState(st);
-    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.status === 'identical' ? '   (already there, identical)' : ''}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cutout you started from, kept)' : ''}`).join('\n');
-    status(`Exported ${r.written.filter(w => w.status === 'written').length} cutout(s)`);
-    alertDialog('Cutouts saved', h('pre', { class: 'log' }, list || 'Nothing to save.'));
-  } catch (e) { busy(false, null, rel); if (S.rel !== rel) return status(`${baseName(rel)}: export failed: ${e.message}`); alertDialog('Export failed', e.message); }
+    const list = r.written.map(w => `${w.status === 'identical' ? '= ' : w.status === 'moved' ? '→ ' : '✓ '}${w.path.replace(S.root + '/', '')}${w.status === 'identical' ? '   (already there, identical)' : ''}${w.moved_old ? '   (old one moved aside)' : ''}${w.status === 'moved' ? '   (the cut you started from, kept)' : ''}`).join('\n');
+    status(`Cut ${r.written.filter(w => w.status === 'written').length} cut(s)`);
+    alertDialog('Cut', h('pre', { class: 'log' }, list || 'Nothing to cut.'));
+  } catch (e) { busy(false, null, rel); if (S.rel !== rel) return status(`${baseName(rel)}: cut failed: ${e.message}`); alertDialog('Cut failed', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return; renderSide(); refreshItems();
 }
-async function exportMany(rels) { if (!rels.length) return; await api.post('jobs', { kind: 'export', rels }); status(`Export of ${rels.length} scan(s) queued`); pollJobs(); }
+async function exportMany(rels) { if (!rels.length) return; await api.post('jobs', { kind: 'export', rels }); status(`Cutting ${rels.length} scan(s)… (see Jobs)`); pollJobs(); }
 async function batch(exp) {
   const rels = [...S.sel]; if (!rels.length) return;
   await api.post('jobs', { kind: 'batch', rels, engine: S.engine, params: engParams(), export: exp });
@@ -2124,13 +2185,13 @@ function cutoutDialog(s) {
   img.onerror = () => info.textContent = 'Nothing to show (empty sheet?)';
   box.onclick = () => { full = !full; load(); };
   load();
-  dialog('Cutout preview', S.names[s.id] || 'Cutout', h('div', {}, box, info), [['Close', () => true, true]], { style: { width: '760px' } });
+  dialog('Cut preview', S.names[s.id] || 'Cut', h('div', {}, box, info), [['Close', () => true, true]], { style: { width: '760px' } });
 }
 
 function fakePixelsDialog() {
   dialog('Fix', 'Only real pixels, unless you ask', h('div', { style: { width: '520px', lineHeight: 1.5 } },
-    h('p', {}, 'Everything else in Scan Studio only decides which pixels of your scan are kept: cutouts change transparency, never colour. The originals are never touched.'),
-    h('p', {}, 'The Fix tools are different: they compute new pixel values (removing moiré, changing contrast, smoothing grain). That is what “fake pixels” means here. So they never overwrite anything: each one saves an extra copy next to the cutout, named after the fix, and the copy is marked in its file information.'),
+    h('p', {}, 'Everything else in Scan Studio only decides which pixels of your scan are kept: cuts change transparency, never colour. The sources are never touched.'),
+    h('p', {}, 'The Fix tools are different: they compute new pixel values (removing moiré, changing contrast, smoothing grain). That is what “fake pixels” means here. So they never overwrite anything: each one saves an extra copy next to the cut, named after the fix, and the copy is marked in its file information.'),
     h('p', { class: 'muted' }, 'Dust removal is left out on purpose: without an infrared channel (the LiDE 400 has none) a speck of dust and a dot of ink look the same, and any software fix invents what is under the speck.')),
     [['OK', () => true, true]]);
 }
@@ -2139,21 +2200,21 @@ async function settingsDialog() {
   const f = {};
   const field = (id, label, el, hint) => { f[id] = el; return h('div', { class: 'row', style: { alignItems: 'flex-start' } }, h('label', { style: { width: '120px', paddingTop: '3px' } }, label), h('div', { class: 'f' }, el, hint ? h('div', { class: 'small muted' }, hint) : null)); };
   const body = h('div', { style: { width: '560px' } },
-    h('div', { class: 'gh', style: { color: '#1e3287', margin: '6px 0' } }, 'Where cutouts go'),
+    h('div', { class: 'gh', style: { color: '#1e3287', margin: '6px 0' } }, 'Where cuts go'),
     field('out_root', 'Folder', h('input', { type: 'text', value: s.out_root }), 'Relative to ~/Scans, or a full path.'),
     field('template', 'Name template', h('input', { type: 'text', value: s.template }), '{batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. Use / for subfolders.'),
     field('batch_folders', 'Per batch', h('textarea', { rows: 3, placeholder: 'sketchbook = ~/Pictures/Sketchbook', value: Object.entries(s.batch_folders || {}).map(([k, v]) => `${k} = ${v}`).join('\n') }), 'One per line: batch = folder. Overrides the folder above.'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Eagle'),
-    field('eagle', 'Add to Eagle', h('input', { type: 'checkbox', checked: s.eagle }), 'Also import each new cutout into Eagle (Eagle must be open).'),
+    field('eagle', 'Add to Eagle', h('input', { type: 'checkbox', checked: s.eagle }), 'Also import each new cut into Eagle (Eagle must be open).'),
     field('eagle_folder', 'Eagle folder id', h('input', { type: 'text', value: s.eagle_folder }), 'Optional.'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Engines and Claude'),
-    h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Export'),
+    h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Cuts'),
     field('export_format', 'Format', h('select', {}, [['png', 'PNG'], ['jxl', 'JPEG XL, lossless (smaller, keeps transparency)']].map(([v, l]) => h('option', { value: v, selected: s.export_format === v }, l))), 'JPEG XL is checked after writing: decoded back and compared pixel by pixel, else PNG is kept.'),
-    field('ocr_on_export', 'Text (OCR)', h('input', { type: 'checkbox', checked: s.ocr_on_export }), 'Read any writing on each cutout with Apple Vision (on this Mac) and store it in the file description. Adds a few seconds per cutout.'),
+    field('ocr_on_export', 'Text (OCR)', h('input', { type: 'checkbox', checked: s.ocr_on_export }), 'Read any writing on each cut with Apple Vision (on this Mac) and store it in the file description. Adds a few seconds per cut.'),
     field('verify_jxl', 'Check JPEG XL', h('input', { type: 'checkbox', checked: s.verify_jxl }), 'Decode every JPEG XL back and compare it pixel by pixel (cjxl -d 0 is lossless by design; this only guards against a tool bug). Slower.'),
-    field('keep_16bit', 'Keep 16 bits', h('input', { type: 'checkbox', checked: s.keep_16bit }), 'Cutouts of 48-bit colour or 16-bit grey scans keep all 16 bits per channel (PNG or JPEG XL). Off: 8-bit cutouts.'),
-    field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cutouts are never written twice.'),
-    field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by the second export button (“To …/”).'),
+    field('keep_16bit', 'Keep 16 bits', h('input', { type: 'checkbox', checked: s.keep_16bit }), 'Cuts of 48-bit colour or 16-bit grey scans keep all 16 bits per channel (PNG or JPEG XL). Off: 8-bit cuts.'),
+    field('export_existing', 'Name taken', h('select', {}, [['new_copy', 'Keep the old one, save the new one as “(2)”'], ['replace', 'Move the old one to studio-data/replaced']].map(([v, l]) => h('option', { value: v, selected: s.export_existing === v }, l))), 'Identical cuts are never written twice.'),
+    field('export_subfolder', 'Subfolder', h('input', { type: 'text', value: s.export_subfolder || 'extra' }), 'Used by “Freeze a copy in …/”: a copy of the cuts that stays as it is (it does not follow its parts).'),
     h('div', { class: 'gh', style: { color: '#1e3287', margin: '12px 0 6px' } }, 'Colour calibration (IT8)'),
     field('it8_remind', 'Remind me', h('input', { type: 'checkbox', checked: s.it8_remind }), 'A reminder to recalibrate with the IT8.7/2 chart.'),
     field('it8_days', 'Every', h('input', { type: 'number', min: 7, max: 730, step: 1, value: s.it8_days || 90 }), 'days (90 = quarterly). ' + (s.it8_last ? 'Counting since ' + new Date(s.it8_last * 1000).toLocaleDateString() + '.' : '')),
@@ -2195,7 +2256,7 @@ async function pollJobs() {
   S._wasActive = active;
 }
 // avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato
-const JOB_NAMES = { recut: 'Re-cut', readcuts: 'Read text of cutouts', libimport: 'Library import', edit_in: 'Edit in', read: 'Read text', batch: 'Batch', export: 'Cut', ocr: 'Text of cutouts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
+const JOB_NAMES = { recut: 'Re-cut', readcuts: 'Read text of cuts', libimport: 'Library import', edit_in: 'Edit in', read: 'Read text', batch: 'Batch', export: 'Cut', ocr: 'Text of cuts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
   compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install' };
 // lavori senza avanzamento misurabile (un Detect, una domanda): la barra scorre, si vede il tempo
 const jobVague = j => j.status === 'running' && j.total === 1 && j.pct == null;
@@ -2271,7 +2332,7 @@ function renderJobs() {
     past.length ? h('div', { class: 'gh', style: { display: 'flex', alignItems: 'center' } }, `Finished (${past.length})`,
       h('button', { class: 'btn small', style: { marginLeft: 'auto' }, onclick: async () => { await api.post('jobs_clear', {}); pollJobs(); } }, 'Clear finished')) : null,
     ...past.map(row),
-    S.jobs.length ? null : h('div', { class: 'empty' }, 'No jobs yet. Everything the studio does (Detect, text, export, batches, downloads) shows up here.')));
+    S.jobs.length ? null : h('div', { class: 'empty' }, 'No jobs yet. Everything the studio does (Detect, text, cuts, batches, downloads) shows up here.')));
 }
 
 // ------------------------------------------------------------ scanner e script
@@ -2371,7 +2432,7 @@ function renderScanSide(side) {
     h('div', { class: 'row' }, h('label', {}, 'Colour'), h('select', { class: 'f', onchange: e => { SC.mode = e.target.value; renderScanSide(); } },
       (o.modes || ['Color']).filter(m => m !== 'Lineart').map(m => h('option', { value: m, selected: m === SC.mode },
         ({ Color: 'Colour (24-bit)', Gray: 'Grey (8-bit)', '48 bits color': 'Colour 48-bit (16 per channel)', '16 bits gray': 'Grey 16-bit' })[m] || m))),
-      info('48-bit colour and 16-bit grey keep 65,536 levels per channel instead of 256: smoother gradients and room for later corrections. Detection works on an 8-bit view; exported cutouts keep all 16 bits (16-bit PNG or JPEG XL). Files are twice as large.')),
+      info('48-bit colour and 16-bit grey keep 65,536 levels per channel instead of 256: smoother gradients and room for later corrections. Detection works on an 8-bit view; cuts keep all 16 bits (16-bit PNG or JPEG XL). Files are twice as large.')),
     h('div', { class: 'row' }, h('label', {}, 'Batch'), h('input', { type: 'text', class: 'f', value: SC.batch, oninput: e => { SC.batch = e.target.value; nextName(); } }),
       info('Scans are named “<batch> <number>.tif” and go to the inbox; the agent moves them to originals/<batch>/ and cuts them, like your Image Capture scans.')),
     h('div', { class: 'small muted', id: 'nextname' }, '')));
@@ -2613,7 +2674,7 @@ function toggleChat(open, mode, q, topic) {
   const log = h('div', { class: 'chatlog' });
   const intro = () => CHAT.mode === 'help'
     ? h('div', { class: 'muted small' }, 'The local assistant answers from the studio’s own help, on this Mac (no internet). Try: “how do I invert a selection?”, “what does Tolerance do?”')
-    : h('div', { class: 'muted small' }, 'Claude Code runs in the project folder and can read this scan, its edit state and the studio API, and do jobs: “detect all scans in this folder with SAM and export them”.');
+    : h('div', { class: 'muted small' }, 'Claude Code runs in the project folder and can read this scan, its edit state and the studio API, and do jobs: “detect all scans in this folder with SAM and cut them”.');
   const inp = h('textarea', { rows: 2, class: 'f', onkeydown: e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } } });
   const cont = h('input', { type: 'checkbox', checked: true, title: 'Continue the same conversation' });
   const seg = h('div', { class: 'segs' }, [['help', 'Help (local)'], ['claude', 'Claude']].map(([m, l]) => h('div', { class: 'seg' + (CHAT.mode === m ? ' on' : ''), onclick: () => toggleChat(true, m) }, h('span', {}, l))));

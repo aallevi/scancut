@@ -222,8 +222,12 @@ def item_list(lib, q=None, limit=500, offset=0, series=None):
         n = lib.db.execute('SELECT (SELECT COUNT(*) FROM item_asset WHERE item_id = ?), (SELECT COUNT(*) FROM region WHERE item_id = ?),'
                            ' (SELECT COUNT(*) FROM reading r JOIN region g ON g.id = r.region_id WHERE g.item_id = ?)', (it['id'],) * 3).fetchone()
         sr = lib.db.execute('SELECT name FROM series WHERE id = ?', (it['series_id'],)).fetchone() if it['series_id'] else None
+        cuts = [rel_of(lib, c) for c in lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role = 'cutout' "
+                                                         "ORDER BY a.original_name LIMIT 4", (it['id'],))]
         out.append({'uuid': it['uuid'], 'title': it['title'], 'kind': it['kind'], 'date': it['date'], 'batch': sr[0] if sr else None,
                     'files': n[0], 'regions': n[1], 'texts': n[2], 'thumb': rel_of(lib, a) if a else None,
+                    'cut_thumbs': [c for c in cuts if c],
+                    'cuts': lib.db.execute("SELECT COUNT(*) FROM item_asset WHERE item_id = ? AND role = 'cutout'", (it['id'],)).fetchone()[0],
                     'dpi': a['dpi'] if a else None, 'width': a['width'] if a else None, 'height': a['height'] if a else None,
                     'added': it['created_at']})
     return out
@@ -344,6 +348,7 @@ def sync_rel(rel):
         refresh_cutout_text(lib, rid)
     if recut_needed:
         schedule_recut(rel)
+    schedule_journal()
     # fogli tolti nello studio: le zone non si cancellano, si segnano (la storia resta)
     for sid, r in have.items():
         if sid not in seen and r['export_on']:
@@ -524,10 +529,12 @@ def text_list(lib, q=None, limit=500):
     return out
 
 
-def cutout_list(lib, limit=1000):
+def cutout_list(lib, limit=1000, series=None):
     out = []
+    flt = " AND i.series_id IS NULL" if series == 'none' else " AND i.series_id = (SELECT id FROM series WHERE uuid = ?)" if series else ""
     for a in lib.db.execute("SELECT a.*, i.uuid AS item, i.title FROM asset a JOIN item_asset ia ON ia.asset_id = a.id JOIN item i ON i.id = ia.item_id "
-                            "WHERE ia.role = 'cutout' ORDER BY a.imported_at DESC LIMIT ?", (limit,)):
+                            "WHERE ia.role = 'cutout'" + flt + " ORDER BY i.title COLLATE NOCASE, a.original_name LIMIT ?",
+                            ((series,) if series and series != 'none' else ()) + (limit,)):
         e = lib.db.execute('SELECT r.uuid, r.label, r.kind, r.color, r.position FROM cut x JOIN region r ON r.id = x.region_id WHERE x.path = ? ORDER BY x.id DESC LIMIT 1',
                            (a['path'],)).fetchone()
         rows = [dict(t) for t in lib.db.execute(
@@ -580,6 +587,7 @@ def read_cutouts(lib, uuids, progress=None, log=print):
             refresh_cutout_text(lib, rid)
         log(f'{a["original_name"]}: ' + (f'{len(text.splitlines())} line(s)' if text else 'no text'))
         done.append({'uuid': u, 'text': text})
+    schedule_journal()
     return done
 
 
@@ -627,6 +635,7 @@ def correct_text(lib, reading_id, text):
                     sh['ocr'] = text; core.save_state(st)
                 break
         refresh_cutout_text(lib, src[3] if src and src[3] else r['region_id'])
+    schedule_journal()
     return True
 
 
@@ -735,3 +744,58 @@ def series_list(lib):
         'SELECT s.uuid, s.name, s.notes, COUNT(i.id) AS items FROM series s LEFT JOIN item i ON i.series_id = s.id AND i.trashed_at IS NULL '
         'GROUP BY s.id ORDER BY s.name COLLATE NOCASE')] + [{'uuid': None, 'name': None, 'items': lib.db.execute(
         'SELECT COUNT(*) FROM item WHERE series_id IS NULL AND trashed_at IS NULL').fetchone()[0]}]
+
+
+# ---------------------------------------------------------------- dove sta un file nella libreria
+def where(lib, rel):
+    # per l'editor: questo file e' un originale (con i suoi tagli) o un taglio (con la sua zona e l'originale)
+    p = os.path.realpath(core.abspath(rel))
+    a = lib.db.execute('SELECT * FROM asset WHERE path = ?', (p,)).fetchone()
+    if not a:
+        return {'known': False}
+    row = lib.db.execute('SELECT i.uuid, i.title, ia.role FROM item_asset ia JOIN item i ON i.id = ia.item_id WHERE ia.asset_id = ? LIMIT 1', (a['id'],)).fetchone()
+    out = {'known': True, 'role': row['role'] if row else None, 'item': row['uuid'] if row else None, 'title': row['title'] if row else None}
+    if row and row['role'] == 'cutout':
+        c = lib.db.execute("SELECT r.label, r.kind, r.position, r.color, json_extract(r.source, '$.studio_rel') AS srel, json_extract(r.source, '$.studio_id') AS sid "
+                           'FROM cut x JOIN region r ON r.id = x.region_id WHERE x.path = ? ORDER BY x.id DESC LIMIT 1', (p,)).fetchone()
+        src = lib.db.execute('SELECT * FROM asset WHERE id = ?', (a['derived_from'],)).fetchone() if a['derived_from'] else None
+        out.update(part=(c['label'] or f'{c["kind"]} {c["position"] + 1}') if c else None, color=c['color'] if c else None,
+                   part_id=c['sid'] if c else None, original=rel_of(lib, src) if src and os.path.exists(lib.asset_path(src)) else None,
+                   original_missing=bool(src) and not os.path.exists(lib.asset_path(src)))
+    else:
+        cuts = lib.db.execute("SELECT a.original_name AS name, a.path FROM asset a JOIN item_asset ia ON ia.asset_id = a.id "
+                              "WHERE ia.role = 'cutout' AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY a.original_name", (a['id'],)).fetchall()
+        out['cuts'] = [{'name': c['name'], 'rel': os.path.relpath(c['path'], core.ROOT) if c['path'].startswith(core.ROOT + os.sep) else None} for c in cuts]
+    return out
+
+
+# ---------------------------------------------------------------- uscite: il diario LaTeX per nvim
+_journal_timer = [None]
+
+
+def journal_dir(lib):
+    r = lib.db.execute("SELECT value FROM setting WHERE key = 'journal_dir'").fetchone()
+    return json.loads(r[0]) if r else None
+
+
+def set_journal_dir(lib, d):
+    with lib.db:
+        lib.db.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('journal_dir', ?)", (json.dumps(d),))
+
+
+def write_journal(lib):
+    from . import journal
+    d = journal_dir(lib)
+    return journal.write(lib, os.path.expanduser(d)) if d else None
+
+
+def schedule_journal(delay=3):
+    # una rappresentazione: segue ogni testo cambiato, poco dopo
+    lib = library(create=False)
+    if not lib or not journal_dir(lib):
+        return
+    if _journal_timer[0]:
+        _journal_timer[0].cancel()
+    _journal_timer[0] = threading.Timer(delay, lambda: _safe(write_journal, library(create=False)))
+    _journal_timer[0].daemon = True
+    _journal_timer[0].start()

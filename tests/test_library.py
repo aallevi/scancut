@@ -281,3 +281,24 @@ class BridgeTest(unittest.TestCase):
         series = {x['name']: x['items'] for x in bridge.series_list(lib)}
         self.assertEqual(series, {'card': 1, None: 1})
         self.assertEqual(lib.db.execute("SELECT COUNT(*) FROM series WHERE name = 'IMG'").fetchone()[0], 0)
+
+    def test_journal_latex(self):
+        # le trascrizioni come LaTeX: un file per oggetto, journal.tex, scanstudio.sty; caratteri speciali protetti
+        from studio.library import bridge, journal
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = '# Title\n- one & two\n50% of $5_x'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        d = os.path.join(self.root, 'journal')
+        r = journal.write(lib, d)
+        self.assertEqual(r['files'], 1)
+        tex = open(os.path.join(d, [f for f in os.listdir(d) if f.endswith('.tex') and f != 'journal.tex'][0])).read()
+        self.assertIn(r'\paragraph{Title}', tex)
+        self.assertIn(r'\item one \& two', tex)
+        self.assertIn(r'50\% of \$5\_x', tex)
+        self.assertIn('scanstudio://item/', tex)
+        self.assertIn(r'\input{', open(os.path.join(d, 'journal.tex')).read())
+        self.assertTrue(os.path.exists(os.path.join(d, 'scanstudio.sty')))

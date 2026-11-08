@@ -495,6 +495,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/items':
             lib = bridge.library(create=False)
             return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None) if lib else [])
+        if path == 'library/journal':
+            lib = bridge.library(create=False)
+            return self.send({'dir': bridge.journal_dir(lib) if lib else None})
+        if path == 'library/where':
+            lib = bridge.library(create=False)
+            return self.send(bridge.where(lib, rel) if lib else {'known': False})
         if path == 'library/series':
             lib = bridge.library(create=False)
             return self.send(bridge.series_list(lib) if lib else [])
@@ -506,7 +512,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(bridge.text_list(lib, q.get('q') or None) if lib else [])
         if path == 'library/cutouts':
             lib = bridge.library(create=False)
-            return self.send(bridge.cutout_list(lib) if lib else [])
+            return self.send(bridge.cutout_list(lib, series=q.get('series') or None) if lib else [])
         if path == 'library/texts_for':
             lib = bridge.library(create=False)
             return self.send(bridge.texts_for_rel(lib, rel) if lib else [])
@@ -625,6 +631,16 @@ class Handler(BaseHTTPRequestHandler):
                 text = core.ocr_box(rel, b['box'])
                 j['log'].append(f'{len(text.splitlines())} line(s)' if text else 'no text')
             return self.send({'text': text, 'engine': eng})
+        if path == 'library/journal':
+            lib = bridge.library(create=False)
+            if b.get('dir'):
+                bridge.set_journal_dir(lib, b['dir'])
+            r = bridge.write_journal(lib)
+            if r and r['dir'].startswith(core.ROOT):
+                r['rel'] = os.path.relpath(r['dir'], core.ROOT)
+            if r and b.get('reveal'):
+                subprocess.run(['open', r['dir']])
+            return self.send(r or {'error': 'no folder chosen'})
         if path == 'library/correct':
             lib = bridge.library(create=False)
             bridge.correct_text(lib, int(b['reading']), str(b['text']))
@@ -664,7 +680,8 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS.track('export', rel=rel) as j:
                 w = core.export(rel, replace=b.get('replace'), subfolder=b.get('subfolder'), log=j['log'].append)
                 j['log'] += [f'{x["status"]}: {os.path.relpath(x["path"], core.ROOT)}' for x in w]
-            bridge.sync_async(bridge.on_export, rel, w)
+            if not b.get('subfolder'):                 # una copia congelata non e' il taglio della zona: non segue
+                bridge.sync_async(bridge.on_export, rel, w)
             return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
