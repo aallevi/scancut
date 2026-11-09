@@ -17,7 +17,8 @@ room, fold a whole pane away: the small tab on its edge, View › Sidebar / Righ
 - **Image only** (Y, View menu, or the checkbox under the tools): just the image, without parts,
   shading or text boxes. Y again shows them.
 - **Loupe** (G): 4, 8 or 16:1, real pixels.
-- **Densitometer**: RGB, L\*a\*b\*, distance from the lid colour; single pixel, 3×3 or 5×5.
+- **Densitometer**: RGB, L\*a\*b\*, distance from the background colour (and whether the pixel counts as
+  background or foreground); single pixel, 3×3 or 5×5.
 - **Histogram** of the scan or the selected part.
 - **Backgrounds** (View): light blue, white, grey, dark, checkerboard.
 

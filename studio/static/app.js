@@ -136,9 +136,9 @@ const TIPS = {
   contig: 'Contiguous: only pixels connected to the click. Off: the same colour anywhere on the scan (e.g. every bit of lid showing through holes).',
   cutview: 'Darkens what will be cut away. Zoomed in, it shows the exact final edge pixel by pixel, not the simplified outline. O toggles it.',
   modes: 'What lasso, rectangle and wand do, like Photoshop: □ New makes a separate sheet from the selection (e.g. only the ink: wand with contig. off, click a black line), + adds to the sheet, − cuts away, ∩ keeps only the overlap (e.g. only the ink inside this page). While clicking: ⇧ adds, ⌥ cuts, ⇧⌥ intersects. X swaps + and −.',
-  hist: 'How many pixels have each lightness (grey) and each R, G, B value. The dashed line is the lid colour the automatic cut found. Read-only; click to switch linear/log.',
+  hist: 'How many pixels have each lightness (grey) and each R, G, B value. The dashed line is the background colour the automatic cut found (lid, card, table…). Read-only; click to switch linear/log.',
   template: 'How cuts are named: {batch} {stem} {sheet} (" a", " b"…) {letter} {n} {label} {date} {engine}. A / makes subfolders.',
-  densit: 'Values of the real scan pixel under the cursor (or the 3×3 / 5×5 average, View menu). "vs lid" is the colour distance the automatic cut measures; under the tolerance it counts as lid.',
+  densit: 'Values of the real scan pixel under the cursor (or the 3×3 / 5×5 average, View menu). "vs background" is the colour distance from the background the automatic cut found (lid, card, table…); under the tolerance the pixel counts as background, above it as foreground.',
 };
 
 // ------------------------------------------------------------ menu a tendina
@@ -1240,7 +1240,7 @@ function engineChooser() {
         free ? h('option', { value: '__other' }, 'Other…') : null);
     } else inp = h('input', { type: p.type === 'number' ? 'number' : 'text', step: p.step, value: v, class: 'f', oninput: ev => {
       S.params[p.id] = p.type === 'number' ? +ev.target.value : ev.target.value;
-      if (p.id === 'tol') { const t = BGTOL[S.rel], l = ev.target.closest('.row')?.nextSibling; if (t != null && l) l.textContent = `Auto for this scan: ${t} · now ${(t * (+ev.target.value || 1)).toFixed(1)} (Lab distance from the lid)`; }
+      if (p.id === 'tol') { const t = BGTOL[S.rel], l = ev.target.closest('.row')?.nextSibling; if (t != null && l) l.textContent = `Auto for this scan: ${t} · now ${(t * (+ev.target.value || 1)).toFixed(1)} (Lab distance from the background)`; }
     } });
     box.append(h('div', { class: 'row' }, h('label', {}, p.label), inp, p.unit ? h('span', { class: 'pu' }, p.unit) : null, p.hint ? info(p.hint) : null));
     if (p.id === 'tol') box.append(tolLine(+v || 1));
@@ -1253,7 +1253,7 @@ function engineChooser() {
 const BGTOL = {};
 function tolLine(x) {
   const el = h('div', { class: 'small muted', style: { margin: '-2px 0 4px 76px' } });
-  const show = t => { el.textContent = `Auto for this scan: ${t} · now ${(t * x).toFixed(1)} (Lab distance from the lid)`; };
+  const show = t => { el.textContent = `Auto for this scan: ${t} · now ${(t * x).toFixed(1)} (Lab distance from the background)`; };
   if (!S.rel) return el;
   if (BGTOL[S.rel] != null) show(BGTOL[S.rel]);
   else { const rel = S.rel; api.get('bgtol', { rel }).then(r => { BGTOL[rel] = r.tol; if (S.rel === rel) show(r.tol); }).catch(() => {}); }
@@ -1484,7 +1484,7 @@ function sideEditor(side) {
       info('Rotates this cut and its part together, and the part’s other cuts (pixels moved, never resampled). Previous versions stay in studio-data/replaced; metadata and true size carry over.')) : null,
     st?.exported ? h('div', { class: 'small', style: { marginTop: '6px', color: '#2d7a2d' } }, '✓ Cut ' + new Date(st.exported * 1000).toLocaleString()) : null));
   const hc = h('canvas', { class: 'hist', width: 540, height: 180, title: 'Click: linear / log scale', onclick: () => { S.histLog = !S.histLog; drawHist(hc); } });
-  side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the lid colour the cut found.')));
+  side.append(group(h('span', {}, 'Histogram' + (sel ? ' — selected sheet' : ' — whole scan'), ' ', info(TIPS.hist)), hc, h('div', { class: 'small muted' }, 'Read-only. Grey: lightness; lines: R G B; dashed: the background colour the cut found.')));
   loadHist(hc, sel);
   side.append(group('Scan', h('div', { class: 'small muted' }, `${S.info.w} × ${S.info.h} px · ${S.info.dpi} dpi · ${S.info.mm[0]} × ${S.info.mm[1]} mm`)));
 }
@@ -1620,6 +1620,9 @@ function renderOptions() {
   const hint = txt => h('div', { class: 'ohint' }, txt);
   const icon = (S.tool && I['t_' + (t === 'lasso' ? 'lasso_add' : t === 'brush' ? 'brush_add' : t)]) || '';
   bar.append(h('div', { class: 'otool' }, svg(icon), h('b', {}, TOOL_TITLES[t] || t)));
+  // su un taglio gli strumenti fanno le parti del taglio (un taglio del taglio); il bordo del taglio stesso si ritocca sulla scansione
+  if (S.view === 'editor' && cutOfPart() && ['brush', 'lasso', 'rect', 'wand', 'points', 'poly', 'box', 'sam'].includes(t))
+    bar.append(h('button', { class: 'btn small', title: 'Opens the scan on this cut’s part only (the real pixels are there): add back or cut away its edge, then Done', onclick: () => editPart(t === 'box' || t === 'sam' ? null : t) }, 'Refine this cut on its scan…'));
   if (t === 'wand') {
     bar.append(modeGroup(),
       numSlider('Tolerance', S.wandTol, 1, 120, 1, 'of 255 / channel', v => { S.wandTol = v; }, TIPS.wand),
@@ -1644,8 +1647,6 @@ function renderOptions() {
 }
 function setBg(b) { S.bg = b; store('bg', b); const st = $('.stage'); if (st) st.className = 'stage bg-' + b; renderCmdbar(); if (S.view === 'gallery') renderGallery(); draw(); }
 function setTool(t) {
-  // su un taglio: gli strumenti di selezione lavorano sulla sua parte, nella scansione (lì ci sono i pixel veri)
-  if (S.view === 'editor' && cutOfPart() && ['brush', 'lasso', 'rect', 'wand', 'points', 'poly'].includes(t)) return editPart(t);
   if (t === 'text' && !S.textPane) setTimeout(() => toggleTextPane(true), 0);     // lo strumento Testo apre il suo pannello
   S.tool = t; S.poly = null; S.sam = null; renderOptions(); $$('.toolbox .tool').forEach(el => el.classList.toggle('on', el.dataset.tool === t)); cv && (cv.style.cursor = cursorFor(t)); draw();
 }
@@ -1971,15 +1972,15 @@ function measure(pt, sx, sy) {
     if (rel !== S.rel) return;
     if (lo) { loupeImg = lo; loupeDraw(); }
     const el = $('#dens'); if (!el || !px || px.x == null) return;
-    const lid = px.is_bg ? '<b style="color:#8a5a00">lid</b>' : '<b style="color:#1e6b2c">paper / ink</b>';
+    const lid = px.is_bg ? '<b style="color:#8a5a00">background</b>' : '<b style="color:#1e6b2c">foreground</b>';
     el.classList.toggle('collapsed', S.densShut);
-    el.innerHTML = `<div class="dh" title="${S.densShut ? 'Expand' : 'Collapse'}"><b>Densitometer</b><span>${S.densShut ? `${px.rgb.map(v => v.toFixed(0)).join(' · ')} · ${px.is_bg ? 'lid' : 'paper/ink'}` : (S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' px avg' : '1 px')}</span><i class="dtog">${S.densShut ? '▾' : '▴'}</i></div>`
+    el.innerHTML = `<div class="dh" title="${S.densShut ? 'Expand' : 'Collapse'}"><b>Densitometer</b><span>${S.densShut ? `${px.rgb.map(v => v.toFixed(0)).join(' · ')} · ${px.is_bg ? 'background' : 'foreground'}` : (S.densR ? (2 * S.densR + 1) + '×' + (2 * S.densR + 1) + ' px avg' : '1 px')}</span><i class="dtog">${S.densShut ? '▾' : '▴'}</i></div>`
       + `<div class="dc">`
       + `<div><span>RGB</span>${px.rgb.map(v => v.toFixed(0)).join(' · ')} <small class="u">of 255</small></div>`
       + `<div><span>L*a*b*</span>${px.lab.join(' · ')} <small class="u">L* 0–100, a* b* ±</small></div>`
-      + `<div><span>vs lid</span>${px.bg_dist} <small class="u">Lab</small> <small>(lid if &lt; ${px.bg_tol})</small> ${lid}</div>`
+      + `<div><span>vs bg</span>${px.bg_dist} <small class="u">Lab</small> <small>(background if &lt; ${px.bg_tol})</small> ${lid}</div>`
       + (px.alpha != null ? `<div><span>alpha</span>${px.alpha} <small class="u">of 255</small></div>` : '')
-      + `<div class="sw"><i style="background:rgb(${px.rgb.join(',')})"></i><i style="background:${labCss(px.bg_lab)}"></i><small>pixel · lid</small></div>`
+      + `<div class="sw"><i style="background:rgb(${px.rgb.join(',')})"></i><i style="background:${labCss(px.bg_lab)}"></i><small>pixel · background</small></div>`
       + `</div>`;
     el.style.display = 'block';
   }, 70);
@@ -2223,6 +2224,10 @@ document.addEventListener('keydown', e => {
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); return newTab(); }
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'w') { e.preventDefault(); return closeTab(TABS.i); }
   if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); const n = TABS.list.length; return switchTab((TABS.i + (e.shiftKey ? n - 1 : 1)) % n); }
+  if (S.view === 'scanners' && e.key === ' ' && (SC.spaceMode || SC.timed) && !e.target.closest?.('input[type=text], input[type=number], textarea, select, [contenteditable]')) {
+    e.preventDefault(); if (!e.repeat) scanNextPage(); return;
+  }
+  if (S.view === 'scanners' && e.key === 'Escape' && SC.timed) return stopTimed();
   if (e.target.closest?.('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
@@ -2236,8 +2241,6 @@ document.addEventListener('keydown', e => {
     if (k === 'ArrowRight') step(1); if (k === 'ArrowLeft') step(-1);
     return;
   }
-  if (S.view === 'scanners' && k === ' ' && SC.spaceMode) { e.preventDefault(); return scanNextPage(); }
-  if (S.view === 'scanners' && k === 'Escape' && SC.timed) return stopTimed();
   if (S.view === 'scanners' && (k === 'Delete' || k === 'Backspace') && SC.sel >= 0) { SC.areas.splice(SC.sel, 1); SC.sel = -1; drawBed(); renderScanSide(); return; }
   if (S.view !== 'editor') return;
   if (k === ' ') { if (!spaceDown) { spaceDown = true; cv.style.cursor = 'grab'; } e.preventDefault(); return; }
@@ -2506,7 +2509,7 @@ async function pollJobs() {
 }
 // avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato
 const JOB_NAMES = { recut: 'Re-cut', readcuts: 'Read text of cuts', libimport: 'Library import', edit_in: 'Edit in', read: 'Read text', batch: 'Batch', export: 'Cut', ocr: 'Text of cuts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
-  compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install' };
+  compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install', file: 'File scans' };
 // lavori senza avanzamento misurabile (un Detect, una domanda): la barra scorre, si vede il tempo
 const jobVague = j => j.status === 'running' && j.total === 1 && j.pct == null;
 function jobPct(j) { return j.status === 'done' ? 100 : j.pct != null ? Math.round(j.pct) : Math.round(100 * j.done / Math.max(1, j.total)); }
@@ -2634,7 +2637,7 @@ function renderScanSide(side) {
     side.append(group('Scanner', h('div', { class: 'muted' }, 'No scanner found. Plug in the LiDE 400, switch it on, then '), h('button', { class: 'btn', onclick: () => { SC.devs = null; renderScanners(); } }, 'Look again')));
     return;
   }
-  const running = SC.job && ['queued', 'running'].includes(SC.job.status);
+  const running = !!scanBusy();
   side.append(group('Scanner',
     h('select', { onchange: e => { SC.dev = SC.devs.find(d => d.id === e.target.value); renderScanSide(); } }, SC.devs.map(d => h('option', { value: d.id, selected: d === SC.dev }, d.name))),
     h('div', { class: 'small muted', style: { marginTop: '4px' } }, `Bed ${o.width_mm?.toFixed(1)} × ${o.height_mm?.toFixed(1)} mm · up to ${Math.max(...(o.resolutions || [0]))} dpi · via SANE`),
@@ -2689,26 +2692,61 @@ function renderScanSide(side) {
   SC.every = SC.every || 15;
   side.append(group('Session',
     h('div', { class: 'small muted' }, 'For many pages by hand: put a page on the bed, scan, swap, repeat. Every scan gets the next number in the batch.'),
-    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (anywhere on this page) to scan the next page with the current areas and settings.')),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; e.target.blur(); renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (anywhere on this page, except while typing) to scan the next page with the current areas and settings. During a timed session Space skips the countdown.')),
     SC.spaceMode ? h('div', { style: { textAlign: 'center', margin: '8px 0' } },
       h('div', { class: 'orb big', title: 'Scan the next page (Space)', onclick: scanNextPage }, svg(I.orb_cut)), h('div', { class: 'small muted' }, 'Space · next page')) : null,
     h('div', { class: 'row' }, h('label', {}, 'Every'), h('input', { type: 'number', min: 3, max: 600, step: 1, value: SC.every, class: 'f', onchange: e => { SC.every = Math.max(3, +e.target.value || 15); } }), h('span', { class: 'muted' }, 's'),
-      SC.timed ? h('button', { class: 'btn', onclick: stopTimed }, 'Stop') : h('button', { class: 'btn', disabled: running, onclick: startTimed }, 'Start timed'),
-      info('Timed scanning: a countdown with three beeps, then a scan, again and again, so you can swap pages without touching the Mac. Stop or Esc ends it.')),
+      SC.timed ? h('button', { class: 'btn', onclick: stopTimed }, 'Stop') : h('button', { class: 'btn', disabled: running, onclick: e => { e.currentTarget.blur(); startTimed(); } }, 'Start timed'),
+      info('Timed scanning: the first page is scanned at once; when the scanner has read it, a countdown of this many seconds gives you time to swap the page (three beeps at the end), then the next scan. Space skips the wait; Stop, Esc or Cancel end it.')),
     h('div', { class: 'small' }, `Pages this session: ${SC.pages || 0}`)));
-  const pct = running ? Math.round(SC.job.pct || 0) : 0;
+  const stopping = running && SC.job.status === 'cancelled';
   side.append(group('Scan',
     h('div', { class: 'btns' }, h('button', { class: 'btn default', style: { minWidth: '140px', height: '28px' }, disabled: running, onclick: () => startScanJob('scan') },
       SC.areas.length > 1 ? `Scan ${SC.areas.length} areas` : 'Scan'),
-      running ? h('button', { class: 'btn', onclick: () => api.post('cancel', { id: SC.job.id }) }, 'Cancel') : null),
-    running ? h('div', { style: { marginTop: '8px' } }, h('div', { class: 'progress' }, h('i', { style: { width: pct + '%' } })), h('div', { class: 'small muted' }, (SC.job.kind === 'preview' ? 'Preview' : 'Scanning') + ` · ${pct}%`)) : null,
-    SC.job?.status === 'done' && SC.job.kind === 'scan' ? h('div', { class: 'small', style: { color: '#2d7a2d', marginTop: '6px' } }, `✓ ${SC.job.done} scan(s) in the inbox; the agent is cutting them.`) : null,
-    SC.job?.status === 'failed' ? h('div', { class: 'small', style: { color: '#b03030', marginTop: '6px' } }, SC.job.log.at(-1)) : null));
+      running ? h('button', { class: 'btn', id: 'scancancel', disabled: stopping, onclick: cancelScan }, 'Cancel') : null),
+    h('div', { id: 'scanstatus' })));
+  scanStatus();
+}
+// lo stato della scansione in corso, con le sue fasi: lo scanner si prepara (lampada, calibrazione), legge, si ferma, archivia
+function scanStatus() {
+  const el = $('#scanstatus'); if (!el) return;
+  const j = SC.job, live = scanLive(j);
+  const secs = s => s < 60 ? `${Math.max(1, Math.round(s))} s` : `${Math.floor(s / 60)} min ${String(Math.round(s % 60)).padStart(2, '0')} s`;
+  let line = '', pct = 0, marquee = false;
+  if (SC.countdown) line = `Next page in ${SC.countdown} s · swap the page now (Space: scan now, Esc: stop)`;
+  if (live) {
+    const since = j.phase_t ? Date.now() / 1000 - j.phase_t : 0, of = j.areas > 1 ? ` area ${j.area} of ${j.areas}` : '';
+    const what = j.kind === 'preview' ? 'Preview' : 'Scanning' + of;
+    pct = Math.round(j.pct || 0);
+    if (j.status === 'queued') { line = 'Waiting for the scanner…'; marquee = true; }
+    else if (j.phase === 'stopping' || j.status === 'cancelled') { line = 'Stopping: the scanner head is going back home…'; marquee = true; }
+    else if (j.phase === 'warming') { line = `${what} · the scanner is getting ready (lamp, calibration) · ${secs(since)}`; marquee = !pct; }
+    else if (j.phase === 'filing') { line = SC.countdown ? `Next page in ${SC.countdown} s · swap the page now (Space: scan now, Esc: stop) · filing the last one…` : 'Filing the scans into the library…'; pct = 100; }
+    else line = `${what} · ${pct}%` + (j.eta != null ? ` · about ${secs(j.eta)} left` : '');
+  }
+  const done = j && !live && j.status === 'done' && j.kind === 'scan', bad = j && !live && j.status === 'failed', off = j && !live && j.status === 'cancelled';
+  el.replaceChildren(...[
+    live || SC.countdown ? h('div', { style: { marginTop: '8px' } },
+      h('div', { class: 'progress' + (marquee ? ' marquee' : '') }, h('i', { style: { width: (SC.countdown && !live ? 100 * (1 - SC.countdown / SC.every) : pct) + '%' } })),
+      h('div', { class: 'small muted', style: { marginTop: '3px' } }, line)) : null,
+    done && !SC.countdown ? h('div', { class: 'small', style: { color: '#2d7a2d', marginTop: '6px' } }, scanDoneLine(j)) : null,
+    off && !SC.countdown ? h('div', { class: 'small muted', style: { marginTop: '6px' } }, `Stopped. ${j.done ? j.done + ' finished scan(s) kept; ' : ''}the scanner is ready again.`) : null,
+    bad ? h('div', { class: 'small', style: { color: '#b03030', marginTop: '6px' } }, j.log.at(-1)) : null].filter(Boolean));
+}
+function scanDoneLine(j) {
+  const n = j.result?.rels?.length ?? j.done, same = (j.result?.scanned ?? n) - n;
+  return `✓ ${n} scan(s) filed among the sources and in the library` + (same > 0 ? ` · ${same} identical to an earlier scan, not kept twice` : '') + '.';
+}
+async function cancelScan() {
+  if (!SC.job) return;
+  SC.timed = false; SC.countdown = 0;                        // fermare una scansione ferma anche la sessione a tempo
+  await api.post('cancel', { id: SC.job.id }).catch(() => {});
+  SC.job.status = 'cancelled'; SC.job.phase = 'stopping'; drawBed(); renderScanSide();
 }
 async function nextName() {
   const el = $('#nextname'); if (!el) return;
   const r = await api.get('next_scan_name', { batch: SC.batch || 'scan' }).catch(() => null);
-  if (r) el.textContent = 'Next file: inbox/' + r.name;
+  if (r) el.textContent = 'Next file: ' + r.name.replace(/\.tif$/, '');
 }
 function addArea(w, hh) {
   const o = SC.dev.options; w = Math.min(w, o.width_mm); hh = Math.min(hh, o.height_mm);
@@ -2723,19 +2761,25 @@ function saveFrameSet() {
   }, true], ['Cancel', () => true]]);
   setTimeout(() => inp.focus(), 0);
 }
-async function startScanJob(kind, area) {
+async function startScanJob(kind, area, onScanned) {
   if (!SC.dev) return;
   const body = kind === 'preview' ? { kind, dev: SC.dev.id, area: area ? area.slice(0, 4) : null } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
   SC.job = await api.post('jobs', body).catch(e => (alertDialog('Scanner', e.message), null));
   if (!SC.job) return null;
+  const mine = SC.job.id; let counted = false;
   renderScanSide();
   return new Promise(resolve => {
     const tick = async () => {
-      const j = await api.get('job', { id: SC.job.id }).catch(() => null); if (!j) return resolve(null);
-      SC.job = j; if (S.view === 'scanners') renderScanSide();
-      if (['queued', 'running'].includes(j.status)) return setTimeout(tick, 500);
+      const j = await api.get('job', { id: mine }).catch(() => null); if (!j) return resolve(null);
+      const shown = SC.job?.id === mine, was = shown ? SC.job : j; if (shown) SC.job = j;
+      if (!counted && j.kind === 'scan' && (j.phase === 'filing' || !scanLive(j))) { counted = true; SC.pages = (SC.pages || 0) + j.done; if (S.view === 'scanners') renderScanSide(); }   // letta = contata
+      if (onScanned && (j.phase === 'filing' || j.phase === 'stopping' || !['queued', 'running'].includes(j.status))) { onScanned(j); onScanned = null; }   // la testina e' libera: si puo' cambiare foglio
+      if (shown && S.view === 'scanners') { if (was.status !== j.status || scanBusy() !== busyBefore(was)) renderScanSide(); else scanStatus(); }
+      if (['queued', 'running'].includes(j.status) || j.phase) return setTimeout(tick, 400);
       if (j.kind === 'preview' && j.status === 'done') { if (j.args.area) loadAreaPreview(); else loadPreview(); }
-      if (j.kind === 'scan' && j.status === 'done') { SC.pages = (SC.pages || 0) + j.done; status(`${j.done} scan(s) filed among the sources and in the library`); api.get('tree').then(t => { S.tree = t.tree; renderNav(); }); if (S.view === 'library') renderLibrary(); }
+      if (j.kind === 'scan' && j.status === 'done') { status(scanDoneLine(j)); api.get('tree').then(t => { S.tree = t.tree; renderNav(); }); if (S.view === 'library') renderLibrary(); }
+      if (onScanned) onScanned(j);
+      if (SC.job?.id === mine && S.view === 'scanners') renderScanSide();
       resolve(j);
     };
     tick();
@@ -2750,22 +2794,34 @@ function beep(f = 880, ms = 90) {
     o.frequency.value = f; g.gain.value = 0.06; o.connect(g); g.connect(beepCtx.destination); o.start(); o.stop(beepCtx.currentTime + ms / 1000);
   } catch (e) {}
 }
+function busyBefore(j) { const k = SC.job; SC.job = j; const b = scanBusy(); SC.job = k; return b; }
+function scanBusy() { const j = SC.job; return !!j && (j.status === 'queued' || ['warming', 'scanning', 'stopping'].includes(j.phase) || (j.status === 'running' && !j.phase)); }
+const scanLive = j => j && (['queued', 'running'].includes(j.status) || j.phase);
 async function scanNextPage() {
-  if (!SC.dev || (SC.job && ['queued', 'running'].includes(SC.job.status))) return;
+  if (SC.timed) { SC.skip = true; return; }                  // durante il conto alla rovescia: subito
+  if (!SC.dev) return;
+  if (scanBusy()) { flashScan(); return; }
   await startScanJob('scan');
 }
+function flashScan() { const el = $('#scanstatus'); if (el) { el.animate([{ background: '#fff3b0' }, { background: 'transparent' }], 600); } status('Still scanning: the next page starts when this one is done'); }
+// a tempo: la prima pagina subito (e' gia' sul letto); finita la lettura, il conto alla rovescia per cambiare
+// foglio (tre bip alla fine), poi la prossima. Spazio salta l'attesa, Esc o Stop finiscono, Cancel anche.
 async function startTimed() {
-  SC.timed = true; renderScanSide();
+  if (!SC.dev || scanBusy()) return;
+  SC.timed = true; SC.skip = false; renderScanSide();
   while (SC.timed && S.view === 'scanners') {
-    for (let t = SC.every; t > 0 && SC.timed; t--) {
-      SC.countdown = t; drawBed();
+    let scanned; const freed = new Promise(r => (scanned = r));
+    const job = startScanJob('scan', null, scanned);
+    await freed;                                              // la testina e' tornata: si cambia foglio mentre questa si archivia
+    if (!SC.timed || !SC.job || SC.job.status === 'failed' || SC.job.status === 'cancelled') break;
+    SC.skip = false;
+    for (let t = SC.every; t > 0 && SC.timed && !SC.skip; t--) {
+      SC.countdown = t; drawBed(); scanStatus();
       if (t <= 3) beep(t === 1 ? 1320 : 880);
-      await new Promise(r => setTimeout(r, 1000));
+      for (let q = 0; q < 10 && SC.timed && !SC.skip; q++) await new Promise(r => setTimeout(r, 100));
     }
     SC.countdown = 0; drawBed();
-    if (!SC.timed) break;
-    const j = await startScanJob('scan');
-    if (!j || j.status !== 'done') { SC.timed = false; break; }
+    job.then(j => { if (j && j.status === 'failed') SC.timed = false; });   // l'archiviazione va avanti accanto
   }
   SC.timed = false; SC.countdown = 0; drawBed(); renderScanSide();
 }
@@ -2832,7 +2888,7 @@ function drawBed() {
     c.save(); c.fillStyle = 'rgba(16,40,64,.55)'; c.beginPath(); c.roundRect(cx - 150, cy - 90, 300, 180, 14); c.fill();
     c.strokeStyle = 'rgba(255,255,255,.6)'; c.lineWidth = 2; c.stroke();
     c.fillStyle = '#fff'; c.textAlign = 'center'; c.font = '600 72px "Segoe UI", Tahoma, sans-serif'; c.fillText(String(SC.countdown), cx, cy + 20);
-    c.font = '15px "Segoe UI", Tahoma, sans-serif'; c.fillText('next page · Esc stops', cx, cy + 62); c.restore();
+    c.font = '15px "Segoe UI", Tahoma, sans-serif'; c.fillText('swap the page · Space: now · Esc: stop', cx, cy + 62); c.restore();
   }
   if (bedDrag?.box) { const b = bedDrag.box; c.save(); c.setLineDash([4, 3]); c.strokeStyle = '#000'; c.strokeRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.fillStyle = 'rgba(51,153,255,.15)'; c.fillRect(X(b[0]), Y(b[1]), b[2] * bedV.s, b[3] * bedV.s); c.restore(); }
 }

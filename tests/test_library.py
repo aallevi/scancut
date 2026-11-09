@@ -491,6 +491,66 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(any(f.startswith('card 2') and f.endswith('.jxl') for f in os.listdir(os.path.join(pkg, 'cut', 'card'))))
         self.assertEqual(bridge.check(lib), [])
 
+    def test_scans_from_the_studio_enter_once_already_in_jpeg_xl(self):
+        # lo scanner dello studio: la scansione si archivia subito, gia' in JPEG XL (mai un TIFF di passaggio fra gli
+        # originali, che la libreria registrerebbe due volte); la stessa rifatta byte per byte non entra due volte;
+        # un doppione di prima (TIFF registrato, poi JPEG XL) si ripara da solo
+        import shutil, numpy as np, cv2
+        from studio import core
+        from studio.library import bridge
+        if not core.sc.jxl_tools():
+            self.skipTest('cjxl/djxl missing')
+        lib = bridge.library()
+        bridge.switch_storage(lib, log=lambda *a: None)
+        pkg = os.path.realpath(os.path.join(self.root, 'Library.DocuLib'))
+        n0 = lib.db.execute('SELECT COUNT(*) FROM item').fetchone()[0]
+        scan = os.path.join(core.scanning_dir(), 'quaderno 1.tif')
+        fake_scan(scan.replace('.tif', '.png'), sheets=[(0.5, 0.5, 80, 200, 0, (250, 250, 248))])
+        px = cv2.imread(scan.replace('.tif', '.png'), cv2.IMREAD_UNCHANGED)
+        cv2.imwrite(scan, px); os.remove(scan.replace('.tif', '.png'))
+        again = os.path.join(self.root, 'again.tif'); shutil.copy2(scan, again)
+        u = bridge.record_capture(lib, scan, 'scanner', device='test', settings={'res': 300})
+        seen = []
+        orig_pack = core.sc.pack
+        def pack_and_look(path, out=None):
+            r = orig_pack(path, out)
+            seen.append(sorted(os.listdir(os.path.dirname(out))))       # durante: fra gli originali solo il JPEG XL
+            bridge.register_new(lib)                                    # la libreria guarda proprio in quel momento
+            return r
+        core.sc.pack = pack_and_look
+        try:
+            done = core.file_scans([scan], say=lambda *a: None)
+        finally:
+            core.sc.pack = orig_pack
+        dst = os.path.join(pkg, 'originals', 'quaderno', 'quaderno 1.jxl')
+        self.assertEqual(done, [(scan, dst)])
+        self.assertTrue(all(not f.endswith('.tif') for f in seen[0]), seen)
+        self.assertTrue(np.array_equal(core.sc.pixels(dst), px))
+        self.assertFalse(os.path.exists(scan))
+        bridge.register_new(lib)
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM item').fetchone()[0], n0 + 1)
+        self.assertEqual(bridge.captured(lib, [u], 0), ['originals/quaderno/quaderno 1.jxl'])
+        # la stessa scansione, byte per byte, una seconda volta: non entra
+        shutil.move(again, os.path.join(core.scanning_dir(), 'quaderno 2.tif'))
+        self.assertEqual(core.file_scans([os.path.join(core.scanning_dir(), 'quaderno 2.tif')], say=lambda *a: None)[0][1], None)
+        self.assertEqual(sorted(os.listdir(os.path.dirname(dst))), ['quaderno 1.jxl'])
+        # un doppione di prima: l'oggetto del TIFF (che non c'e' piu') e quello del JPEG XL
+        from studio.library.db import new_uuid, now
+        t = now()
+        aid = lib.db.execute("INSERT INTO asset (uuid, sha256, size, path, storage, original_name, mime, imported_at) VALUES (?,?,?,?,?,?,?,?)",
+                             (new_uuid(), 'f' * 64, 1, os.path.join(pkg, 'originals', 'quaderno', 'quaderno 1.tif'), 'referenced', 'quaderno 1.tif', 'image/tiff', t)).lastrowid
+        iid = lib.db.execute('INSERT INTO item (uuid, kind, title, created_at, modified_at) VALUES (?,?,?,?,?)', (new_uuid(), 'scan', 'quaderno 1', t, t)).lastrowid
+        lib.db.execute("INSERT INTO item_asset (item_id, asset_id, role, position) VALUES (?, ?, 'view', 0)", (iid, aid))
+        lib.db.execute("INSERT INTO capture (uuid, sha256, asset_id, how, captured_at) VALUES (?,?,?,?,?)", (new_uuid(), 'f' * 64, aid, 'scanner', t))
+        lib.db.commit()
+        with open(os.path.join(self.root, '.scancut', 'packed.tsv'), 'a') as f:
+            f.write(f"{'f' * 64}\t{core.sc.sha(dst)}\tquaderno/quaderno 1.jxl\n")
+        bridge.register_new(lib)
+        self.assertIsNone(lib.db.execute('SELECT 1 FROM item WHERE id = ?', (iid,)).fetchone())
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM item').fetchone()[0], n0 + 1)
+        self.assertEqual(lib.db.execute("SELECT COUNT(*) FROM capture c JOIN asset a ON a.id = c.asset_id WHERE a.path = ?", (dst,)).fetchone()[0], 2)
+        self.assertEqual(bridge.check(lib), [])
+
     def test_editing_one_part_redoes_only_its_cut(self):
         # ritoccare la sagoma di una parte rifa' solo il suo taglio: gli altri restano gli stessi file
         from studio import core

@@ -84,10 +84,20 @@ def import_root(lib, progress=None, log=print):
 
 def record_capture(lib, path, how, name=None, series=None, device=None, settings=None):
     from .db import new_uuid
+    u = new_uuid()
     lib.db.execute('INSERT INTO capture (uuid, sha256, how, name, series, device, settings, captured_at) VALUES (?,?,?,?,?,?,?,?)',
-                   (new_uuid(), sha256(path), how, name or os.path.basename(path), series, device,
+                   (u, sha256(path), how, name or os.path.basename(path), series, device,
                     json.dumps(settings) if settings else None, now()))
     lib.db.commit()
+    return u
+
+
+def captured(lib, uuids, after_id):
+    # le fonti nate da queste scansioni (per checksum, anche se l'agente le ha rinumerate o un'altra
+    # archiviazione le ha prese prima); una scansione legata a un file che c'era gia' e' una copia identica
+    rows = lib.db.execute(f'SELECT c.uuid, a.* FROM capture c LEFT JOIN asset a ON a.id = c.asset_id WHERE c.uuid IN ({",".join("?" * len(uuids))})',
+                          list(uuids)).fetchall() if uuids else []
+    return [rel_of(lib, r) for r in rows if r['id'] and r['id'] > after_id]
 
 
 _reg_last = [0.0]
@@ -99,6 +109,7 @@ def register_new(lib, force=True):
     if not force and time.time() - _reg_last[0] < 3:
         return []
     _reg_last[0] = time.time()
+    _heal_packed(lib)
     known = {r[0] for r in lib.db.execute("SELECT path FROM asset WHERE storage = 'referenced'")}
     new = []
     for base, dirs, fs in os.walk(core.abspath('originals')):
@@ -130,6 +141,47 @@ def register_new(lib, force=True):
     if new:
         lib.log('register', 'library', lib.meta('uuid'), sources=len(new))
     return new
+
+
+def _heal_packed(lib):
+    # un file passato in JPEG XL (registro packed.tsv: checksum di prima, di dopo, percorso): la sua riga segue il file.
+    # Se il TIFF era gia' stato registrato e il JPEG XL anche (due oggetti per una scansione), le registrazioni
+    # d'arrivo passano al JPEG XL e il doppione vuoto (niente parti, ritocchi, altri file) si toglie
+    led = os.path.join(core.ROOT, '.scancut', 'packed.tsv')
+    if not os.path.exists(led):
+        return
+    for line in open(led):
+        p = line.rstrip('\n').split('\t')
+        if len(p) < 3:
+            continue
+        old = lib.db.execute("SELECT * FROM asset WHERE sha256 = ? AND storage = 'referenced'", (p[0],)).fetchone()
+        if not old or os.path.exists(old['path']):
+            continue
+        path = os.path.realpath(core.abspath(os.path.join('originals', p[2])))
+        if not os.path.exists(path):
+            continue
+        new = lib.db.execute('SELECT * FROM asset WHERE path = ?', (path,)).fetchone()
+        if not new:
+            lib.db.execute("UPDATE asset SET path = ?, sha256 = ?, size = ?, mime = 'image/jxl', original_name = ? WHERE id = ?",
+                           (path, p[1], os.path.getsize(path), os.path.basename(path), old['id']))
+            lib.db.commit()
+            lib.log('move', 'asset', old['uuid'], new_path=path, why='lossless JPEG XL, same pixels')
+            continue
+        busy = lib.db.execute('SELECT 1 FROM region WHERE asset_id = ? UNION SELECT 1 FROM editstate WHERE asset_id = ?', (old['id'], old['id'])).fetchone()
+        items = [r[0] for r in lib.db.execute('SELECT item_id FROM item_asset WHERE asset_id = ?', (old['id'],))]
+        alone = all(lib.db.execute('SELECT COUNT(*) FROM item_asset WHERE item_id = ?', (i,)).fetchone()[0] == 1 and
+                    not lib.db.execute('SELECT trashed_at FROM item WHERE id = ?', (i,)).fetchone()[0] for i in items)   # nel cestino: ci pensa il cestino
+        if busy or not alone:
+            continue                                   # c'e' lavoro sopra: non si tocca, lo dice il controllo
+        lib.db.execute('UPDATE capture SET asset_id = ? WHERE asset_id = ?', (new['id'], old['id']))
+        for i in items:
+            u = lib.db.execute('SELECT uuid FROM item WHERE id = ?', (i,)).fetchone()[0]
+            lib.db.execute('DELETE FROM search WHERE item_uuid = ?', (u,))
+            lib.db.execute('DELETE FROM item_asset WHERE item_id = ?', (i,))
+            lib.db.execute('DELETE FROM item WHERE id = ?', (i,))
+            lib.log('merge', 'item', u, into_asset=new['uuid'], why='the same scan registered before and after JPEG XL')
+        lib.db.execute('DELETE FROM asset WHERE id = ?', (old['id'],))
+        lib.db.commit()
 
 
 def new_rels(lib, new):

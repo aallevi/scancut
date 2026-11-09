@@ -2052,6 +2052,57 @@ def agent_label():
     return None
 
 
+def scanning_dir():
+    # dove lo scanner dello studio scrive: nascosto, non l'inbox (l'agente non le prende a meta' strada, ne' aspetta)
+    d = os.path.join(ROOT, '.scancut', 'scanning')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def file_scans(paths, say=print, step=None, timeout=600):
+    # le scansioni fatte dallo studio, gia' complete: fra le fonti subito, qui (JPEG XL nella libreria).
+    # Lo stesso lucchetto dell'agente: mai due a spostare insieme. Ritorna [(scansione, dove e' andata o None)]
+    lock = open(os.path.join(ROOT, '.scancut', 'lock'), 'w')
+    t = time.time()
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.time() - t > timeout:
+                lock.close()
+                raise RuntimeError('the agent is still busy filing other scans; yours stay in .scancut/scanning and are filed next time')
+            time.sleep(0.3)
+    out = []
+    try:
+        for k, p in enumerate(paths):
+            if not os.path.exists(p):
+                continue
+            name, size, t0 = os.path.basename(p), os.path.getsize(p), time.time()
+            step and step(k, name)
+            dst = sc.take(p)
+            if dst is None:
+                say(f'{name}: identical to a scan already among the sources, not kept twice')
+            else:
+                say(f'{name} -> {relpath(dst)}' + (f'  (lossless JPEG XL, same pixels checked: {mb(size)} -> {mb(os.path.getsize(dst))})'
+                                                   if dst.endswith('.jxl') and not name.lower().endswith('.jxl') else '') + f' · {time.time() - t0:.1f} s')
+            out.append((p, dst))
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+    return out
+
+
+def mb(n):
+    return f'{n / 1048576:.1f} MB' if n < 10 * 1048576 else f'{n / 1048576:.0f} MB'
+
+
+def scans_left():
+    # scansioni rimaste nella cartella dello scanner (lo studio si era chiuso prima di archiviarle)
+    d = scanning_dir()
+    return [os.path.join(d, f) for f in sorted(os.listdir(d)) if not f.startswith('.') and not f.endswith('.part')]
+
+
 def file_inbox(timeout=120):
     # le scansioni appena arrivate nell'inbox vanno fra le fonti (mai perse, mai sovrascritte): con l'agente
     # di questa radice se c'e' (lo si sveglia e si aspetta), se no con lo stesso programma, qui

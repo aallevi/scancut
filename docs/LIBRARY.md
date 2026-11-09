@@ -33,7 +33,7 @@ A library is a package (a folder macOS shows as one file, type `io.github.aallev
 ```
 Library.DocuLib/
   library.sqlite        the catalog (studio/library/schema.sql)
-  originals/<series>/   the sources, after "Move files in…": lossless JPEG XL (JPEGs as they came)
+  originals/<series>/   the sources, after "Move files in…": lossless JPEG XL, effort 3 (JPEGs as they came)
   cut/<series>/         the cuts, lossless JPEG XL
   failed/               links to sources that need a look
   store/ab/<sha256>.*   files added as edited versions (named by checksum)

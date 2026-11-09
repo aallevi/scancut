@@ -809,11 +809,13 @@ def jxl_tools():
     return all(shutil.which(t) for t in ('cjxl', 'djxl'))
 
 
-def pixels(path):
-    # i valori esatti di un file (uint8 o uint16, con l'alfa se c'e'), come li legge OpenCV; None se illeggibile
+def pixels(path, channels=None):
+    # i valori esatti di un file (uint8 o uint16, con l'alfa se c'e'), come li legge OpenCV; None se illeggibile.
+    # channels (1 o 3, se si sa gia'): un JPEG XL si decodifica in PGM/PPM, senza compressione (molto piu' svelto
+    # del PNG, stessi valori); con l'alfa o se non si sa, in PNG. Il PAM no: rende i canali in un altro ordine
     f = path
     if path.lower().endswith('.jxl'):
-        f = os.path.join(os.path.dirname(path), f'.{os.path.basename(path)}.{os.getpid()}.px.png')
+        f = os.path.join(os.path.dirname(path), f'.{os.path.basename(path)}.{os.getpid()}.px' + {1: '.pgm', 3: '.ppm'}.get(channels, '.png'))
         if subprocess.run(['djxl', path, f, '--quiet'], capture_output=True).returncode:
             return None
     try:
@@ -835,8 +837,11 @@ def dpi_of(path):
         return 0
 
 
-def pack(path):
-    # PNG o TIFF -> <nome>.jxl accanto, controllato; ritorna il percorso nuovo, o None se resta com'e'.
+JXL_EFFORT = '3'      # misurato su una scansione A4 a 600 dpi: 7 -> 10.4 s e 42 MB, 3 -> 1.3 s e 43 MB (senza perdita tutti e due)
+
+
+def pack(path, out=None):
+    # PNG o TIFF -> <nome>.jxl accanto (o out), controllato; ritorna il percorso nuovo, o None se resta com'e'.
     # Il file di partenza non si tocca: lo toglie (o lo mette da parte) chi chiama
     ext = os.path.splitext(path)[1].lower()
     if ext not in ('.png', '.tif', '.tiff') or not jxl_tools():
@@ -844,20 +849,18 @@ def pack(path):
     src = pixels(path)
     if src is None:
         return None
-    out = unique(os.path.splitext(path)[0] + '.jxl')
+    ch = 1 if src.ndim == 2 else src.shape[2]
+    out = out or unique(os.path.splitext(path)[0] + '.jxl')
     hide = lambda p, end: os.path.join(os.path.dirname(p), '.' + os.path.basename(p) + end)   # nascosti: nessuno li prende per scansioni
     part, tmp = hide(out, '.part.jxl'), None
     try:
         feed = path
-        if ext != '.png':                       # cjxl non legge il TIFF: prima un PNG con gli stessi valori
-            tmp = hide(path, f'.{os.getpid()}.src.png')
-            if not cv2.imwrite(tmp, src, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+        if ext != '.png':                       # cjxl non legge il TIFF: prima gli stessi valori in PPM/PGM (o PNG con l'alfa)
+            tmp = hide(out, f'.{os.getpid()}.src' + {1: '.pgm', 3: '.ppm'}.get(ch, '.png'))
+            if not cv2.imwrite(tmp, src, [cv2.IMWRITE_PNG_COMPRESSION, 1] if tmp.endswith('.png') else []):
                 return None
             feed = tmp
-        if subprocess.run(['cjxl', feed, part, '-d', '0', '-e', '7', '--quiet'], capture_output=True, timeout=3600).returncode:
-            return None
-        back = pixels(part)
-        if back is None or back.dtype != src.dtype or not np.array_equal(back, src):
+        if subprocess.run(['cjxl', feed, part, '-d', '0', '-e', JXL_EFFORT, '--quiet'], capture_output=True, timeout=3600).returncode:
             return None
         if shutil.which('exiftool'):
             d = dpi_of(path)
@@ -865,9 +868,9 @@ def pack(path):
                            + ([f'-EXIF:XResolution={d}', f'-EXIF:YResolution={d}', '-EXIF:ResolutionUnit=inches',
                                f'-XMP-tiff:XResolution={d}', f'-XMP-tiff:YResolution={d}', '-XMP-tiff:ResolutionUnit=inches'] if d else [])
                            + [part], capture_output=True, timeout=600)
-            back = pixels(part)                 # i metadati non devono toccare i pixel
-            if back is None or not np.array_equal(back, src):
-                return None
+        back = pixels(part, ch if ch in (1, 3) else None)      # un solo controllo, dopo i metadati: tutto il file finale
+        if back is None or back.dtype != src.dtype or not np.array_equal(back, src):
+            return None
         st = os.stat(path)
         os.utime(part, (st.st_atime, st.st_mtime))
         if os.path.lexists(out):
@@ -887,9 +890,17 @@ def note_packed(old_sha, new_path):
 
 
 def twin(path, od):
-    # la stessa scansione, byte per byte, e' gia' fra gli originali del lotto?
+    # la stessa scansione, byte per byte, e' gia' fra gli originali del lotto? (anche se poi e' passata in JPEG XL:
+    # il registro packed.tsv tiene il checksum con cui e' arrivata)
     size = os.path.getsize(path)
     h = None
+    led = os.path.join(ROOT, '.scancut', 'packed.tsv')
+    if PACKED and os.path.exists(led):
+        h = sha(path)
+        for line in open(led):
+            p = line.rstrip('\n').split('\t')
+            if len(p) >= 3 and p[0] == h and os.path.exists(os.path.join(ORIG, p[2])):
+                return os.path.join(ORIG, p[2])
     for f in os.listdir(od):
         q = os.path.join(od, f)
         if f.startswith('.') or not os.path.isfile(q) or os.path.getsize(q) != size:
@@ -913,6 +924,26 @@ def take(path):
         os.remove(path)
         log(f'{name}: identical to originals/{batch}/{os.path.basename(same)}, removed from inbox')
         return None
+    if PACKED and ext in ('.png', '.tif', '.tiff'):
+        # nella libreria: JPEG XL senza perdita, controllato, fatto PRIMA di entrare fra gli originali (un file
+        # nascosto accanto, poi il nome vero): nessuno vede mai un TIFF di passaggio. L'inbox si svuota solo dopo
+        t0, h0, size0 = time.time(), sha(path), os.path.getsize(path)
+        for _ in range(1000):
+            new = free_stem(od, batch, stem, '.jxl')
+            n = split_name(new)[1] or 1
+            while any(os.path.lexists(os.path.join(od, new + e)) for e in (ext, '.jxl')):   # libero anche con l'estensione d'arrivo
+                n += 1; new = f'{batch} {n}'
+            j = pack(path, out=os.path.join(od, new + '.jxl'))
+            if j is None and os.path.lexists(os.path.join(od, new + '.jxl')):
+                continue                  # occupato nel frattempo: si riprova
+            break
+        if j:
+            note_packed(h0, j)
+            os.remove(path)
+            log(f'{name} -> originals/{os.path.relpath(j, ORIG)}  (lossless JPEG XL, same pixels, {size0 >> 20} -> {os.path.getsize(j) >> 20} MB, {time.time() - t0:.1f} s)'
+                + ('' if new + ext == name else '  (renamed: name already used or odd)'))
+            return j
+        log(f'{name}: JPEG XL failed, kept as it came')
     for _ in range(1000):
         new = free_stem(od, batch, stem, ext)
         dst = os.path.join(od, new + ext)
@@ -937,14 +968,6 @@ def take(path):
     os.remove(path)
     rel = os.path.relpath(dst, ORIG)
     log(f'{name} -> originals/{rel}' + ('' if new + ext == name else '  (renamed: name already used or odd)'))
-    if PACKED:
-        # nella libreria: JPEG XL senza perdita, controllato; il PNG/TIFF si toglie solo dopo il controllo
-        j = pack(dst)
-        if j:
-            note_packed(sha(dst), j)
-            os.remove(dst)
-            log(f'  -> {os.path.basename(j)} (lossless JPEG XL, same pixels, {os.path.getsize(j) >> 10} KB)')
-            dst = j
     return dst
 
 

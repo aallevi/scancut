@@ -27,11 +27,12 @@ between the old and the new outline. Everything can be undone (⌘Z).
 
 ## Refining a cut
 
-A cut is a part of its scan, and the real pixels are in the scan. In a cut, **Edit its part** (or
-picking the brush, lasso, rectangle, wand or points) opens the scan framed on that part, alone: the
-other parts are hidden and nothing else can change. Edit as usual (fast, ⌘Z works), then **Done: back
-to the cut**: only that cut is redone, and you are back on it. Add back what was cut away, or cut more
-away; nothing is invented. A cut with parts of its own (a cut of a cut) is refined like a scan.
+In a cut, the tools work on the cut itself: detect, draw or select parts of it, and they become its
+own cuts (a cut of a cut). To change the cut's own edge, use **Edit its part** (in the Cut panel, or
+**Refine this cut on its scan…** in the tool bar): the real pixels are in the scan, so it opens framed
+on that part, alone, with the other parts hidden and untouchable. Edit as usual (fast, ⌘Z works), then
+**Done: back to the cut**: only that cut is redone, and you are back on it. Add back what was cut
+away, or cut more away; nothing is invented.
 
 When only a part's outline or edits change, only its cut is redone; renaming, reordering or
 excluding parts redoes all the cuts of the scan, since their names change.

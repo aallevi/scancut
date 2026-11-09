@@ -51,7 +51,7 @@ class Jobs:
                 j = self.j
                 j['finished'] = time.time()
                 if e is None:
-                    j['status'], j['done'] = 'done', 1
+                    j['status'], j['done'] = 'done', j['total']
                     j['log'].append(f'done in {j["finished"] - j["started"]:.1f} s')
                 else:
                     j['status'] = 'failed'
@@ -74,12 +74,19 @@ class Jobs:
         say = lambda m: j['log'].append(m)
         try:
             getattr(self, 'do_' + j['kind'])(j, say)
+            if j.get('detached'):
+                return                                       # finisce da se' (l'archiviazione delle scansioni, accanto)
             if j['status'] == 'running':
                 j['status'] = 'done'
+        except scanner.Cancelled:
+            j['status'] = 'cancelled'
+            say('stopped; the scanner head went back home')
         except Exception as e:
             say(f'ERROR {type(e).__name__}: {e}')
             traceback.print_exc()
-            j['status'] = 'failed'
+            if j['status'] != 'cancelled':
+                j['status'] = 'failed'
+        j['phase'] = None
         j['finished'] = time.time()
 
     def do_batch(self, j, say):
@@ -109,7 +116,7 @@ class Jobs:
         dev, area = j['args']['dev'], j['args'].get('area')
         d = os.path.join(core.DATA, 'scanner'); os.makedirs(d, exist_ok=True)
         tif = os.path.join(d, 'preview.tif')
-        def prog(p): j['pct'] = p
+        prog = scan_progress(j, 0, [1])
         scanner.scan(dev, tif, 300 if area else 75, 'Color', area=tuple(area[:4]) if area else None,
                      progress=prog, cancelled=lambda: j['status'] == 'cancelled')
         Image.open(tif).convert('RGB').save(os.path.join(d, 'preview-area.png' if area else 'preview.png'))
@@ -125,29 +132,74 @@ class Jobs:
         a = j['args']
         areas = a.get('areas') or [None]
         batch = core.sc.clean_stem(a.get('batch') or 'scan')
+        def setting(area):
+            own = area[4] if area and len(area) > 4 and isinstance(area[4], dict) else {}
+            return int(own.get('res') or a['res']), own.get('mode') or a['mode']        # le impostazioni dell'area, se ne ha
+        def size(area):
+            res, mode = setting(area)
+            mm2 = area[2] * area[3] if area else 216 * 297
+            return mm2 * res * res * (2 if '48' in mode or '16' in mode else 1) * (1 if 'ray' in mode else 3)
+        sizes = [size(x) for x in areas]
+        lib = bridge.library(create=True)
+        first_new = lib.db.execute('SELECT COALESCE(MAX(id), 0) FROM asset').fetchone()[0]
+        mine, outs = [], []
         for k, area in enumerate(areas):
             if j['status'] == 'cancelled':
                 break
             out = next_scan_name(batch)
-            def prog(p, k=k): j['pct'] = (k + p / 100) / len(areas) * 100
-            own = area[4] if area and len(area) > 4 and isinstance(area[4], dict) else {}
-            res, mode = int(own.get('res') or a['res']), own.get('mode') or a['mode']      # le impostazioni dell'area, se ne ha
+            prog = scan_progress(j, k, sizes)
+            res, mode = setting(area)
             say(f'scanning {os.path.basename(out)} at {res} dpi, {mode}' + (f', area {area[2]:.0f} x {area[3]:.0f} mm' if area else ', whole bed'))
-            scanner.scan(a['dev'], out, res, mode, area=tuple(area[:4]) if area else None,
-                         progress=prog, cancelled=lambda: j['status'] == 'cancelled')
-            say(f'  -> inbox/{os.path.basename(out)}')
+            try:
+                scanner.scan(a['dev'], out, res, mode, area=tuple(area[:4]) if area else None,
+                             progress=prog, cancelled=lambda: j['status'] == 'cancelled')
+            except scanner.Cancelled:
+                say('stopped; the scanner head went back home')    # le aree gia' fatte si archiviano lo stesso
+                break
+            say(f'  read: {os.path.basename(out)}')
+            outs.append(out)
             # come e' nata questa scansione (scanner, impostazioni, area): nella libreria, legata al file per checksum
-            bridge._safe(bridge.record_capture, bridge.library(create=True), out, 'scanner', series=batch, device=a['dev'],
+            u = bridge._safe(bridge.record_capture, lib, out, 'scanner', series=batch, device=a['dev'],
                          settings={'res': res, 'mode': mode, 'area': [round(v, 1) for v in area[:4]] if area else None,
                                    'frames': a.get('frames') or None})
+            if u:
+                mine.append(u)
             j['done'] += 1
+        if not j['done']:
+            return                                           # fermata prima di finire la prima: niente da archiviare
+        j['phase'] = 'filing'
         core.save_settings({'scan_device': a['dev'], 'scan_res': int(a['res']), 'scan_mode': a['mode'], 'scan_batch': batch})
-        # fra le fonti e nella libreria, subito: ogni scansione e' gia' un oggetto della sua serie
-        say('filing the scans…')
-        core.file_inbox()
-        new = bridge.register_new(bridge.library(create=True))
-        j['result'] = {'rels': bridge.new_rels(bridge.library(), new)}
-        say(f'{len(new)} new source(s) in the library')
+        # fra le fonti e nella libreria, subito: ogni scansione e' gia' un oggetto della sua serie. Accanto, non in coda:
+        # lo scanner e' gia' libero e la pagina dopo puo' partire mentre queste si archiviano
+        def file():
+            try:
+                with FILING:
+                    say('filing the scans… (see the job “File scans”)')
+                    self.file_scans(outs)
+                    bridge.register_new(lib)
+                    rels = bridge.captured(lib, mine, first_new)          # le sue, non quelle di un'altra scansione
+                    j['result'] = {'rels': rels, 'scanned': j['done']}
+                say(f'{len(rels)} new source(s) in the library' + (f'; {j["done"] - len(rels)} identical to an earlier scan, not kept twice' if len(rels) < j['done'] else ''))
+                if j['status'] == 'running':
+                    j['status'] = 'done'
+            except Exception as e:
+                say(f'ERROR {type(e).__name__}: {e}')
+                traceback.print_exc()
+                j['status'] = 'failed'
+            j['phase'] = None
+            j['finished'] = time.time()
+        j['detached'] = True
+        threading.Thread(target=file, daemon=True).start()
+
+    def file_scans(self, paths):
+        # archiviare, come lavoro suo (si vede in Lavori): ogni file, dove va, quanto pesa, quanto ci mette
+        with self.track('file', rel=os.path.basename(paths[0]) if paths else '') as fj:
+            fj['total'] = len(paths)
+            def step(k, name):
+                fj['done'], fj['current'] = k, name
+            res = core.file_scans(paths, say=fj['log'].append, step=step)
+            fj['current'], fj['done'] = '', len(paths)
+            return res
 
     def do_install(self, j, say):
         # i componenti aggiuntivi (pagina Add-ons): Homebrew, pip, swiftc, o il modello da Hugging Face.
@@ -358,17 +410,37 @@ class Jobs:
 JOBS = None
 
 
+FILING = threading.Lock()      # una archiviazione alla volta (l'inbox e la libreria), anche con scansioni una dopo l'altra
+
+
+def scan_progress(j, k, sizes):
+    # avanzamento di una scansione: prima lo scanner si prepara (lampada, calibrazione: niente percentuale),
+    # poi legge. Le aree pesano per i pixel che hanno (una piccola e una grande non valgono meta' e meta');
+    # il tempo che resta viene dal ritmo misurato di quest'area, esteso alle aree che mancano
+    tot = sum(sizes) or 1
+    before, mine, after = sum(sizes[:k]), sizes[k], sum(sizes[k + 1:])
+    j.update(phase='warming', area=k + 1, areas=len(sizes), pct=before / tot * 100, eta=None, phase_t=time.time())
+    def prog(p):
+        t = time.time()
+        if j['phase'] == 'warming' and p > 0:
+            j.update(phase='scanning', phase_t=t, p0=p)
+        if j['phase'] == 'scanning' and p - j.get('p0', 0) > 1:
+            per = (t - j['phase_t']) / (p - j['p0'])                       # secondi per 1% di quest'area
+            j['eta'] = per * (100 - p) + per * 100 * after / (mine or 1)
+        j['pct'] = (before + mine * p / 100) / tot * 100
+    return prog
+
+
 def next_scan_name(batch):
-    # "<lotto> <numero>.tif", il primo numero libero fra inbox e originals/<lotto>
+    # "<lotto> <numero>.tif", il primo numero libero fra inbox, la cartella dello scanner e originals/<lotto>
     used = [0]
-    for d in (os.path.join(core.ROOT, 'inbox'), core.abspath(os.path.join('originals', batch))):
+    for d in (os.path.join(core.ROOT, 'inbox'), core.scanning_dir(), core.abspath(os.path.join('originals', batch))):
         if os.path.isdir(d):
             for f in os.listdir(d):
                 b, n = core.sc.split_name(core.sc.clean_stem(os.path.splitext(f.replace('.part', ''))[0]))
                 if b == batch and n:
                     used.append(n)
-    os.makedirs(os.path.join(core.ROOT, 'inbox'), exist_ok=True)
-    return os.path.join(core.ROOT, 'inbox', f'{batch} {max(used) + 1}.tif')
+    return os.path.join(core.scanning_dir(), f'{batch} {max(used) + 1}.tif')
 LAST_SEEN = [0.0]       # ultima richiesta dalla finestra (per chiudersi quando non c'e' piu')
 
 
@@ -822,6 +894,8 @@ class Handler(BaseHTTPRequestHandler):
             if not j:
                 return self.send({'error': 'no such job'}, code=404)
             j['status'] = 'cancelled'
+            if j.get('phase') in ('warming', 'scanning'):
+                j['phase'] = 'stopping'                      # la scansione si ferma da se' e riporta la testina a casa
             if j.get('proc'):
                 j['proc'].terminate()
             return self.send({'ok': True})
@@ -939,7 +1013,13 @@ def serve(root, port=PORT, ready=None, dev=False):
         dev_reload()
     lib = bridge.library(create=False)
     if lib:
-        bridge.start_watch(lib)                 # le copie aperte in Affinity & co. da prima: si guardano ancora
+        bridge.start_watch(lib)
+    if core.scans_left():
+        def left():
+            with FILING:
+                JOBS.file_scans(core.scans_left())
+                bridge.register_new(bridge.library(create=True))
+        threading.Thread(target=left, daemon=True).start()                 # le copie aperte in Affinity & co. da prima: si guardano ancora
     httpd = ThreadingHTTPServer(('127.0.0.1', port), Handler)
     httpd.daemon_threads = True
     if ready:

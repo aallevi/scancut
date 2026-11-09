@@ -12,12 +12,12 @@ _running = set()              # le scansioni in corso: se lo studio si ferma, si
 
 
 def _stop_all(*_):
-    # scanimage, mentre aspetta lo scanner, ignora la richiesta gentile: dopo 3 s si forza
+    # una richiesta sola (la seconda lascerebbe la testina a meta'), poi 20 s per tornare a casa; poi si forza
     for p in list(_running):
         if p.poll() is None:
-            p.terminate()
+            p.send_signal(signal.SIGINT)
             try:
-                p.wait(3)
+                p.wait(20)
             except subprocess.TimeoutExpired:
                 p.kill()
 
@@ -35,8 +35,8 @@ def clear_orphans(dev):
         if len(parts) == 3 and parts[1] == '1' and 'scanimage' in parts[2] and dev in parts[2]:
             pid = int(parts[0])
             try:
-                os.kill(pid, signal.SIGTERM); n += 1
-                for _ in range(30):                      # fino a 3 s per fermarsi da solo
+                os.kill(pid, signal.SIGINT); n += 1
+                for _ in range(200):                     # fino a 20 s per fermarsi e riportare a casa la testina
                     time.sleep(0.1)
                     os.kill(pid, 0)
                 os.kill(pid, signal.SIGKILL)            # mentre aspetta lo scanner non sente la richiesta gentile
@@ -96,9 +96,15 @@ def options(dev, refresh=False):
     return o
 
 
+class Cancelled(Exception):
+    pass
+
+
 def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled=lambda: False, _retry=2):
     # area: (sinistra, alto, larghezza, altezza) in mm; None = il letto intero.
     # Scrive out + '.part' e lo rinomina solo se la scansione e' completa.
+    # Fermare: UNA richiesta gentile e poi si aspetta. scanimage alla prima chiede allo scanner di fermarsi e
+    # riportare la testina a casa; alla seconda esce subito e la testina resta a meta' (scanner bloccato).
     args = [SCANIMAGE, '-d', dev, '--format=tiff', '--resolution', str(int(resolution)), '--mode', mode, '-p']
     if area:
         l, t, w, h = area
@@ -109,24 +115,38 @@ def scan(dev, out, resolution, mode='Color', area=None, progress=None, cancelled
             p = subprocess.Popen(args, stdout=f, stderr=subprocess.PIPE, text=True, bufsize=1)
             _running.add(p)
             err = []
-            buf = ''
-            while True:
-                ch = p.stderr.read(1)
-                if not ch:
-                    break
-                if ch in '\r\n':
-                    m = re.search(r'Progress:\s*([\d.]+)%', buf)
-                    if m and progress:
-                        progress(float(m.group(1)))
-                    elif buf.strip():
-                        err.append(buf.strip())
-                    buf = ''
-                else:
-                    buf += ch
-                if cancelled():
-                    p.terminate()
-            p.wait()
+
+            def read():
+                # l'avanzamento arriva su stderr ("Progress: 12.3%" e un ritorno a capo): letto a parte,
+                # cosi' la richiesta di fermarsi si sente anche mentre lo scanner tace (lampada, calibrazione)
+                buf = ''
+                while True:
+                    ch = p.stderr.read(1)
+                    if not ch:
+                        break
+                    if ch in '\r\n':
+                        m = re.search(r'Progress:\s*([\d.]+)%', buf)
+                        if m and progress:
+                            progress(float(m.group(1)))
+                        elif buf.strip():
+                            err.append(buf.strip())
+                        buf = ''
+                    else:
+                        buf += ch
+            rd = threading.Thread(target=read, daemon=True); rd.start()
+            stop_at = None
+            while p.poll() is None:
+                if stop_at is None and cancelled():
+                    p.send_signal(signal.SIGINT)                 # una volta sola
+                    stop_at = time.time()
+                if stop_at and time.time() - stop_at > 120:      # non si e' fermato in due minuti: si forza
+                    p.kill()
+                time.sleep(0.15)
+            rd.join(2)
             _running.discard(p)
+        if stop_at or (cancelled() and p.returncode != 0):
+            os.remove(tmp)
+            raise Cancelled()
         if p.returncode != 0 or os.path.getsize(tmp) == 0:
             os.remove(tmp)
             # scanner occupato da una scansione rimasta orfana, o ancora confuso da una interrotta:

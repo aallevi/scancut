@@ -221,6 +221,16 @@ buttons, ⌘[ ⌘], ⌥←/→ or the mouse side buttons.
 Through SANE (`scanimage`, `studio/scanner.py`): the scanner's real resolutions and modes,
 preview of the bed, scan areas (each with its own settings), 48-bit colour, sessions (Space =
 next page, or timed). Scans go to the inbox like any other. Tested with a Canon LiDE 400.
+Phases of a scan job (`phase`): warming (no percentage yet), scanning (`pct`, `eta` weighted by each
+area's pixels), stopping (Cancel sends one SIGINT; scanimage parks the head; a second signal would
+abort and leave it halfway), filing (in a thread beside the queue, one at a time, so the next page
+can start). Each job reports only its own sources (by capture checksum).
+The studio's scans are written to `.scancut/scanning/` (not the inbox: the agent never races for them)
+and filed at once by `core.file_scans` under the agent's lock, as a "File scans" job; leftovers are
+filed at the next start. In a packed library `take()` makes the lossless JPEG XL before the file
+enters `originals/` (a hidden part, then the real name), so the catalog never sees a passing TIFF;
+`packed.tsv` keeps the arrival checksum, so a repeat is still recognised, and `register_new` heals an
+older TIFF + JPEG XL double entry (`_heal_packed`).
 
 ## Testing (for Claude)
 
