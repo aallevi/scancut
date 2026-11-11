@@ -103,11 +103,19 @@ def captured(lib, uuids, after_id):
 _reg_last = [0.0]
 
 
+_reg_lock = threading.RLock()     # una registrazione alla volta: due thread non creano lo stesso oggetto due volte
+
+
 def register_new(lib, force=True):
     # le fonti nuove (arrivate nell'inbox e messe fra le fonti dall'agente) entrano nella libreria; le loro
     # registrazioni d'arrivo si legano al file per checksum. Veloce: solo i percorsi che il catalogo non ha.
     if not force and time.time() - _reg_last[0] < 3:
         return []
+    with _reg_lock:
+        return _register_new(lib)
+
+
+def _register_new(lib):
     _reg_last[0] = time.time()
     _heal_packed(lib)
     known = {r[0] for r in lib.db.execute("SELECT path FROM asset WHERE storage = 'referenced'")}
@@ -122,8 +130,10 @@ def register_new(lib, force=True):
     # gli arrivi registrati prima, ora con il loro file (un file passato in JPEG XL ha un checksum nuovo: packed.tsv)
     led = os.path.join(core.ROOT, '.scancut', 'packed.tsv')
     if os.path.exists(led):
-        for line in open(led):
-            p = line.rstrip('\n').split('\t')
+        with open(led) as f:
+            lines = f.read().splitlines()
+        for line in lines:
+            p = line.split('\t')
             if len(p) >= 2:
                 lib.db.execute('UPDATE capture SET sha256 = ? WHERE sha256 = ? AND asset_id IS NULL', (p[1], p[0]))
         lib.db.commit()
@@ -150,8 +160,14 @@ def _heal_packed(lib):
     led = os.path.join(core.ROOT, '.scancut', 'packed.tsv')
     if not os.path.exists(led):
         return
-    for line in open(led):
-        p = line.rstrip('\n').split('\t')
+    st = os.stat(led)
+    key = (lib.path, st.st_size, st.st_mtime)
+    if _healed.get('key') == key:
+        return                                         # il registro non e' cambiato: niente di nuovo da riparare
+    with open(led) as f:
+        lines = f.read().splitlines()
+    for line in lines:
+        p = line.split('\t')
         if len(p) < 3:
             continue
         old = lib.db.execute("SELECT * FROM asset WHERE sha256 = ? AND storage = 'referenced'", (p[0],)).fetchone()
@@ -182,6 +198,10 @@ def _heal_packed(lib):
             lib.log('merge', 'item', u, into_asset=new['uuid'], why='the same scan registered before and after JPEG XL')
         lib.db.execute('DELETE FROM asset WHERE id = ?', (old['id'],))
         lib.db.commit()
+    _healed['key'] = key
+
+
+_healed = {}
 
 
 def new_rels(lib, new):

@@ -102,8 +102,10 @@ def files_dir(d):
 
 
 def file_key(rel):
+    # il file com'e' ora: un file rifatto con lo stesso nome (un taglio rifatto, un JPEG XL che tiene l'ora del
+    # file di prima) ha un altro inode o un'altra ora al nanosecondo, e quindi un'anteprima sua
     st = os.stat(abspath(rel))
-    return hashlib.sha1(f'{rel}\0{st.st_size}\0{int(st.st_mtime)}'.encode()).hexdigest()[:20]
+    return hashlib.sha1(f'{rel}\0{st.st_size}\0{st.st_mtime_ns}\0{st.st_ino}'.encode()).hexdigest()[:20]
 
 
 def tree():

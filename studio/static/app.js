@@ -363,7 +363,7 @@ async function libLoadCutouts() {
   for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e) },
     h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
     h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
-    h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')), c.kept ? h('small', { class: 'addr', title: c.kept.path }, c.kept.address) : null)));
+    h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')), c.kept?.address ? h('small', { class: 'addr', title: c.kept.path }, c.kept.address) : null)));
 }
 // scegliere piu' ritagli: ⌘-clic aggiunge o toglie, ⇧-clic un tratto, clic solo uno
 function libPickCut(e, c) {
@@ -600,7 +600,7 @@ function keptGroup(d) {
   const addr = h('input', { class: 'f', placeholder: 'or type an address: 24-05, 1 · 24 · 5', style: { width: '100%' }, onkeydown: async e => {
     if (e.key === 'Enter' && e.target.value.trim()) { if (await libPut({ items: [it.uuid], place: null, address: e.target.value.trim() })) status('Placed'); } } });
   return group('Kept in',
-    h('div', { class: 'small muted' }, it.kept ? `${it.kept.path} · ${it.kept.address.replace(/ · \?$/, '')}` : 'Not placed yet. Parts without a place of their own follow this.'),
+    h('div', { class: 'small muted' }, it.kept?.address ? `${it.kept.path} · ${it.kept.address.replace(/ · \?$/, '')}` : 'Not placed yet. Parts without a place of their own follow this.'),
     h('div', { class: 'row' }, h('label', {}, 'Place'), placeSelect(it.place, v => libPut({ items: [it.uuid], place: v }), 'Not placed')),
     h('div', { class: 'row' }, addr),
     h('div', { class: 'row' }, h('label', {}, 'Category'), catSelect(it.category, v => libPut({ items: [it.uuid], category: v }), 'None')),
@@ -1527,6 +1527,8 @@ async function openScan(rel) {
   remember('scan:' + rel);
   useRemembered(rel);
   S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; if (S.focus && S.focus.src !== rel) S.focus = null; S.libTexts = []; S.where = null; V.tile = V.mtile = null;
+  // niente dell'immagine di prima resta a schermo mentre arriva questa (si vedeva l'originale, o un altro disegno)
+  S.info = null; S.st = null; V.img = null; clearTimeout(tileTimer); tileSeq++;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
@@ -1557,9 +1559,9 @@ async function openScan(rel) {
   try {
     const [info, st] = await Promise.all([api.get('info', { rel }), api.get('state', { rel })]);
     if (S.rel !== rel) return;
-    S.info = info; setState(st);
     const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}&k=${info.key || ''}`; await im.decode();
     if (S.rel !== rel) return;
+    S.info = info; setState(st);                         // misure, parti e immagine insieme, tutte di questo file
     V.img = im; V.pScale = im.naturalWidth / info.w;
     resize(); fit(); restoreTab(rel); renderSide(); renderTextPane(); renderMirror(); renderCmdbar(); renderOptions(); draw();
     api.get('library/where', { rel }).then(w => { if (S.rel === rel) { S.where = w; renderSide(); } }).catch(() => {});
@@ -2029,8 +2031,12 @@ async function focusDone() {
   const r = await api.post('recut_part', { rel: f.src, id: f.part }).catch(e => ({ error: e.message }));
   S.focus = null;
   if (r.error) return status(r.error);
+  // il giro nella scansione non resta nella cronologia: Indietro torna dove si era prima del taglio
   const to = r.rel || f.back, t = TABS.list[TABS.i]; if (t) t.loc = 'scan:' + to;
-  await openScan(to); status('Cut redone from its part');
+  if (S.navBack.at(-1) === 'scan:' + f.back) S.navBack.pop();
+  S._navigating = true; S._here = null;
+  try { await openScan(to); } finally { S._navigating = false; }
+  status('Cut redone from its part');
 }
 const inFocus = s => !S.focus || S.focus.src !== S.rel || s.id === S.focus.part;
 function applyRegion(op, mode) {

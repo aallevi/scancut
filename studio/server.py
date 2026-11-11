@@ -175,7 +175,7 @@ class Jobs:
             try:
                 with FILING:
                     say('filing the scans… (see the job “File scans”)')
-                    self.file_scans(outs)
+                    self.file_scans(outs + [x for x in core.scans_left() if x not in outs])   # anche quelle rimaste da prima
                     bridge.register_new(lib)
                     rels = bridge.captured(lib, mine, first_new)          # le sue, non quelle di un'altra scansione
                     j['result'] = {'rels': rels, 'scanned': j['done']}

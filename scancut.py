@@ -840,15 +840,52 @@ def dpi_of(path):
 JXL_EFFORT = '3'      # misurato su una scansione A4 a 600 dpi: 7 -> 10.4 s e 42 MB, 3 -> 1.3 s e 43 MB (senza perdita tutti e due)
 
 
+def plain_image(path):
+    # un file che OpenCV legge per intero: una pagina sola, RGB o grigio (con l'alfa al massimo), 8 o 16 bit interi.
+    # Un TIFF a piu' pagine, CMYK, Lab, in virgola mobile, a piani separati... resta com'e' arrivato: il controllo
+    # dei pixel confronterebbe con una lettura parziale e l'originale andrebbe perso
+    try:
+        with Image.open(path) as im:
+            if getattr(im, 'n_frames', 1) != 1:
+                return False
+            if im.format == 'PNG':
+                return True
+            if im.format != 'TIFF':
+                return False
+            t = im.tag_v2
+            many = lambda k, d: (lambda v: v if isinstance(v, tuple) else (v,))(t.get(k, d))
+            spp, bps, fmt, extra = int(t.get(277, 1)), set(many(258, 1)), set(many(339, 1)), set(many(338, 0))
+            return (t.get(262) in (1, 2)                 # grigio (nero = 0) o RGB
+                    and int(t.get(284, 1)) == 1          # canali insieme, non a piani
+                    and spp in (1, 3, 4) and len(bps) == 1 and bps <= {8, 16} and fmt == {1}
+                    and (spp != 4 or extra <= {1, 2}))   # il quarto canale solo se e' l'alfa
+    except Exception:
+        return False
+
+
+def durable(path):
+    # sul disco davvero (non solo nella cache), prima di togliere il file da cui viene
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        fcntl.fcntl(fd, getattr(fcntl, 'F_FULLFSYNC', 51))     # macOS: fsync non basta a passare la cache del disco
+    except OSError:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def pack(path, out=None):
     # PNG o TIFF -> <nome>.jxl accanto (o out), controllato; ritorna il percorso nuovo, o None se resta com'e'.
     # Il file di partenza non si tocca: lo toglie (o lo mette da parte) chi chiama
     ext = os.path.splitext(path)[1].lower()
-    if ext not in ('.png', '.tif', '.tiff') or not jxl_tools():
+    if ext not in ('.png', '.tif', '.tiff') or not jxl_tools() or not plain_image(path):
         return None
     src = pixels(path)
     if src is None:
         return None
+    with Image.open(path) as im:                 # OpenCV ha letto tutto: stesse misure e canali del file
+        if (src.shape[1], src.shape[0]) != im.size or (1 if src.ndim == 2 else src.shape[2]) != len(im.getbands()):
+            return None
     ch = 1 if src.ndim == 2 else src.shape[2]
     out = out or unique(os.path.splitext(path)[0] + '.jxl')
     hide = lambda p, end: os.path.join(os.path.dirname(p), '.' + os.path.basename(p) + end)   # nascosti: nessuno li prende per scansioni
@@ -875,7 +912,9 @@ def pack(path, out=None):
         os.utime(part, (st.st_atime, st.st_mtime))
         if os.path.lexists(out):
             return None
+        durable(part)
         os.rename(part, out)
+        durable(os.path.dirname(out))           # anche il nome nuovo nella cartella
         return out
     finally:
         for f in (part, tmp):
