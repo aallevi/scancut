@@ -90,10 +90,16 @@ numbering each time it opens, so a taken name gets the next free number.
   coloured paper on the white lid keeps a ~1 px light edge.
 - Scan Studio shares the pipeline: `cut_scan` returns each sheet's mask as a 6th
   tuple item `(mask, holes, exact)`; untouched studio exports must stay byte-identical
-  to the agent's. On the `library` branch every part, cut and text lives only in the library
+  to the agent's. Every part, cut and text lives only in the library
   (`<root>/Library.DocuLib`, code in `studio/library/`): `core.load_state`/`save_state` read and
   write its rows. Never add another store; `studio-data/` holds only caches and settings. Library › Check
   (and the end of tools/health.js) must report nothing. After "Move files in…" (`bridge.switch_storage`)
   originals/, cut/, failed/ live inside the package as lossless JPEG XL (`sc.pack`: checked pixel for pixel);
   `sc.PACKED` says so, `core.abspath`/`core.relpath` map the same relative names there. Temporary files
-  are hidden (dot names) so nothing registers them.
+  are hidden (dot names) so nothing registers them. In a packed library the agent makes the JPEG XL before
+  the file enters originals/ (`take`), flushed to disk (`durable`) before the source goes; files OpenCV
+  cannot read whole (multi-page, CMYK, float TIFF: `plain_image`) stay as they came. The studio's own
+  scans go through `.scancut/scanning/` and `core.file_scans`, under the agent's lock.
+- First start on an existing scans folder: the library is created, the old JSON state migrated
+  (folders kept aside as `*.migrated-<stamp>`), and a "Library import" job links the existing cuts to
+  their parts by their pixels (any 90° turn; the part takes the turn), by name only when no part matches.

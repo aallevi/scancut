@@ -332,6 +332,8 @@ class Jobs:
         def prog(k, n, name):
             j['pct'] = k / n * 100; j['current'] = name
         r = bridge.import_root(lib, prog, log=say)
+        with lib.db:
+            lib.db.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('root_imported', ?)", (str(time.time()),))
         j['result'] = r; j['done'] = 1
 
     def do_switch(self, j, say):
@@ -1014,6 +1016,11 @@ def serve(root, port=PORT, ready=None, dev=False):
     lib = bridge.library(create=False)
     if lib:
         bridge.start_watch(lib)
+    # la prima volta su una cartella di scansioni che c'era gia': fonti, parti e tagli di prima nella libreria, una volta
+    lib0 = bridge.library(create=True)
+    if not lib0.meta('root_imported') and os.path.isdir(core.abspath('originals')) and any(
+            core.is_image(f) for _, _, fs in os.walk(core.abspath('originals')) for f in fs):
+        JOBS.add('libimport')
     if core.scans_left():
         def left():
             with FILING:

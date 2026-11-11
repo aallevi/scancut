@@ -35,14 +35,14 @@
     const [w1, h1] = await img(`/api/cutout?${qs({ rel: SCAN, id: sh.id, max: 400 })}&t=${Date.now()}`);
     ok(w1 === h0 && h1 === w0, `sheet rotate 90: cutout ${w0}x${h0} -> ${w1}x${h1}`);
     rotateSheets([sh], -90); await flushSave();
-    // inverti e ritorna
-    const ops0 = sh.ops.length; invertSelected(); await flushSave();
-    ok(isInverted(S.st.sheets.find(x => x.id === sh.id)), 'invert on');
+    // inverti e ritorna (dallo stato in cui la parte e' gia': una parte vera puo' essere gia' invertita)
+    const ops0 = sh.ops.length, inv0 = isInverted(S.st.sheets.find(x => x.id === sh.id)); invertSelected(); await flushSave();
+    ok(isInverted(S.st.sheets.find(x => x.id === sh.id)) !== inv0, 'invert flips');
     const r = await fetch(`/api/masktile?${qs({ rel: SCAN, x: 0, y: 0, w: S.info.w, h: S.info.h, out: 200 })}`); ok(r.ok, 'mask of inverted sheet renders');
     invertSelected(); await flushSave();
     const back = S.st.sheets.find(x => x.id === sh.id);
-    ok(!isInverted(back) && back.ops.length === ops0, 'invert again goes back exactly');
-    invertSelected(); undo(); ok(!isInverted(S.st.sheets.find(x => x.id === sh.id)), 'undo of invert');
+    ok(isInverted(back) === inv0 && back.ops.length === ops0, 'invert again goes back exactly');
+    invertSelected(); undo(); ok(isInverted(S.st.sheets.find(x => x.id === sh.id)) === inv0, 'undo of invert');
     // densitometro: resta, si chiude e si riapre senza il mouse sulla scansione
     measure([1500, 1500], 600, 300); await until(() => $('#dens').style.display === 'block');
     cv.dispatchEvent(new PointerEvent('pointerleave')); await wait(200);

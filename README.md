@@ -2,7 +2,7 @@
 
 <h1 align="center">scancut · Scan Studio</h1>
 
-<p align="center">Cuts scanned drawings out of flatbed scans, one transparent PNG per sheet, and gives you a window to check and fix every edge.<br><b>Beta 0.9</b> · macOS</p>
+<p align="center">Cuts scanned drawings out of flatbed scans, one transparent PNG per sheet, and gives you a window to check and fix every edge.<br><b>Beta 0.10</b> · macOS</p>
 
 ![Scan Studio editor: seven notebook pages cut from one scan](docs/images/editor.png)
 
@@ -22,9 +22,16 @@ for every scan that lands in a folder. Scan Studio is the window around it: you 
   subtract, intersect), with history. It also has a densitometer, a loupe and a histogram.
 - **Engines**: the classic lid-colour cut, Otsu threshold, exact paper formats from a corner,
   Apple Vision, Meta **SAM 3** (optional) and your own Python scripts.
-- **Scanning**: scan areas, 48-bit colour, page-by-page sessions (Space or a timer) through SANE.
-- **Export**: PNG or lossless JPEG XL, 16-bit kept, true size (dpi) and colour profile carried over,
-  OCR text in the metadata, lossless 90° rotation, multipage TIFF, optional Eagle import.
+- **Library**: every scan, part, cut and text lives in one catalog (`Library.DocuLib`, SQLite) with
+  checksums, history and snapshots. Each part's characteristics are stored once: change the outline,
+  rotation, name or text anywhere and its cut and every view follow. **Move files in…** puts originals
+  and cuts inside the library as lossless JPEG XL (same pixels, checked; about 40% of a TIFF).
+- **Text**: Apple Vision or a local model (GLM-OCR, Qwen3-VL) reads the parts; the text stays editable,
+  with versions, and is written into each cut's metadata.
+- **Scanning**: scan areas, 48-bit colour, page-by-page sessions (Space or a timer) through SANE;
+  each page is filed into the library at once.
+- **Cut**: PNG or lossless JPEG XL, 16-bit kept, true size (dpi) and colour profile carried over,
+  text in the metadata, lossless 90° rotation, multipage TIFF, optional Eagle import.
 
 ![Cutouts](docs/images/cutouts.png)
 
@@ -63,21 +70,24 @@ yourself and leave it in `~/Downloads`; it is found there.
 
 1. **Scan** into `~/Scans/inbox`: with Image Capture, your scanner's own app, or from the
    **Scanners** page. Grey card behind white paper gives the cleanest edges.
-2. The agent files each scan in `originals/<batch>/` and writes the cutouts to `cut/<batch>/`. Scans
-   it is unsure about also appear under **To check**.
-3. In Scan Studio, open a scan to see its sheets. Press **Detect** to try another engine, fix
-   edges with the tools on the left, and **Export** (⌘S).
+2. The agent files each scan in `originals/<series>/` and writes the cuts to `cut/<series>/`
+   (inside `Library.DocuLib` once the files are moved in). Scans it is unsure about also appear
+   under **To check**.
+3. In Scan Studio, open a scan to see its parts. Press **Detect** to try another engine, fix
+   edges with the tools on the left, and **Cut** (⌘S). From then on the cuts follow their parts.
+4. **Library** shows sources, cuts and texts; **Check** proves every file and cut is where the
+   catalog says and unchanged.
 
-The batch is the file name without its final number: `sketchbook 12.png` goes to `sketchbook/`.
+The series is the file name without its final number: `sketchbook 12.png` goes to `sketchbook/`.
 
 | Shortcut | |
 |---|---|
 | V · H (or Space) · A | select · pan · edit points |
 | P · M · L · W · B | polygon · rectangle · lasso · Magic Wand · brush |
 | X, or ⌥ while clicking | swap add / cut |
-| ⌘-click · ⇧-click · ⌃-click | add a sheet · add a range · export only this sheet |
+| ⌘-click · ⇧-click · ⌃-click | add a part · add a range · cut only this part |
 | O · G · C | cut view · loupe · compare engines |
-| ⌘Z · ⇧⌘Z · ⌘S · ⌘0 · ⌘1 | undo · redo · export · fit · actual pixels |
+| ⌘Z · ⇧⌘Z · ⌘S · ⌘0 · ⌘1 | undo · redo · cut · fit · actual pixels |
 
 ![Magic Wand](docs/images/magic-wand.png)
 
@@ -91,6 +101,7 @@ From a terminal, without the window:
 ## More
 
 - [STUDIO.md](STUDIO.md): engines, how edits are stored, the local API, testing.
+- [docs/LIBRARY.md](docs/LIBRARY.md): the library: what it stores, the one-source rule, files inside.
 - [CLAUDE.md](CLAUDE.md): how the automatic cut works, step by step, and the rules it keeps.
 
 ## Licence

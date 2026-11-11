@@ -4,6 +4,7 @@
 # prende come nuova versione legata all'originale. L'originale non si tocca mai.
 
 import os, re, json, time, shutil, threading, subprocess, glob
+import numpy as np, cv2
 
 from .. import core
 from .db import Library, now, sha256
@@ -952,8 +953,77 @@ def import_cutouts(lib, rel):
         pat = re.compile(re.escape(stem) + r'( [a-z])?')
         found = [{'id': None, 'path': os.path.join(d, f), 'status': 'identical'} for f in sorted(os.listdir(d))
                  if core.is_image(f) and pat.fullmatch(os.path.splitext(f)[0])]
+    found = [f for f in found if not lib.db.execute('SELECT 1 FROM cut WHERE path = ?', (os.path.realpath(f['path']),)).fetchone()]
     if found:
+        _match_by_pixels(lib, rel, found)
         on_export(rel, found)
+
+
+def _file_rgba(path):
+    # i pixel di un taglio come li rende cut_sheet (RGB/RGBA, 8 o 16 bit)
+    a = core.sc.pixels(path)
+    if a is None:
+        return None
+    if a.ndim == 2 or (a.ndim == 3 and a.shape[2] == 2):        # grigio (+ alfa): come RGBA
+        g, al = (a, None) if a.ndim == 2 else (a[..., 0], a[..., 1])
+        return np.dstack([g, g, g] + ([al] if al is not None else []))
+    if a.ndim == 3:
+        a = cv2.cvtColor(a, cv2.COLOR_BGRA2RGBA if a.shape[2] == 4 else cv2.COLOR_BGR2RGB)
+    return a
+
+
+def _match_by_pixels(lib, rel, found):
+    # un taglio di prima della libreria, legato alla parte che oggi ha il suo nome: se ne contiene i pixel girati
+    # (in master girare un taglio girava solo il file), la parte prende quella rotazione: e' l'ultima scelta fatta.
+    # Se non li contiene (la parte e' cambiata dopo, o le lettere si sono spostate) resta legato e il controllo
+    # lo segna come vecchio, da rifare
+    st = core.load_state(rel, create=False)
+    sheets = [x for x in (st or {}).get('sheets', [])]
+    if not sheets:
+        return
+    fresh, rotate = {}, {}
+    def cut(sh, deep):
+        k = (sh['id'], deep)
+        if k not in fresh:
+            try:
+                r = core.cut_sheet(rel, sh, deep=deep)
+                fresh[k] = r[0] if r is not None else None
+            except Exception:
+                fresh[k] = None
+        return fresh[k]
+    taken = set()
+    for f in found:
+        img = _file_rgba(f['path'])
+        if img is None:
+            continue
+        deep = img.dtype == np.uint16
+        # solo la parte che ha oggi questo nome: il nome di un taglio viene dalla sua parte (un file con i pixel di
+        # un'altra parte e' solo vecchio, e Ricontrolla lo propone da rifare). Qui si cerca la rotazione
+        for sh in [x for x in sheets if x['id'] == f.get('id')]:
+            if sh['id'] in taken:
+                continue
+            c = cut(sh, deep)
+            if c is None or c.dtype != img.dtype:
+                continue
+            k = next((k for k in range(4) if np.rot90(c, -k).shape == img.shape and np.array_equal(np.rot90(c, -k), img)), None)
+            if k is not None:
+                f['id'] = sh['id']; taken.add(sh['id'])
+                if k:
+                    rotate[sh['id']] = k
+                break
+    if not rotate:
+        return
+    a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(core.abspath(rel)),)).fetchone()
+    for sid, k in rotate.items():
+        r = lib.db.execute("SELECT id, uuid, rotation FROM region WHERE asset_id = ? AND json_extract(source, '$.studio_id') = ? AND removed_at IS NULL",
+                           (a['id'], sid)).fetchone()
+        if r:
+            new = (int(r['rotation'] or 0) + 90 * k) % 360
+            lib.db.execute('UPDATE region SET rotation = ? WHERE id = ?', (new, r['id']))
+            lib.log('edit', 'region', r['uuid'], rotation=new, why='its cut file was turned before the library: the part takes that turn')
+    lib.db.commit()
+    from . import store
+    store._cache.clear()
 
 
 def sync_async(fn, *a):
@@ -1450,7 +1520,7 @@ def check(lib, deep=False):
     import numpy as np
     from PIL import Image
     problems = []
-    add = lambda kind, what, detail='': problems.append({'kind': kind, 'what': what, 'detail': detail})
+    add = lambda kind, what, detail='', **more: problems.append({'kind': kind, 'what': what, 'detail': detail, **more})
     # 1) i file sono dove dice il catalogo, e sono quelli (tagli: checksum; fonti: esistono e stessa misura)
     for a in lib.db.execute('SELECT a.*, (SELECT role FROM item_asset WHERE asset_id = a.id LIMIT 1) AS role FROM asset a').fetchall():
         p = lib.asset_path(a)
@@ -1483,12 +1553,15 @@ def check(lib, deep=False):
             src = json.loads(r['source'] or '{}')
             st = core.load_state(src.get('studio_rel'), create=False) if src.get('studio_rel') else None
             sh = next((x for x in (st or {}).get('sheets', []) if x['id'] == src.get('studio_id')), None)
-            res = core.cut_sheet(src['studio_rel'], sh) if sh else None
-            if res is not None and c['path'].lower().endswith('.png'):
-                img = np.asarray(Image.open(c['path']))
-                if img.shape != res[0].shape or not np.array_equal(img, res[0]):
-                    if not (img.dtype == np.uint16 or res[0].dtype == np.uint16):
-                        add('cut pixels differ from its part', name, c['path'])
+            # ogni taglio, PNG o JPEG XL, 8 o 16 bit: i suoi pixel contro un taglio nuovo della sua parte
+            img = _file_rgba(c['path']) if sh else None
+            res = core.cut_sheet(src['studio_rel'], sh, deep=img.dtype == np.uint16) if img is not None else None
+            if res is not None:
+                f = res[0]
+                if f.ndim == 3 and f.shape[2] == 3 and img.shape[-1] == 4 and (img[..., 3] == np.iinfo(img.dtype).max).all():
+                    img = img[..., :3]                       # senza trasparenza: si confronta RGB
+                if img.shape != f.shape or img.dtype != f.dtype or not np.array_equal(img, f):
+                    add('cut older than its part', name, c['path'], rel=src['studio_rel'], part=src['studio_id'])
     # 3) niente vive piu' fuori dalla libreria
     for d in ('state', 'text'):
         dd = os.path.join(core.DATA, d)

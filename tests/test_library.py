@@ -100,6 +100,50 @@ class BridgeTest(unittest.TestCase):
         bridge._lib = None
         remove_root(self.root)
 
+    def test_import_links_old_cuts_by_name_and_flags_the_old_ones(self):
+        # tagli di prima della libreria: i nomi non dicono sempre di quale parte sono (le lettere si spostano) e
+        # in master girare un taglio girava solo il file. L'import guarda i pixel: ogni file alla sua parte, e la
+        # parte prende la rotazione che il file ha avuto
+        import shutil, numpy as np, cv2
+        from studio import core
+        from studio.library import bridge
+        d = os.path.join(self.root, 'cut', 'card')
+        a, b = os.path.join(d, 'card 1 a.png'), os.path.join(d, 'card 1 b.png')
+        tmp = os.path.join(d, 'tmp.png')
+        shutil.move(a, tmp); shutil.move(b, a); shutil.move(tmp, b)            # i nomi scambiati
+        img = cv2.imread(a, cv2.IMREAD_UNCHANGED)
+        cv2.imwrite(a, np.rot90(img, 2).copy())                               # e uno girato di 180 a mano
+        lib = bridge.library()
+        bridge.import_root(lib)
+        ids = {os.path.basename(r['path']): (json.loads(r['source'])['studio_id'], r['rotation']) for r in lib.db.execute(
+            'SELECT c.path, g.source, g.rotation FROM cut c JOIN region g ON g.id = c.region_id')}
+        st = core.load_state(self.rel)
+        first, second = st['sheets'][0]['id'], st['sheets'][1]['id']
+        # il nome viene dalla parte: i due file scambiati restano ai nomi, segnati come vecchi; rifatti, tutto torna
+        self.assertEqual(ids['card 1 a.png'], (first, 0))
+        self.assertEqual(ids['card 1 b.png'], (second, 0))
+        old = [p for p in bridge.check(lib, deep=True) if p['kind'] == 'cut older than its part']
+        self.assertEqual(sorted(p['part'] for p in old), sorted([first, second]))
+        bridge.recut_now(self.rel, {p['part'] for p in old})
+        self.assertEqual([p for p in bridge.check(lib, deep=True) if p['kind'] != 'cut text differs from its part'], [])
+
+    def test_import_takes_the_turn_of_a_turned_cut(self):
+        # in master girare un taglio girava solo il file: la parte prende quella rotazione, il file resta com'e'
+        import numpy as np, cv2
+        from studio import core
+        from studio.library import bridge
+        b = os.path.join(self.root, 'cut', 'card', 'card 1 b.png')
+        before = open(b, 'rb').read()
+        cv2.imwrite(b, np.rot90(cv2.imread(b, cv2.IMREAD_UNCHANGED), -1).copy())     # 90 gradi in senso orario
+        turned = open(b, 'rb').read()
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        self.assertEqual(st['sheets'][1]['rot'], 90)
+        self.assertEqual(open(b, 'rb').read(), turned)
+        self.assertNotEqual(turned, before)
+        self.assertEqual([p for p in bridge.check(lib, deep=True) if p['kind'] != 'cut text differs from its part'], [])
+
     def test_import_and_edit(self):
         from studio.library import bridge
         from PIL import Image

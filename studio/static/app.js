@@ -456,10 +456,19 @@ async function libCheck(deep) {
   status(deep ? 'Checking everything, pixels included…' : 'Checking…', true);
   const p = await api.get('library/check', deep ? { deep: 1 } : {}).catch(e => [{ kind: 'error', what: e.message, detail: '' }]);
   status(p.length ? `${p.length} problem(s) found` : 'Everything is consistent with the library');
+  const old = p.filter(x => x.kind === 'cut older than its part' && x.rel && x.part);
   dialog('Check', p.length ? `${p.length} thing(s) do not match the library` : 'Everything is consistent', h('div', { style: { width: '560px', maxHeight: '60vh', overflow: 'auto' } },
     p.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Where'), h('th', {}, '')),
       ...p.map(x => h('tr', {}, h('td', {}, x.kind), h('td', {}, x.what), h('td', { class: 'small muted' }, (x.detail || '').split('/').slice(-2).join('/')))))
-      : h('div', {}, `Every file is where the library says and unchanged; every cut matches its part${deep ? ' pixel for pixel' : ''} and carries its current text; nothing lives outside the library.`)));
+      : h('div', {}, `Every file is where the library says and unchanged; every cut matches its part${deep ? ' pixel for pixel' : ''} and carries its current text; nothing lives outside the library.`),
+    old.length ? h('div', { class: 'btns', style: { marginTop: '8px' } },
+      h('button', { class: 'btn default', onclick: async e => {
+        // tagli fatti da una versione di prima della parte: si rifanno solo quelli (i file di prima restano nella storia)
+        const btn = e.currentTarget; btn.disabled = true;
+        for (const [k, x] of old.entries()) { status(`Re-cutting ${k + 1} of ${old.length}: ${x.what}`, true); await api.post('recut_part', { rel: x.rel, id: x.part }).catch(() => null); }
+        btn.closest('.dlg-back')?.remove(); status(`${old.length} cut(s) redone from their parts; the previous files are in the history`); libCheck(deep);
+      } }, `Re-cut these (${old.length})`),
+      info('These cuts were made before their part was last changed. Re-cutting makes them from the part as it is now; the previous files are kept in the history (studio-data/replaced).')) : null));
 }
 // i file dentro la libreria: prima il piano (niente cambia), poi, confermato, il lavoro (con la barra)
 async function libSwitch() {

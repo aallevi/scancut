@@ -285,7 +285,7 @@ class TheCheckCanFail(Base):
         finally:
             import importlib
             importlib.reload(bridge)
-        self.assertIn('cut pixels differ from its part', self.kinds(bridge.library(), deep=True))
+        self.assertIn('cut older than its part', self.kinds(bridge.library(), deep=True))
 
 
 class CodeAudit(unittest.TestCase):

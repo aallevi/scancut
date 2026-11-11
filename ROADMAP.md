@@ -1,6 +1,6 @@
 # Roadmap
 
-Scan Studio is a beta (0.9). Two rules do not change:
+Scan Studio is a beta (0.10). Two rules do not change:
 
 - **Only real pixels.** Cutouts change transparency only; anything that changes pixels makes a
   separate copy marked "fake pixels".
@@ -34,25 +34,28 @@ Ask Claude for jobs, given the right help first.
 **Reliability:** tests (`tests/`, in CI), UI health check (`tools/health.js`), every task in Jobs with
 real progress, installer with a progress bar.
 
-**On the `library` branch (in progress, tried in "Scan Studio Preview"):** the library catalog
-(SQLite: objects, files, parts, nested secondary areas, texts with correction versions, cuts, series,
-tags/collections tables, history log, embeddings table, full-text search; checksums, snapshots,
-sidecars); live sync with the studio; Library views Objects / Cutouts / Texts with links between
-them; cuts carry their texts and IDs in their metadata; the one-source rule (re-cut, rename and
-history when a part changes; rotation and text shared both ways; colour stored on the part);
-"export" renamed "cut"; batch reading of cutouts; sort and filter by resolution; series as data;
-Edit in Affinity / Preview (saves come back as linked versions); self-updating preview app.
+**Library (0.10):** the catalog (SQLite in `Library.DocuLib`: objects, files, parts, nested
+secondary areas, texts with correction versions, cuts, series, places, tags/collections tables,
+history log, embeddings table, full-text search; checksums, snapshots, sidecars) is the only store of
+the studio; Library views Objects / Cuts / Texts with links between them; cuts carry their texts and
+IDs in their metadata; the one-source rule (re-cut, rename and history when a part changes; only the
+changed part is re-cut; rotation and text shared both ways); "export" renamed "cut"; refining a cut
+on its source ("Edit its part"); a cut's own parts; series and places as data; Trash with days to keep;
+Edit in Affinity / Preview (saves come back as linked versions). **Files inside:** "Move files in…"
+puts originals and cuts in the package as lossless JPEG XL, checked pixel for pixel; the agent and the
+scanner file new scans straight in, flushed to disk before the source goes. **Scanner:** phases and
+time left, Cancel that parks the head, Space and timed sessions, each page filed at once ("File
+scans" job). **First start on an existing folder:** old state migrated, old cuts linked to their parts
+by their pixels.
 
-## Next (library branch)
+## Next (library)
 
 1. **Cuts at the centre:** series and objects feature their cuts; the original shown as "source".
-2. **Storage switch:** managed library, one readable folder per object (original, kept cuts, edits,
-   `item.json`), folder names produced from the data; inbox inside the library; the agent imports
-   into it; the old `originals/` / `cut/` tree leaves the app. Files are moved in only after a
-   byte-for-byte check — on the preview first, on the real scans folder only at switch-over, confirmed.
-3. **Originals policy:** keep by default (they are the evidence and the only way to re-cut); lossless
-   JPEG XL to halve their size; offline storage (external drive, library remembers where); an explicit
-   "release this original" that keeps cut, geometry and checksum.
+2. **Storage, further:** one readable folder per object (original, kept cuts, edits, `item.json`),
+   folder names produced from the data; inbox inside the library.
+3. **Originals policy:** keep by default (they are the evidence and the only way to re-cut); offline
+   storage (external drive, library remembers where); an explicit "release this original" that keeps
+   cut, geometry and checksum.
 4. **Database editor:** browse every table, edit the safe fields (titles, dates, labels, notes, roles,
    tags, links, text) through the one-source path, every edit logged; notes on any row as a shared
    to-do list for changes.
@@ -61,36 +64,35 @@ Edit in Affinity / Preview (saves come back as linked versions); self-updating p
 6. **Exports as representations:** LaTeX that can make a book (your preamble, mixed languages marked,
    figures from cuts) and the nvim journal (read-only, dated, linked back); searchable PDF (positioned
    text layer); Word; BagIt package.
-7. **Archive sync:** one-way to the site (Directus): cuts + transcriptions + provenance, read-only
-   there, linked by ID. To decide: a cut as its own record (an artefact others link to) or a file on
-   existing records — depends on the site's collections.
+7. **Archive link:** Scan Studio prepares material for the archive (Directus) as an export package
+   its importer already reads, upserted by stable IDs (`source` / `source_id`), each field owned by one
+   side; read-only lookups of the archive's lists; later a "Send to archive" button. Details to settle.
 8. **Several libraries:** open in separate windows (like Tropy), merge without duplicates.
 9. **Models per Mac:** stored once, shared by all libraries; a library that needs a missing model
    asks to download it (like a missing font).
 10. **Safety tools in the interface:** fixity check job, snapshots, backup advice (3-2-1).
-11. **Merge into master** once the storage switch is done and tried.
 
 ## Next (text and cutting)
 
-12. **OCR with layout rectangles:** models that give a box for every text block and picture
+11. **OCR with layout rectangles:** models that give a box for every text block and picture
     (LightOnOCR-2-1B-bbox, PaddleOCR-VL, dots.mocr, MinerU), so the side-by-side view places each block
     where it is, pictures cut from the real pixels. Tested on real handwritten and typed pages first.
-13. **Selectable text on the drawing** (like Live Text), from line or word boxes.
-14. **OCR comparison** on real pages (GLM-OCR vs Qwen3-VL on difficult handwriting); Apple Vision's
+12. **Selectable text on the drawing** (like Live Text), from line or word boxes.
+13. **OCR comparison** on real pages (GLM-OCR vs Qwen3-VL on difficult handwriting); Apple Vision's
     language detection can misfire on handwriting.
-15. **Background removal benchmark:** BiRefNet lite / full / HR and RMBG-2.0 on scans and photos.
-16. **Find + edge:** one model finds the objects, another cuts each edge up close.
-17. **Open lid:** sketchbooks scanned with the lid open; flat-lid results stay byte-identical; shown
+14. **Background removal benchmark:** BiRefNet lite / full / HR and RMBG-2.0 on scans and photos.
+15. **Find + edge:** one model finds the objects, another cuts each edge up close.
+16. **Open lid:** sketchbooks scanned with the lid open; flat-lid results stay byte-identical; shown
     before/after first.
 
 ## Later
 
-18. **Scanner:** driving a flatbed directly (Canon LiDE 400): frame sets, presets, settings per frame,
+17. **Scanner:** driving a flatbed directly (Canon LiDE 400): frame sets, presets, settings per frame,
     optical-only resolutions, prescan zoom, 16-bit originals.
-19. **Colour calibration (IT8.7/2):** ArgyllCMS profile embedded; pixels untouched.
-20. **"Fake pixels" copies,** off by default: descreen (moiré), 16-bit curves, BM3D noise reduction.
-21. **Wizard and job manager:** a step-by-step batch wizard and a fuller jobs view.
-22. **Search by content:** image and text embeddings over everything ("the drawing with the guitar").
+18. **Colour calibration (IT8.7/2):** ArgyllCMS profile embedded; pixels untouched.
+19. **"Fake pixels" copies,** off by default: descreen (moiré), 16-bit curves, BM3D noise reduction.
+20. **Wizard and job manager:** a step-by-step batch wizard and a fuller jobs view.
+21. **Search by content:** image and text embeddings over everything ("the drawing with the guitar").
 
 ## Ideas welcome
 
