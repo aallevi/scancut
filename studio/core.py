@@ -1491,7 +1491,7 @@ def export(rel, replace=None, log=print, subfolder=None, only=None):
     sheets = {x['id']: x for x in st['sheets']}
     written = []
     recut = is_recut(rel)
-    replace = replace and not recut      # accanto a un ritaglio: i pezzi vecchi restano, i nuovi prendono (2)
+    replace = False if recut else replace   # accanto a un ritaglio: i pezzi vecchi restano, i nuovi prendono (2)
     lock = agent_lock()
     try:
         stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -1511,7 +1511,7 @@ def export(rel, replace=None, log=print, subfolder=None, only=None):
             if same_cutout(out, rgba):
                 written.append({'id': sid, 'path': out, 'status': 'identical'}); continue
             moved = None
-            if os.path.exists(out) and replace:
+            if os.path.exists(out) and (replace is True or (isinstance(replace, set) and os.path.realpath(out) in replace)):
                 moved = os.path.join(DATA, 'replaced', stamp, relpath(out) if out.startswith(ROOT) else os.path.basename(out))
                 os.makedirs(os.path.dirname(moved), exist_ok=True)
                 moved = sc.unique(moved)

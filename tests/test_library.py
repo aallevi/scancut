@@ -1,6 +1,6 @@
 # la libreria (catalogo SQLite): import senza doppioni, fissita', zone e testo con le versioni,
 # ricerca, sidecar piccoli, copie del catalogo
-import os, json, time, unittest
+import os, glob, json, time, unittest
 from helpers import scratch_root, remove_root, fake_scan
 from studio.library.db import Library
 
@@ -125,6 +125,25 @@ class BridgeTest(unittest.TestCase):
         old = [p for p in bridge.check(lib, deep=True) if p['kind'] == 'cut older than its part']
         self.assertEqual(sorted(p['part'] for p in old), sorted([first, second]))
         bridge.recut_now(self.rel, {p['part'] for p in old})
+        self.assertEqual([p for p in bridge.check(lib, deep=True) if p['kind'] != 'cut text differs from its part'], [])
+
+    def test_old_cut_without_a_letter_is_linked_and_retired(self):
+        # vendrdro 7, 11 nov: "<nome>.png" dell'agente (un foglio solo), poi la scansione con piu' parti tagliata
+        # dallo studio: il file di prima restava accanto ai nuovi, legato a nessuno. Ora va alla parte di cui ha
+        # i pixel, il controllo lo segna e Ricontrolla lo manda nella storia
+        import shutil
+        from studio.library import bridge
+        d = os.path.join(self.root, 'cut', 'card')
+        shutil.copy2(os.path.join(d, 'card 1 b.png'), os.path.join(d, 'card 1.png'))
+        lib = bridge.library()
+        bridge.import_root(lib)
+        r = lib.db.execute("SELECT region_id FROM cut WHERE path LIKE '%/card 1.png'").fetchone()
+        self.assertIsNotNone(r and r[0], 'the old file is linked to the part it shows')
+        found = [p for p in bridge.check(lib) if p['kind'] == 'more than one cut of a part in place']
+        self.assertEqual(len(found), 1)
+        bridge.recut_now(found[0]['rel'], {found[0]['part']})
+        self.assertFalse(os.path.exists(os.path.join(d, 'card 1.png')))
+        self.assertTrue(glob.glob(os.path.join(self.root, '.scancut', 'studio-data', 'replaced', '*', 'cut', 'card', 'card 1.png')))
         self.assertEqual([p for p in bridge.check(lib, deep=True) if p['kind'] != 'cut text differs from its part'], [])
 
     def test_import_takes_the_turn_of_a_turned_cut(self):

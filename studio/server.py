@@ -753,9 +753,7 @@ class Handler(BaseHTTPRequestHandler):
             for r in rels:
                 core.abspath(r)
             if act == 'rotate':
-                done = core.rotate_files(rels, int(b.get('deg', 90)))
-                bridge._safe(bridge.on_cutouts_rotated, done, int(b.get('deg', 90)))     # la rotazione e' della zona
-                return self.send({'done': done})
+                return self.send({'done': bridge.rotate_cutouts(rels, int(b.get('deg', 90)))})
             if act == 'ocr':
                 return self.send({'done': core.ocr_files(rels)})
             if act == 'merge':

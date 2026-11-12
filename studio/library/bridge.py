@@ -385,6 +385,13 @@ def categories(lib):
 # Il cestino si svuota da solo dopo i giorni scelti (trash_days, di base 91: ogni tre mesi): allora si
 # cancella davvero, file e righe.
 
+LIVE = "a.path NOT LIKE '%/studio-data/trash/%' AND a.path NOT LIKE '%/studio-data/replaced/%'"   # i file al loro posto
+
+
+def _in_history(path):
+    return '/studio-data/trash/' in path or '/studio-data/replaced/' in path
+
+
 def _to_trash(lib, path, stamp):
     dst = core.sc.unique(os.path.join(core.DATA, 'trash', stamp, core.relpath(path) if path.startswith(core.ROOT + os.sep) else os.path.basename(path)))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -422,8 +429,8 @@ def trash(lib, items=(), cuts=()):
             lib.log('trash', 'item', u, files=len(files)); n += 1
         for u in cuts:
             a = lib.db.execute('SELECT * FROM asset WHERE uuid = ?', (u,)).fetchone()
-            if not a or not os.path.exists(lib.asset_path(a)):
-                continue
+            if not a or not os.path.exists(lib.asset_path(a)) or _in_history(lib.asset_path(a)):
+                continue                                  # gia' nel cestino (o nella storia): niente
             p = lib.asset_path(a)
             # le parti di cui era il taglio non si ritagliano piu' (escluse dal taglio), finche' non torna
             regs = [r[0] for r in lib.db.execute('SELECT DISTINCT region_id FROM cut WHERE path = ? AND region_id IS NOT NULL', (p,))]
@@ -432,11 +439,16 @@ def trash(lib, items=(), cuts=()):
                 lib.db.execute('UPDATE region SET export_on = 0 WHERE id = ?', (r,))
             _editors_reload(lib, [x[0] for x in lib.db.execute(f"SELECT DISTINCT asset_id FROM region WHERE id IN ({','.join(map(str, regs)) or '-1'})")])
             dst = _to_trash(lib, p, stamp)
+            files = [{'asset': u, 'from': p, 'to': dst}]
+            # una parte ha un taglio solo: se ne aveva altri al loro posto (doppioni di prima), vanno con lui
+            for o in lib.db.execute(f"SELECT DISTINCT x.path, a.uuid FROM cut x JOIN asset a ON a.path = x.path WHERE x.region_id IN ({','.join(map(str, regs)) or '-1'})").fetchall():
+                if o['path'] != p and os.path.exists(o['path']) and not _in_history(o['path']):
+                    files.append({'asset': o['uuid'], 'from': o['path'], 'to': _to_trash(lib, o['path'], stamp)})
             it = lib.db.execute("SELECT i.id, i.uuid FROM item i JOIN item_asset ia ON ia.item_id = i.id WHERE ia.asset_id = ? AND i.kind = 'cut'", (a['id'],)).fetchone()
             if it:                                        # un taglio portato da fuori: e' un oggetto suo
                 lib.db.execute('UPDATE item SET trashed_at = ? WHERE id = ?', (now(), it['id']))
             lib.db.execute('INSERT INTO trash (uuid, what, ref, title, files, regions_off, trashed_at) VALUES (?,?,?,?,?,?,?)',
-                           (new_uuid(), 'cut', u, a['original_name'], json.dumps([{'asset': u, 'from': p, 'to': dst}]), json.dumps(regs), now()))
+                           (new_uuid(), 'cut', u, a['original_name'], json.dumps(files), json.dumps(regs), now()))
             lib.log('trash', 'asset', u); n += 1
         lib.db.commit()
     schedule_journal()
@@ -697,12 +709,12 @@ def item_list(lib, q=None, limit=500, offset=0, series=None, place=None):
         n = lib.db.execute('SELECT (SELECT COUNT(*) FROM item_asset WHERE item_id = ?), (SELECT COUNT(*) FROM region WHERE item_id = ?),'
                            ' (SELECT COUNT(*) FROM reading r JOIN region g ON g.id = r.region_id WHERE g.item_id = ?)', (it['id'],) * 3).fetchone()
         sr = lib.db.execute('SELECT name FROM series WHERE id = ?', (it['series_id'],)).fetchone() if it['series_id'] else None
-        cuts = [rel_of(lib, c) for c in lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role = 'cutout' "
-                                                         "ORDER BY a.original_name LIMIT 4", (it['id'],))]
+        cuts = [rel_of(lib, c) for c in lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role = 'cutout' AND " + LIVE +
+                                                         " ORDER BY a.original_name LIMIT 4", (it['id'],))]
         out.append({'uuid': it['uuid'], 'title': it['title'], 'kind': it['kind'], 'date': it['date'], 'batch': sr[0] if sr else None,
                     'files': n[0], 'regions': n[1], 'texts': n[2], 'thumb': rel_of(lib, a) if a else None,
                     'cut_thumbs': [c for c in cuts if c],
-                    'cuts': lib.db.execute("SELECT COUNT(*) FROM item_asset WHERE item_id = ? AND role = 'cutout'", (it['id'],)).fetchone()[0],
+                    'cuts': lib.db.execute("SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.item_id = ? AND ia.role = 'cutout' AND " + LIVE, (it['id'],)).fetchone()[0],
                     'dpi': a['dpi'] if a else None, 'width': a['width'] if a else None, 'height': a['height'] if a else None,
                     'added': it['created_at']})
     return out
@@ -742,7 +754,7 @@ def info(lib):
     q = lambda s: lib.db.execute(s).fetchone()[0]
     return {'path': lib.path, 'name': lib.meta('name'), 'uuid': lib.meta('uuid'),
             'items': q('SELECT COUNT(*) FROM item WHERE trashed_at IS NULL'), 'files': q('SELECT COUNT(*) FROM asset'),
-            'texts': q('SELECT COUNT(*) FROM reading'), 'cutouts': q("SELECT COUNT(*) FROM item_asset WHERE role = 'cutout'"),
+            'texts': q('SELECT COUNT(*) FROM reading'), 'cutouts': q("SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.role = 'cutout' AND " + LIVE),
             'edits': q("SELECT COUNT(*) FROM item_asset WHERE role = 'edit'"), 'packed': core.sc.PACKED}
 
 
@@ -929,9 +941,10 @@ def on_export(rel, written, superseded=None):
         lib.db.commit()
     if superseded:
         now_paths = {os.path.realpath(w['path']) for w in written if w.get('status') in ('written', 'identical')}
-        for rid, old in superseded.items():
-            if os.path.realpath(old) not in now_paths:
-                _supersede(lib, old, 'its part changed (name, order or excluded from the cut)')
+        for rid, olds in superseded.items():
+            for old in ([olds] if isinstance(olds, str) else olds):
+                if os.path.realpath(old) not in now_paths:
+                    _supersede(lib, old, 'its part changed (name, order or excluded from the cut)')
     lib.log('recut' if superseded else 'cut', 'item', lib.db.execute('SELECT uuid FROM item WHERE id = ?', (iid,)).fetchone()[0], files=len(written))
     for rid in [r[0] for r in lib.db.execute('SELECT DISTINCT region_id FROM cut WHERE item_id = ? AND region_id IS NOT NULL', (iid,))]:
         refresh_cutout_text(lib, rid)
@@ -947,12 +960,14 @@ def import_cutouts(lib, rel):
     found = [{'id': sid, 'path': p, 'status': 'identical'} for sid, p in names if os.path.exists(p)]
     stem = os.path.splitext(os.path.basename(rel))[0]
     d = core.abspath(os.path.join('cut', core.batch_of(rel)))
-    if not found and os.path.isdir(d):              # ritagli dell'agente senza stato dello studio
+    if os.path.isdir(d):
         import re
+        # anche i ritagli dell'agente con un nome che oggi non c'e' ("<nome>.png" di quando era un foglio solo):
         # solo "<nome>.png" o "<nome> a.png", "<nome> b.png"…: "quaderno 6" non e' un pezzo di "quaderno"
         pat = re.compile(re.escape(stem) + r'( [a-z])?')
-        found = [{'id': None, 'path': os.path.join(d, f), 'status': 'identical'} for f in sorted(os.listdir(d))
-                 if core.is_image(f) and pat.fullmatch(os.path.splitext(f)[0])]
+        have = {os.path.realpath(f['path']) for f in found}
+        found += [{'id': None, 'path': os.path.join(d, f), 'status': 'identical'} for f in sorted(os.listdir(d))
+                  if core.is_image(f) and pat.fullmatch(os.path.splitext(f)[0]) and os.path.realpath(os.path.join(d, f)) not in have]
     found = [f for f in found if not lib.db.execute('SELECT 1 FROM cut WHERE path = ?', (os.path.realpath(f['path']),)).fetchone()]
     if found:
         _match_by_pixels(lib, rel, found)
@@ -999,15 +1014,18 @@ def _match_by_pixels(lib, rel, found):
         deep = img.dtype == np.uint16
         # solo la parte che ha oggi questo nome: il nome di un taglio viene dalla sua parte (un file con i pixel di
         # un'altra parte e' solo vecchio, e Ricontrolla lo propone da rifare). Qui si cerca la rotazione
-        for sh in [x for x in sheets if x['id'] == f.get('id')]:
-            if sh['id'] in taken:
+        # un file senza nome di oggi: la parte di cui ha i pixel (si ritirera' al prossimo taglio della parte)
+        for sh in [x for x in sheets if x['id'] == f.get('id')] if f.get('id') else sheets:
+            if sh['id'] in taken and f.get('id'):
                 continue
             c = cut(sh, deep)
             if c is None or c.dtype != img.dtype:
                 continue
             k = next((k for k in range(4) if np.rot90(c, -k).shape == img.shape and np.array_equal(np.rot90(c, -k), img)), None)
             if k is not None:
-                f['id'] = sh['id']; taken.add(sh['id'])
+                if f.get('id'):
+                    taken.add(sh['id'])
+                f['id'] = sh['id']
                 if k:
                     rotate[sh['id']] = k
                 break
@@ -1152,7 +1170,7 @@ def cutout_list(lib, limit=1000, series=None, place=None):
         rs = ','.join(str(x) for x in regions_in(lib, place_subtree(lib, place))) or '-1'
         flt += f" AND a.path IN (SELECT x.path FROM cut x WHERE x.region_id IN ({rs}))"
     for a in lib.db.execute("SELECT a.*, i.uuid AS item, i.title FROM asset a JOIN item_asset ia ON ia.asset_id = a.id JOIN item i ON i.id = ia.item_id "
-                            "WHERE ia.role = 'cutout'" + flt + " ORDER BY i.title COLLATE NOCASE, a.original_name LIMIT ?",
+                            "WHERE ia.role = 'cutout' AND i.trashed_at IS NULL AND " + LIVE + flt + " ORDER BY i.title COLLATE NOCASE, a.original_name LIMIT ?",
                             ((series,) if series and series != 'none' else ()) + (limit,)):
         e = lib.db.execute('SELECT r.uuid, r.label, r.kind, r.color, r.position FROM cut x JOIN region r ON r.id = x.region_id WHERE x.path = ? ORDER BY x.id DESC LIMIT 1',
                            (a['path'],)).fetchone()
@@ -1320,10 +1338,19 @@ def rotate_region_cutouts(lib, region_id, delta, skip=()):
     # i ritagli gia' fatti di questa zona girano anche loro, cosi' restano uguali al prossimo export
     for e in lib.db.execute('SELECT DISTINCT path FROM cut WHERE region_id = ?', (region_id,)).fetchall():
         p = e['path']
-        if p in skip or not os.path.exists(p) or not os.path.realpath(p).startswith(core.ROOT + os.sep):
-            continue
+        if p in skip or not os.path.exists(p) or not os.path.realpath(p).startswith(core.ROOT + os.sep) or _in_history(p):
+            continue                                      # la storia (replaced/, cestino) non si tocca: e' com'era
         for r in core.rotate_files([core.relpath(p)], delta, log=lambda m: None):    # un JPEG diventa PNG: il percorso nuovo
             _refresh_asset_file(lib, os.path.realpath(core.abspath(r)), 'rotate', degrees=delta, why='its part was rotated')
+
+
+def rotate_cutouts(rels, deg):
+    # un giro alla volta: due giri insieme leggevano la misura del file mentre l'altro lo riscriveva,
+    # e la sagoma girava con larghezza e altezza scambiate (fuori dall'immagine)
+    with files_lock:
+        done = core.rotate_files(rels, deg)
+        _safe(on_cutouts_rotated, done, deg)                  # la rotazione e' della zona
+        return done
 
 
 def on_cutouts_rotated(rels, deg):
@@ -1374,12 +1401,31 @@ def schedule_recut(rel, delay=2.5, only=None):
     t.start()
 
 
+def _current_cuts(lib, aid):
+    # i tagli ATTUALI delle parti di una fonte (quelli al loro posto, non quelli gia' nella storia): parte -> file
+    out = {}
+    for r in lib.db.execute('SELECT region_id, path FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) '
+                            "OR (region_id IS NULL AND item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? AND role = 'view' LIMIT 1)) ORDER BY id", (aid, aid)):
+        if os.path.exists(r['path']) and not _in_history(r['path']) and r['path'] not in out.get(r['region_id'], []):
+            out.setdefault(r['region_id'], []).append(r['path'])
+    return out
+
+
 def cut(rel, follow=True, **kw):
-    # tagliare dallo studio: il taglio e la libreria che lo registra, con i file tenuti da un solo scrittore
+    # tagliare dallo studio: il taglio e la libreria che lo registra, con i file tenuti da un solo scrittore.
+    # Una fonte gia' tagliata: i tagli nuovi prendono il posto dei suoi (i vecchi nella storia), come quando
+    # si rifanno; "(2)" resta solo per un file d'altri che ha gia' quel nome
     with files_lock:
+        before = {}
+        lib = library(create=False) if follow and not kw.get('subfolder') and not core.is_recut(rel) else None
+        if lib:
+            a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(core.abspath(rel)),)).fetchone()
+            before = _current_cuts(lib, a['id']) if a else {}
+            if before and kw.get('replace') is None:
+                kw['replace'] = {os.path.realpath(p) for ps in before.values() for p in ps}
         w = core.export(rel, **kw)
         if follow:
-            _safe(on_export, rel, w)
+            _safe(on_export, rel, w, superseded=before or None)
         return w
 
 
@@ -1406,10 +1452,7 @@ def _recut(rel, only=None):
     a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (p,)).fetchone()
     if not a:
         return
-    # i tagli ATTUALI delle parti (quelli al loro posto, non quelli gia' nella storia)
-    before = {r['region_id']: r['path'] for r in lib.db.execute(
-        "SELECT region_id, path FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) AND path NOT LIKE '%/studio-data/replaced/%' AND path NOT LIKE '%/studio-data/trash/%' ORDER BY id",
-        (a['id'],)) if os.path.exists(r['path'])}
+    before = _current_cuts(lib, a['id'])
     if not before and not lib.db.execute('SELECT 1 FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) LIMIT 1', (a['id'],)).fetchone():
         return                                            # mai tagliata: niente da seguire (gia' tagliata, anche se ora tutto e' nella storia: si segue)
     written = core.export(rel, replace=True, log=lambda m: None, only=only)
@@ -1458,7 +1501,7 @@ def where(lib, rel):
                    original_missing=bool(src) and not os.path.exists(lib.asset_path(src)))
     else:
         cuts = lib.db.execute("SELECT a.original_name AS name, a.path FROM asset a JOIN item_asset ia ON ia.asset_id = a.id "
-                              "WHERE ia.role = 'cutout' AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY a.original_name", (a['id'],)).fetchall()
+                              "WHERE ia.role = 'cutout' AND " + LIVE + " AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY a.original_name", (a['id'],)).fetchall()
         out['cuts'] = [{'name': c['name'], 'rel': core.relpath(c['path']) if c['path'].startswith(core.ROOT + os.sep) else None} for c in cuts]
     return out
 
@@ -1562,6 +1605,43 @@ def check(lib, deep=False):
                     img = img[..., :3]                       # senza trasparenza: si confronta RGB
                 if img.shape != f.shape or img.dtype != f.dtype or not np.array_equal(img, f):
                     add('cut older than its part', name, c['path'], rel=src['studio_rel'], part=src['studio_id'])
+    # 2b) una parte, un taglio al suo posto; un taglio di prima della libreria non legato a nessuna parte
+    for it in lib.db.execute("SELECT DISTINCT i.id, i.title, a.id AS aid, a.path FROM item i JOIN item_asset ia ON ia.item_id = i.id AND ia.role = 'view' "
+                             "JOIN asset a ON a.id = ia.asset_id WHERE i.trashed_at IS NULL AND EXISTS (SELECT 1 FROM region WHERE asset_id = a.id AND removed_at IS NULL)").fetchall():
+        cur = _current_cuts(lib, it['aid'])
+        live = lib.db.execute("SELECT json_extract(source, '$.studio_rel') AS rel, json_extract(source, '$.studio_id') AS sid FROM region "
+                              "WHERE asset_id = ? AND removed_at IS NULL AND parent_id IS NULL AND export_on = 1 ORDER BY position LIMIT 1", (it['aid'],)).fetchone()
+        for rid, ps in cur.items():
+            r = lib.db.execute("SELECT label, position, json_extract(source, '$.studio_rel') AS rel, json_extract(source, '$.studio_id') AS sid FROM region WHERE id = ?", (rid,)).fetchone() if rid else None
+            to = r if r and r['rel'] else live
+            more = dict(rel=to['rel'], part=to['sid']) if to and to['rel'] else {}
+            if rid is None:
+                for p in ps:
+                    add('old cut not linked to a part', it['title'], p, **more)
+            elif len(ps) > 1:
+                add('more than one cut of a part in place', f'{it["title"]} › {r["label"] or "part " + str(r["position"] + 1)}', ps[-1], **more)
+    # 2c) due parti sullo stesso foglio (es. due rilevamenti uno sopra l'altro): due tagli dello stesso disegno.
+    # Una parte piccola dentro una grande (un dettaglio) va bene: conta solo se si coprono quasi del tutto a vicenda
+    by = {}
+    for r in lib.db.execute("SELECT r.asset_id, r.label, r.position, r.geometry, i.title FROM region r JOIN item i ON i.id = r.item_id WHERE r.removed_at IS NULL "
+                            "AND r.parent_id IS NULL AND r.kind = 'sheet' AND r.export_on = 1 AND i.trashed_at IS NULL").fetchall():
+        try:
+            by.setdefault(r['asset_id'], []).append((r, np.int32(np.array(json.loads(r['geometry'])['poly']) / 8)))
+        except Exception:
+            pass
+    for rs in by.values():
+        if len(rs) < 2:
+            continue
+        W = max(int(q[:, 0].max()) for _, q in rs) + 2; H = max(int(q[:, 1].max()) for _, q in rs) + 2
+        ms = []
+        for _, q in rs:
+            m = np.zeros((H, W), np.uint8); cv2.fillPoly(m, [q], 1); ms.append(m)
+        for i in range(len(rs)):
+            for j in range(i + 1, len(rs)):
+                inter, union = int((ms[i] & ms[j]).sum()), int((ms[i] | ms[j]).sum())
+                if union and inter / union > 0.8:
+                    nm = lambda r: r['label'] or f'part {r["position"] + 1}'
+                    add('two parts on the same area', f'{rs[i][0]["title"]} › {nm(rs[i][0])} and {nm(rs[j][0])}', f'{inter / union:.0%} overlap')
     # 3) niente vive piu' fuori dalla libreria
     for d in ('state', 'text'):
         dd = os.path.join(core.DATA, d)

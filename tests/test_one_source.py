@@ -288,6 +288,134 @@ class TheCheckCanFail(Base):
         self.assertIn('cut older than its part', self.kinds(bridge.library(), deep=True))
 
 
+class OneCutPerPart(Base):
+    # una parte ha un taglio solo al suo posto: tagliare di nuovo, lettere spostate, cestino
+
+    def current(self, lib):
+        from studio.library import bridge
+        a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(os.path.join(self.root, self.rels[0])),)).fetchone()
+        return bridge._current_cuts(lib, a['id'])
+
+    def cut_files(self):
+        return sorted(os.listdir(os.path.join(self.root, 'cut', 'card')))
+
+    def test_cutting_again_after_the_letters_moved(self):
+        # Antonio, 11 nov: le lettere spostate, poi Taglia -> "b (2)", "c (2)" accanto ai vecchi, due tagli per parte
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        rel = self.rels[0]
+        core.detect(rel, 'auto')
+        bridge.cut(rel)
+        st = core.load_state(rel)
+        st['sheets'].reverse()                                   # a <-> b
+        core.save_state(st)
+        for t in list(bridge._recut_timers.values()):
+            t.cancel()
+        bridge._recut_timers.clear()
+        bridge.cut(rel)                                           # il bottone Taglia
+        self.assertFalse([f for f in self.cut_files() if '(2)' in f], self.cut_files())
+        self.assertTrue(all(len(v) == 1 for v in self.current(lib).values()), self.current(lib))
+        self.assertEqual(bridge.check(lib, deep=True), [])
+
+    def test_a_cut_in_the_trash_leaves_the_list_with_its_doubles(self):
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        rel = self.rels[0]
+        core.detect(rel, 'auto')
+        bridge.cut(rel)
+        st = core.load_state(rel)
+        st['sheets'].reverse()
+        core.save_state(st)
+        for t in list(bridge._recut_timers.values()):
+            t.cancel()
+        bridge._recut_timers.clear()
+        bridge.on_export(rel, core.export(rel, replace=False, log=lambda m: None))   # come prima: doppioni "(2)"
+        cur = self.current(lib)
+        rid, paths = next((k, v) for k, v in cur.items() if len(v) > 1)
+        u = lib.db.execute('SELECT uuid FROM asset WHERE path = ?', (paths[0],)).fetchone()[0]
+        self.assertEqual(bridge.trash(lib, cuts=[u]), 1)
+        listed = {c['uuid'] for c in bridge.cutout_list(lib)}
+        self.assertNotIn(u, listed)
+        self.assertFalse(any(os.path.exists(p) for p in paths), 'the other cut of the same part stayed in place')
+        self.assertEqual(bridge.trash(lib, cuts=[u]), 0)          # due volte: niente, mai cestino nel cestino
+        self.assertFalse(glob.glob(os.path.join(self.root, '.scancut', 'studio-data', 'trash', '*', '.scancut')))
+        t = bridge.trash_list(lib)[0]
+        self.assertEqual(t['files'], len(paths))
+        bridge.restore(lib, t['uuid'])
+        self.assertTrue(all(os.path.exists(p) for p in paths))
+        self.assertIn(u, {c['uuid'] for c in bridge.cutout_list(lib)})
+
+
+class HistoryStaysPut(Base):
+    def test_turning_a_cut_leaves_its_old_copies_alone(self):
+        # 12 nov: girare un taglio girava anche le sue copie vecchie in studio-data/replaced/
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        rel = self.rels[0]
+        core.detect(rel, 'auto')
+        bridge.cut(rel)
+        st = core.load_state(rel)
+        sh = st['sheets'][0]; p = sh['poly'][0]
+        sh['ops'].append({'op': 'sub', 'kind': 'poly', 'pts': [[p[0] - 3, p[1] - 3], [p[0] + 25, p[1] - 3], [p[0] + 25, p[1] + 25], [p[0] - 3, p[1] + 25]]})
+        core.save_state(st)
+        self.settle()
+        old = glob.glob(os.path.join(self.root, '.scancut', 'studio-data', 'replaced', '*', 'cut', 'card', '*.png'))
+        self.assertTrue(old)
+        before = {f: open(f, 'rb').read() for f in old}
+        cur = lib.db.execute("SELECT x.path FROM cut x JOIN region r ON r.id = x.region_id WHERE json_extract(r.source, '$.studio_id') = ? "
+                             "AND x.path NOT LIKE '%/studio-data/%' ORDER BY x.id DESC LIMIT 1", (sh['id'],)).fetchone()[0]
+        bridge.rotate_cutouts([core.relpath(cur)], 90)
+        self.assertEqual({f: open(f, 'rb').read() for f in old}, before)
+
+
+class SameAreaTwice(Base):
+    def test_two_parts_on_the_same_area_are_reported(self):
+        # vendrdro 6: un rilevamento Vision e uno Otsu sullo stesso foglio, salvati nel vecchio studio -> due tagli uguali
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        rel = self.rels[0]
+        core.detect(rel, 'auto')
+        st = core.load_state(rel)
+        self.assertEqual([p for p in bridge.check(lib) if p['kind'] == 'two parts on the same area'], [])
+        twin = json.loads(json.dumps(st['sheets'][0])); twin['id'] = 's9'; twin['src'] = ['other', 0]
+        twin['poly'] = [[x + 3, y + 2] for x, y in twin['poly']]
+        st['sheets'].append(twin)
+        core.save_state(st)
+        self.assertEqual(len([p for p in bridge.check(lib) if p['kind'] == 'two parts on the same area']), 1)
+
+
+class FastTurns(Base):
+    def test_fast_turns_keep_the_outline_on_the_image(self):
+        # Antonio, 11 nov: un taglio girato in fretta (12 clic in 30 s): due giri insieme, la sagoma del taglio
+        # aperto nell'editor finiva 301 px sopra l'immagine (larghezza e altezza scambiate)
+        import threading
+        from PIL import Image
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        rel = self.rels[0]
+        core.detect(rel, 'auto')
+        bridge.cut(rel)
+        c = sorted(f for f in os.listdir(os.path.join(self.root, 'cut', 'card')) if f.startswith('card 1'))[0]
+        crel = f'cut/card/{c}'
+        core.detect(crel, 'auto')                                    # il taglio aperto nell'editor: ha la sua sagoma
+        go = threading.Barrier(5)
+        def turn(d):
+            go.wait(); bridge.rotate_cutouts([crel], d)
+        ts = [threading.Thread(target=turn, args=(d,)) for d in (90, 90, -90, 90, 90)]
+        [t.start() for t in ts]; [t.join() for t in ts]
+        W, H = Image.open(os.path.join(self.root, crel)).size
+        for sh in core.load_state(crel)['sheets']:
+            xs, ys = [p[0] for p in sh['poly']], [p[1] for p in sh['poly']]
+            self.assertTrue(min(xs) >= -2 and min(ys) >= -2 and max(xs) <= W + 2 and max(ys) <= H + 2, (W, H, min(xs), min(ys), max(xs), max(ys)))
+        r = lib.db.execute("SELECT rotation FROM region WHERE json_extract(source, '$.studio_rel') = ? AND json_extract(source, '$.studio_id') = 's1' AND removed_at IS NULL", (rel,)).fetchone()
+        self.assertEqual(r[0] % 360, 270)
+
+
 class CodeAudit(unittest.TestCase):
     # 5) nel codice: nessuna scrittura negli archivi di prima; nel browser solo preferenze dell'interfaccia
 

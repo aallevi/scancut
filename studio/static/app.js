@@ -456,7 +456,8 @@ async function libCheck(deep) {
   status(deep ? 'Checking everything, pixels included…' : 'Checking…', true);
   const p = await api.get('library/check', deep ? { deep: 1 } : {}).catch(e => [{ kind: 'error', what: e.message, detail: '' }]);
   status(p.length ? `${p.length} problem(s) found` : 'Everything is consistent with the library');
-  const old = p.filter(x => x.kind === 'cut older than its part' && x.rel && x.part);
+  const old = [...new Map(p.filter(x => ['cut older than its part', 'more than one cut of a part in place', 'old cut not linked to a part'].includes(x.kind) && x.rel && x.part)
+    .map(x => [x.rel + '\n' + x.part, x])).values()];   // una volta per parte
   dialog('Check', p.length ? `${p.length} thing(s) do not match the library` : 'Everything is consistent', h('div', { style: { width: '560px', maxHeight: '60vh', overflow: 'auto' } },
     p.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Where'), h('th', {}, '')),
       ...p.map(x => h('tr', {}, h('td', {}, x.kind), h('td', {}, x.what), h('td', { class: 'small muted' }, (x.detail || '').split('/').slice(-2).join('/')))))
@@ -468,7 +469,7 @@ async function libCheck(deep) {
         for (const [k, x] of old.entries()) { status(`Re-cutting ${k + 1} of ${old.length}: ${x.what}`, true); await api.post('recut_part', { rel: x.rel, id: x.part }).catch(() => null); }
         btn.closest('.dlg-back')?.remove(); status(`${old.length} cut(s) redone from their parts; the previous files are in the history`); libCheck(deep);
       } }, `Re-cut these (${old.length})`),
-      info('These cuts were made before their part was last changed. Re-cutting makes them from the part as it is now; the previous files are kept in the history (studio-data/replaced).')) : null));
+      info('These cuts were made before their part was last changed, or are extra copies left beside a part’s cut. Re-cutting makes each part’s cut from the part as it is now and moves the old files to the history (studio-data/replaced).')) : null));
 }
 // i file dentro la libreria: prima il piano (niente cambia), poi, confermato, il lavoro (con la barra)
 async function libSwitch() {
@@ -1087,6 +1088,17 @@ function mdToHtml(text, region) {
   close();
   return out.join('');
 }
+// il testo sta nel suo rettangolo: se la stima lo fa uscire, il carattere scende (ricerca binaria) fino a starci
+function fitText(body, fs, min) {
+  const over = () => body.scrollHeight > body.clientHeight + 1 || body.scrollWidth > body.clientWidth + 1;
+  if (!body.clientHeight || !over()) return;
+  let lo = min, hi = fs;
+  for (let k = 0; k < 12 && hi - lo > 0.25; k++) {
+    const mid = (lo + hi) / 2; body.style.fontSize = mid + 'px';
+    if (over()) hi = mid; else lo = mid;
+  }
+  body.style.fontSize = lo + 'px';
+}
 function renderMirror() {
   const m = $('#mirror'); if (!m) return;
   const on = S.textView && S.view === 'editor' && !!S.st && !!S.info;
@@ -1109,13 +1121,14 @@ function renderMirror() {
     if (onEdit) el.addEventListener('dblclick', e => {
       e.stopPropagation();
       if (el.querySelector('textarea')) return;
-      const ta = h('textarea', { class: 'medit', spellcheck: false, style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' } }, text || '');
+      const ta = h('textarea', { class: 'medit', spellcheck: false, style: { fontSize: body.style.fontSize, padding: 1.5 * ppm + 'px' } }, text || '');
       body.replaceWith(ta); ta.focus();
       ta.addEventListener('pointerdown', ev => ev.stopPropagation());
       ta.addEventListener('blur', () => { if (ta.value !== (text || '')) onEdit(ta.value); else renderMirror(); });
       ta.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ta.value = text || ''; ta.blur(); } ev.stopPropagation(); });
     });
     pg.append(el);
+    fitText(body, fs, 0.5 * ppm);
   };
   const on_ = sheets.filter(x => x.on !== false);
   sheets.forEach((sh, i) => {
@@ -1382,11 +1395,24 @@ async function cutoutAction(action, items, deg) {
   } catch (e) { alertDialog('Cuts', e.message); }
   S.sel.clear(); await refreshItems(); renderSide();
 }
+// giri veloci: si sommano e partono uno dopo l'altro (mai due insieme sullo stesso file); alla fine si riapre una volta
+const rotQ = { rel: null, deg: 0, busy: false };
 async function rotateOpenFile(deg) {
+  if (rotQ.busy && rotQ.rel === S.rel) { rotQ.deg += deg; status(`Rotating… (${((rotQ.deg % 360) + 360) % 360}° more)`, true); return; }
+  rotQ.rel = S.rel; rotQ.deg = deg; rotQ.busy = true;
   await flushSave();
-  status('Rotating…', true);
-  try { await api.post('cutouts', { action: 'rotate', rels: [S.rel], deg }); status(`Rotated ${deg > 0 ? 'right' : 'left'} 90°`); openScan(S.rel); }
-  catch (e) { alertDialog('Rotate', e.message); }
+  let rel = S.rel;
+  try {
+    while (rotQ.deg % 360) {
+      const d = ((rotQ.deg % 360) + 360) % 360; rotQ.deg = 0;
+      status('Rotating…', true);
+      const r = await api.post('cutouts', { action: 'rotate', rels: [rel], deg: d === 270 ? -90 : d });
+      rel = r.done?.[0] || rel;                   // un JPEG girato diventa PNG: il file nuovo
+    }
+    status('Rotated');
+  } catch (e) { alertDialog('Rotate', e.message); }
+  const was = rotQ.rel; rotQ.busy = false; rotQ.deg = 0;
+  if (S.rel === was) openScan(rel);
 }
 async function markChecked(rels) {
   const r = await api.post('checked', { rels });
