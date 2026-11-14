@@ -31,5 +31,7 @@ tolerance (of 255), brush in mm and px, scores from 0 to 1, sizes in mm.
 
 The search box (top right) finds sources and cuts by name, parts by label and by their text (the
 text of the whole part and of every text area read inside it), and help topics. A text found opens
-the cut that shows it, named in the result; ⌥-click opens the source with that part selected, as
-does a part not cut yet. Enter opens the first result; ⌘-click in a new tab.
+the cut that shows it, named in the result, with the Text pane open: the block with that text is
+framed and the words are selected in it, and marked in the side-by-side view. ⌥-click opens the
+source with that part selected, as does a part not cut yet. Enter opens the first result; ⌘-click
+in a new tab.
