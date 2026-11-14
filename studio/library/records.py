@@ -151,7 +151,7 @@ def build(lib, items=None, regions=None, texts='inline', sources=True):
         if sources and s['id'] not in seen_src:
             seen_src.add(s['id'])
             d0, d1, dt = _dates(s['date'])
-            out.append({'source': SOURCE, 'source_id': s['uuid'], 'kind': 'source', 'category': 'scan', 'title': s['title'] or a['original_name'],
+            out.append({'source': SOURCE, 'source_id': s['uuid'], 'lineage': lineage(lib, s['id']), 'kind': 'source', 'category': 'scan', 'title': s['title'] or a['original_name'],
                         'date_start': d0, 'date_end': d1, 'date_text': dt, 'item': ITEM_KIND,
                         'dimensions': f'{a["height"] / float(a["dpi"]) * 2.54:.1f} × {a["width"] / float(a["dpi"]) * 2.54:.1f} cm' if a['dpi'] and a['width'] else None,
                         'description': None, 'inscriptions': None, 'files': [], 'within': [], 'kept_in': None, 'number': None,
@@ -165,14 +165,15 @@ def build(lib, items=None, regions=None, texts='inline', sources=True):
         text, readings = _current_text(lib, g['id']) if texts in ('inline', 'both', 'records') else (None, [])
         cut = _cut_file(lib, g['id'])
         title = part_title(lib, p, g, s['title'])
-        rec = {'source': SOURCE, 'source_id': p['uuid'], 'kind': 'part', 'category': cat or DEFAULT_CATEGORY, 'title': title,
+        line = lineage(lib, p['id'])
+        rec = {'source': SOURCE, 'source_id': p['uuid'], 'lineage': line, 'kind': 'part', 'category': cat or DEFAULT_CATEGORY, 'title': title,
                'date_start': d0, 'date_end': d1, 'date_text': dt, 'item': ITEM_KIND,
                'dimensions': _dims(g['geometry'], a['dpi'], g['rotation']) if a['dpi'] else None,
                'description': None, 'inscriptions': text if texts in ('inline', 'both') else None,
                'files': [{'uuid': cut['uuid'], 'path': lib.asset_path(cut), 'sha256': cut['sha256'], 'name': cut['original_name'],
                           'width': cut['width'], 'height': cut['height']}] if cut else [],
                'within': [s['uuid']] if sources else [], 'kept_in': archive_place, 'number': p['place_number'],
-               'notes': _notes([('Scan Studio library', lib.meta('uuid')), ('Part of scan', s['title'] or a['original_name']), ('Part', g['label'] or f'part {g["position"] + 1}'),
+               'notes': _notes([('Scan Studio library', lib.meta('uuid')), ('Lineage', line), ('Part of scan', s['title'] or a['original_name']), ('Part', g['label'] or f'part {g["position"] + 1}'),
                                 ('Region', g['uuid']), ('Cut SHA-256', cut['sha256'] if cut else None), ('Kept in (library)', ' › '.join(x for x in [kept.get('path')] if x) + (f' · {p["place_number"]}' if p['place_number'] else '') or None),
                                 ('Place not yet in the archive', place_name if place_id and not archive_place else None),
                                 ('Series', series[0] if series else None), ('Notes', p['notes'])]),
@@ -180,7 +181,7 @@ def build(lib, items=None, regions=None, texts='inline', sources=True):
         out.append(rec)
         if texts in ('records', 'both') and text:
             last = readings[-1] if readings else None
-            out.append({'source': SOURCE, 'source_id': f'text:{g["uuid"]}', 'kind': 'text', 'category': 'document', 'title': f'{title} — text',
+            out.append({'source': SOURCE, 'source_id': f'text:{g["uuid"]}', 'lineage': f'{line}/text:{g["uuid"]}', 'kind': 'text', 'category': 'document', 'title': f'{title} — text',
                         'date_start': d0, 'date_end': d1, 'date_text': dt, 'item': None, 'dimensions': None,
                         'description': None, 'inscriptions': text, 'files': [], 'within': [p['uuid']], 'kept_in': None, 'number': None,
                         'notes': _notes([('Scan Studio library', lib.meta('uuid')), ('Text of part', title), ('Region', g['uuid']),
@@ -188,6 +189,33 @@ def build(lib, items=None, regions=None, texts='inline', sources=True):
                                          ('Corrected', f'×{last["corrected_version"]}' if last and last['corrected_version'] else None)]),
                         'rights': 'none', 'status': 'draft'})
     return out
+
+
+def lineage(lib, item_id):
+    # la discendenza di una cosa, come percorso di uuid dal piu' esterno: libreria / fonte / parte, e per un pezzo
+    # trovato su un taglio: libreria / fonte / parte d'origine / pezzo. E' una vista (si ricostruisce ogni volta
+    # dalle righe), non l'identita': l'id resta l'uuid della cosa, che non cambia mai; questo racconta da dove viene.
+    from .bridge import _origin_region
+    chain, seen = [], set()
+    iid = item_id
+    while iid and iid not in seen:
+        seen.add(iid)
+        it = lib.db.execute('SELECT id, uuid, kind, parent_id, region_id FROM item WHERE id = ?', (iid,)).fetchone()
+        if not it:
+            break
+        chain.insert(0, it['uuid'])
+        if it['kind'] == 'part' and it['parent_id']:
+            par = lib.db.execute('SELECT kind FROM item WHERE id = ?', (it['parent_id'],)).fetchone()
+            if par and par['kind'] == 'piece':
+                # la parte di un pezzo: prima il pezzo, poi la parte da cui veniva il taglio, poi la sua fonte
+                origin = _origin_region(lib, it['region_id'])
+                opart = lib.part_of(origin) if origin else None
+                iid = it['parent_id']
+                chain.insert(0, lib.db.execute('SELECT uuid FROM item WHERE id = ?', (iid,)).fetchone()[0]); seen.add(iid)
+                iid = opart
+                continue
+        iid = it['parent_id']
+    return '/'.join([lib.meta('uuid')] + chain)
 
 
 def _notes(pairs):

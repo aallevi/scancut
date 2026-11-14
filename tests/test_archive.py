@@ -110,6 +110,8 @@ class ArchiveTest(unittest.TestCase):
         self.assertEqual(p1['within'], [src['source_id']])
         self.assertEqual(p1['inscriptions'], 'hello sketchbook')
         self.assertEqual(p1['title'], 'guitar')
+        self.assertEqual(p1['lineage'], f"{lib.meta('uuid')}/{src['source_id']}/{p1['source_id']}")   # la discendenza: libreria / fonte / parte
+        self.assertEqual(t1['lineage'], p1['lineage'] + '/' + t1['source_id'])
         self.assertEqual(t1['within'], [p1['source_id']])
         self.assertEqual((t1['category'], t1['inscriptions']), ('document', 'hello sketchbook'))
         self.assertEqual(len(p1['files']), 1)

@@ -92,6 +92,7 @@ any view changes the rows; the cut, the folder and the archive follow.
 |---|---|---|
 | item kind=scan | category `scan`, no files | the "Part of" of its parts; originals stay in the library |
 | item kind=part | its category (else the scan's, else `drawing`), the cut as `media` | `source = scanstudio`, `source_id = part uuid` (stable across re-cuts; the cut's uuid and sha travel with the file) |
+| lineage (derived) | private `notes`, `records.json` | `library uuid / scan uuid / part uuid` (a piece: `/ origin part / piece`): where it comes from, rebuilt from the rows, never part of the id |
 | current text of the part | `inscriptions` of the part, and/or its own `document` record | chosen at export time |
 | item.date (EDTF) | `date_start`, `date_end`, `date_text` | `2014-05?` → start 2014-05-01, text "2014-05?" |
 | region bbox × asset dpi | `dimensions` "h × w cm" | rotation applied |
