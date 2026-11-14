@@ -866,6 +866,17 @@ class Handler(BaseHTTPRequestHandler):
             lib = bridge.library(create=False)
             bridge.correct_text(lib, int(b['reading']), str(b['text']))
             return self.send({'ok': True})
+        if path == 'library/reread':
+            # una zona (parte, area, area sciolta) letta di nuovo sulla sua scansione, da qualunque vista (anche da un taglio)
+            lib = bridge.library(create=False)
+            eng = core.settings().get('ocr_engine') or 'vision'
+            try:
+                with JOBS.track('ocr_box', rel=b.get('rel'), engine=eng) as j:
+                    text = bridge.reread(lib, b['rel'], str(b['id']))
+                    j['log'].append(f'{len(text.splitlines())} line(s)' if text else 'no text')
+            except ValueError as e:
+                return self.send({'error': str(e)})
+            return self.send({'text': text, 'engine': eng})
         if path == 'library/edit_in':
             lib = bridge.library(create=False)
             with JOBS.track('edit_in', rel=None, engine=None) as j:

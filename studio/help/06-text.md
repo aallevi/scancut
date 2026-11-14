@@ -33,3 +33,8 @@ box is, in the part's colour, formatted. Click a text to correct it.
 
 In the library, as the part's text: every reading is kept, corrections are versions on top. In each
 cut file, inside its description. A cut's text is always its part's text.
+
+On a cut, the Text pane shows its part's texts (the part, its secondary areas, the loose areas it
+carries). ↻ reads one again on its scan, the same pixels as the cut, and keeps the reading you had;
+**Versions** lists every reading and lets you pick one. Both change the text everywhere: the scan,
+the cut file, the transcriptions.

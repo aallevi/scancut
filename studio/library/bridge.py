@@ -1090,7 +1090,9 @@ def _region_of(lib, rel, sid):
 def _text_changed(lib, rid):
     # il testo di una parte e' cambiato: segue il taglio (metadati) e il diario; lo studio che l'ha chiesto rilegge da se'
     from . import store
-    refresh_cutout_text(lib, rid)
+    # il taglio e' della parte: un'area dentro di lei cambia il taglio della parte
+    par = lib.db.execute('SELECT parent_id FROM region WHERE id = ?', (rid,)).fetchone()
+    refresh_cutout_text(lib, par['parent_id'] if par and par['parent_id'] else rid)
     store._cache.clear()                              # lo stato si ricompone dalla libreria alla prossima richiesta
     schedule_journal()
 
@@ -1331,7 +1333,7 @@ def _refresh_cutout_text(lib, region_id):
     from .db import sha256
     texts = region_texts(lib, region_id)
     reg = lib.db.execute('SELECT r.uuid, i.uuid AS item FROM region r JOIN item i ON i.id = r.item_id WHERE r.id = ?', (region_id,)).fetchone()
-    if not texts or not reg or not core.tool('exiftool'):
+    if not texts or not reg:
         return 0
     plain = '\n\n'.join(t['plain'] for t in texts if t['plain'])
     refs = [f'scanstudio://text/{t["uuid"]}?v={t["corrected_version"] or 0}' for t in texts]
@@ -1343,7 +1345,9 @@ def _refresh_cutout_text(lib, region_id):
             continue
         a = lib.db.execute('SELECT id, uuid FROM asset WHERE path = ?', (p,)).fetchone()
         if a:
-            link_cutout_texts(lib, region_id, a['id'])
+            link_cutout_texts(lib, region_id, a['id'])   # il taglio vede i testi nuovi anche senza exiftool
+        if not core.tool('exiftool'):
+            continue
         ref = f'scanstudio://cutout/{a["uuid"] if a else ""}?item={reg["item"]}&region={reg["uuid"]}&' + '&'.join(r.split('/')[-1] for r in refs)
         cur = subprocess.run([core.tool('exiftool'), '-s3', '-XMP-dc:Identifier', p], capture_output=True, text=True).stdout.strip()
         if cur == ref:
@@ -1519,17 +1523,48 @@ def texts_for_rel(lib, rel):
         return []
     out, seen = [], set()
     for t in lib.db.execute('SELECT t.* FROM current_text t WHERE t.reading_id IN (SELECT reading_id FROM text_link WHERE asset_id = ?) '
-                            'OR (t.region_id IS NULL AND t.asset_id = ?) ORDER BY t.created_at DESC', (a['id'], a['id'])):
+                            'OR (t.region_id IS NULL AND t.asset_id = ?) ORDER BY t.created_at DESC, t.reading_id DESC', (a['id'], a['id'])):
         k = t['region_id'] or t['uuid']
         if k in seen:
             continue
         seen.add(k)
-        reg = lib.db.execute('SELECT r.label, r.kind, r.position, r.color, i.title, i.uuid AS item FROM region r JOIN item i ON i.id = r.item_id WHERE r.id = ?',
-                             (t['region_id'],)).fetchone() if t['region_id'] else None
+        reg = lib.db.execute("SELECT r.label, r.kind, r.position, r.color, i.title, i.uuid AS item, json_extract(r.source, '$.studio_rel') AS srel, "
+                             "json_extract(r.source, '$.studio_id') AS sid, json_extract(r.source, '$.studio_area') AS area, json_extract(r.source, '$.studio_loose') AS loose "
+                             'FROM region r JOIN item i ON i.id = r.item_id WHERE r.id = ?', (t['region_id'],)).fetchone() if t['region_id'] else None
+        # da dove si rilegge: la zona sulla sua scansione (parte s1, area s1/a2 o area sciolta loose:l1), come la vede lo studio
+        key = reg and (reg['area'] or (f'loose:{reg["loose"]}' if reg['loose'] else reg['sid']))
         out.append({'reading': t['reading_id'], 'uuid': t['uuid'], 'plain': t['plain'], 'model': t['model'] or t['engine'],
                     'version': t['corrected_version'] or 0, 'title': reg['title'] if reg else '', 'item': reg['item'] if reg else None,
-                    'region': (reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole file', 'color': reg['color'] if reg else '#8a96a6'})
+                    'region': (reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole file', 'color': reg['color'] if reg else '#8a96a6',
+                    'rel': reg['srel'] if reg else None, 'sid': key or None})
     return out
+
+
+def reread(lib, rel, sid, read=None):
+    # la zona letta di nuovo sulla sua scansione (gli stessi pixel veri del taglio): una lettura in piu' del lettore
+    # di adesso, le altre restano (Versions). Da un taglio o da dove si vuole: la zona e' una sola
+    st = core.load_state(rel, create=False)
+    if not st:
+        raise ValueError('its scan is no longer here')
+    if sid.startswith('loose:'):
+        box = next((a['box'] for a in st.get('loose') or [] if a['id'] == sid[6:]), None)
+    elif '/' in sid:
+        s_, a_ = sid.split('/', 1)
+        box = next((a['box'] for sh in st.get('sheets') or [] if sh['id'] == s_ for a in sh.get('areas') or [] if a['id'] == a_), None)
+    else:
+        box = None
+        if not any(sh['id'] == sid for sh in st.get('sheets') or []):
+            raise ValueError('this part is no longer on its scan')
+    if box is None and (sid.startswith('loose:') or '/' in sid):
+        raise ValueError('this area is no longer on its scan')
+    if read:
+        text = read(rel, sid, box)
+    else:
+        text = core.ocr_box(rel, box) if box else core.ocr_sheets(rel, [sid]).get(sid)
+    if text is None:
+        raise ValueError('nothing could be read')
+    on_read_sheet(rel, sid, text)
+    return text
 
 
 def correct_text(lib, reading_id, text):

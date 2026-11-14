@@ -561,6 +561,37 @@ class BridgeTest(unittest.TestCase):
         bridge.on_read_doc(cut, 'read on the cut')                          # di nuovo uguale: nessun doppione
         self.assertEqual(lib.db.execute("SELECT COUNT(*) FROM reading WHERE plain = 'read on the cut'").fetchone()[0], 1)
 
+    def test_reread_from_a_cut_is_a_new_reading_of_its_part(self):
+        # su un taglio il pannello del testo mostra i testi della sua parte: rileggere uno da li' (↻) legge la zona
+        # sulla sua scansione, una lettura in piu' che lascia le altre; anche un'area secondaria e un'area sciolta
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        sid = st['sheets'][0]['id']
+        st['sheets'][0]['areas'] = [{'id': 'a1', 'box': [40, 60, 200, 120], 'text': 'small note', 'reader': 'Apple Vision'}]
+        st['loose'] = [{'id': 'l1', 'box': [5, 5, 30, 20], 'text': 'margin', 'reader': 'Apple Vision'}]
+        core.save_state(st); bridge.sync_rel(self.rel)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        cut = core.relpath([n for s, n in core.out_names(self.rel) if s == sid][0])
+        texts = {t['plain']: t for t in bridge.texts_for_rel(lib, cut)}
+        self.assertEqual({k: (v['rel'], v['sid']) for k, v in texts.items()},
+                         {'hello sketchbook': (self.rel, sid), 'small note': (self.rel, f'{sid}/a1')})   # da dove si rilegge
+        core.save_settings({'ocr_engine': 'ollama:glm-ocr'})
+        seen = []
+        read = lambda rel, k, box: seen.append((rel, k, box)) or {sid: 'hello again', f'{sid}/a1': 'small note again'}[k]
+        self.assertEqual(bridge.reread(lib, self.rel, sid, read=read), 'hello again')
+        self.assertEqual(bridge.reread(lib, self.rel, f'{sid}/a1', read=read), 'small note again')
+        self.assertEqual(seen, [(self.rel, sid, None), (self.rel, f'{sid}/a1', [40, 60, 200, 120])])   # la parte intera, l'area nel suo riquadro
+        st = core.load_state(self.rel)
+        self.assertEqual((st['sheets'][0]['ocr'], st['sheets'][0]['areas'][0]['text']), ('hello again', 'small note again'))
+        self.assertEqual([r['plain'] for r in bridge.readings(lib, self.rel, sid)], ['hello again', 'hello sketchbook'])        # nessuna si perde
+        self.assertEqual([r['plain'] for r in bridge.readings(lib, self.rel, f'{sid}/a1')], ['small note again', 'small note'])
+        self.assertEqual(sorted(t['plain'] for t in bridge.texts_for_rel(lib, cut)), ['hello again', 'small note again'])   # il taglio li vede
+        with self.assertRaises(ValueError):
+            bridge.reread(lib, self.rel, f'{sid}/a9', read=read)                       # un'area che non c'e' piu'
+
 
     def test_scanned_file_is_registered_with_its_settings(self):
         # una scansione: registrata appena fatta (impostazioni, serie), fra le fonti, nella libreria, senza "aggiorna"

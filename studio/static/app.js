@@ -988,9 +988,12 @@ function renderTextPane() {
   } }, h('option', { value: S.settings?.ocr_engine || 'vision' }, ocrName()));
   ocrReaders().then(list => { reader.innerHTML = ''; [...list, { value: '__more', label: 'More readers… (Add-ons)' }].forEach(r => reader.append(h('option', { value: r.value, selected: r.value === (S.settings?.ocr_engine || 'vision') }, r.label))); });
   const boxes = S.st.loose || [];
+  // i testi della libreria (su un taglio: quelli della sua parte): si rileggono e si scelgono da qui come sulla scansione
   const lib = (S.libTexts || []).map(t => h('div', { class: 'tblock', style: { borderLeft: `4px solid ${t.color}` } },
     h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: t.color } }), h('b', {}, t.title), h('small', {}, '› ' + t.region),
-      h('small', { style: { marginLeft: 'auto' } }, `${t.model}${t.version ? ` · corrected ×${t.version}` : ''}`)),
+      h('small', { style: { marginLeft: 'auto' } }, `${t.model}${t.version ? ` · corrected ×${t.version}` : ''}`),
+      t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '6px' }, title: 'Read this text again on its scan, the same pixels (the reading you have now is kept: Versions)', onclick: e => { e.stopPropagation(); rereadLibText(t); } }, '↻') : null,
+      t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '2px' }, title: 'Every reading of this text, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: t.sid }, e.currentTarget, t.rel); } }, 'Versions ▾') : null),
     h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
       onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cuts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
     t.item ? h('div', { class: 'small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); LIB.mode = 'objects'; go('library').then(() => libSelect(t.item)); } }, 'Show in the library')) : null));
@@ -1037,9 +1040,24 @@ function renderTextPane() {
         h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
 }
 // le letture di una parte: ognuna resta (un lettore, poi un altro); si sceglie quella da usare, le altre restano
-async function readingVersions(sh, el) {
+// i testi della libreria mostrati su un taglio: si rileggono e si scelgono sulla loro scansione (la zona e' una sola)
+async function refreshLibTexts() {
+  const rel = S.rel, lt = await api.get('library/texts_for', { rel }).catch(() => null);
+  if (lt && S.rel === rel) { S.libTexts = lt; renderTextPane(); renderMirror(); }
+}
+async function rereadLibText(t) {
+  const rel = S.rel;
+  busy(true, `Reading again (${ocrName()})…`);
+  const r = await api.post('library/reread', { rel: t.rel, id: t.sid }).catch(e => ({ error: e.message }));
+  busy(false, null, rel); if (S.rel !== rel) return;
+  if (r.error) return alertDialog('Read again', r.error);
+  await refreshLibTexts();
+  status(r.text ? `Read again with ${ocrName()}: the reading before is kept (Versions)` : 'No text found: the reading you have stays');
+}
+async function readingVersions(sh, el, srcRel) {
   await flushSave();
-  const rel = S.rel, list = await api.get('library/readings', { rel, id: sh.id }).catch(() => []);
+  // srcRel: da un taglio, la scansione della sua parte
+  const rel = S.rel, list = await api.get('library/readings', { rel: srcRel || rel, id: sh.id }).catch(() => []);
   if (!list.length) return status('No readings in the library yet for this part');
   const when = t => (t || '').replace('T', ' ').slice(0, 16);
   const name = t => (t.engine === 'vision' ? 'Apple Vision' : t.model || t.engine);
@@ -1052,7 +1070,8 @@ async function readingVersions(sh, el) {
         t.current ? [['Close', () => true, true]] : [['Use this one', async () => {
           const r = await api.post('library/use_reading', { uuid: t.uuid }).catch(e => ({ error: e.message }));
           if (r.error) return status(r.error);
-          if (S.rel === rel) { setState(await api.get('state', { rel })); renderSide(); draw(); renderTextPane(); renderMirror(); }
+          if (srcRel) await refreshLibTexts();
+          else if (S.rel === rel) { setState(await api.get('state', { rel })); renderSide(); draw(); renderTextPane(); renderMirror(); }
           status(`Now using the ${name(t)} reading; the others stay in Versions`);
         }, true], ['Cancel', () => true]]);
     } })));
