@@ -658,7 +658,16 @@ function searchBox() {
     const sect = (title, list) => { if (list.length) { pop.append(h('div', { class: 'sh' }, title)); list.forEach(x => { items.push(x); pop.append(h('div', { class: 'si', onmousedown: e => { e.preventDefault(); pop.classList.remove('on'); x.do(e); } }, x.label, x.sub ? h('small', {}, x.sub) : null)); }); } };
     pop.innerHTML = '';
     sect('Scans and cuts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel) : openScan(f.rel)) })));
-    sect('Labels and text', r.text.map(t => ({ label: t.rel.split('/').pop() + (t.label ? ' · ' + t.label : ''), sub: '…' + t.snippet + '…', do: async () => { await openScan(t.rel); selectIds([t.sheet]); renderSide(); draw(); } })));
+    // un testo trovato apre il taglio che lo mostra (⌘: in una scheda nuova); ⌥-clic, o senza taglio, la fonte
+    // con la parte scelta. Le aree di testo dentro una parte (strisce lette con "Read a box") contano come la parte
+    sect('Labels and text', r.text.map(t => ({
+      label: (t.cut ? t.cut.split('/').pop() : t.rel.split('/').pop()) + (t.label ? ' · ' + t.label : '') + (t.area ? ' › ' + t.area : ''),
+      sub: '…' + t.snippet + '…' + (t.cut ? '' : ' · not cut yet: opens the source'),
+      do: async e => {
+        if (t.cut && !e?.altKey) return e?.metaKey ? newTab('scan:' + t.cut) : openScan(t.cut);
+        if (e?.metaKey) return newTab('scan:' + t.rel);
+        await openScan(t.rel); if (t.sheet) { selectIds([t.sheet]); renderSide(); draw(); }
+      } })));
     sect('Help', [...r.help.map(x => ({ label: x.title, sub: x.chapter + ' · ' + x.snippet, do: () => showHelpTopic(x.id) })),
                   { label: `Search the help for “${q}”`, do: () => openHelp(q) }]);
     sect('Ask', [{ label: `Ask Claude: “${q}”`, sub: 'can also do jobs for you', do: () => toggleChat(true, 'claude', q) }]);

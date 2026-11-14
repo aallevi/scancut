@@ -1316,6 +1316,53 @@ def text_list(lib, q=None, limit=500):
     return out
 
 
+def text_hits(lib, words, limit=8):
+    # la casella di ricerca in alto: parti per etichetta e per testo, comprese le aree di testo dentro una
+    # parte (le strisce lette con "Read a box"). Ogni risultato dice la sua fonte, la parte da scegliere e il
+    # taglio che mostra quel testo (il taglio che lo ha nei metadati, altrimenti l'ultimo taglio della parte)
+    words = [w.lower() for w in words if w]
+    if not words:
+        return []
+    out = []
+    rows = lib.db.execute(
+        "SELECT r.id, r.uuid, r.kind, r.label, r.position, r.parent_id, p.label AS plabel, i.title, "
+        "COALESCE(json_extract(r.source, '$.studio_rel'), json_extract(p.source, '$.studio_rel')) AS rel, "
+        "COALESCE(json_extract(p.source, '$.studio_id'), json_extract(r.source, '$.studio_id')) AS sid, "
+        "(SELECT reading_id FROM current_text t WHERE t.region_id = r.id ORDER BY created_at DESC, reading_id DESC LIMIT 1) AS reading, "
+        "COALESCE((SELECT plain FROM current_text t WHERE t.region_id = r.id ORDER BY created_at DESC, reading_id DESC LIMIT 1), '') AS txt "
+        "FROM region r LEFT JOIN region p ON p.id = r.parent_id JOIN item i ON i.id = r.item_id "
+        "WHERE r.removed_at IS NULL AND (p.id IS NULL OR p.removed_at IS NULL) AND i.trashed_at IS NULL "
+        "AND (r.parent_id IS NULL OR r.kind != 'sheet') ORDER BY r.item_id, r.position").fetchall()
+    for r in rows:
+        if not r['rel']:
+            continue
+        label = r['label'] or ''
+        hay = (label + '\n' + (r['txt'] or '')).lower()
+        if not all(w in hay for w in words):
+            continue
+        i = hay.find(words[0])
+        cut = None
+        # il taglio che porta questo testo nei metadati (dopo un taglio dalla libreria); se non c'e' ancora,
+        # l'ultimo taglio della parte (la parte stessa, o quella che contiene l'area)
+        if r['reading']:
+            for a in lib.db.execute('SELECT a.* FROM asset a JOIN text_link l ON l.asset_id = a.id WHERE l.reading_id = ? AND ' + LIVE, (r['reading'],)):
+                if os.path.exists(lib.asset_path(a)):
+                    cut = rel_of(lib, a)
+                    break
+        if not cut:
+            e = lib.db.execute('SELECT path FROM cut WHERE region_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', (r['parent_id'] or r['id'],)).fetchone()
+            if e and os.path.exists(e['path']):
+                p = os.path.realpath(e['path'])
+                cut = core.relpath(p) if p.startswith(core.ROOT + os.sep) else None
+        out.append({'rel': r['rel'], 'sheet': r['sid'], 'label': label if r['parent_id'] is None else (r['plabel'] or ''),
+                    'area': (label or f'{r["kind"]} {r["position"] + 1}') if r['parent_id'] is not None else '',
+                    'region': r['uuid'], 'title': r['title'], 'cut': cut,
+                    'snippet': hay[max(0, i - 40): i + 80].replace('\n', ' ').strip()})
+        if len(out) >= limit:
+            break
+    return out
+
+
 def cutout_list(lib, limit=1000, series=None, place=None):
     out = []
     flt = " AND i.series_id IS NULL" if series == 'none' else " AND i.series_id = (SELECT id FROM series WHERE uuid = ?)" if series else ""

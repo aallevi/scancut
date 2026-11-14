@@ -108,22 +108,12 @@ def search(q, limit=8):
             if len(out['files']) >= limit * 3:
                 break
     out['files'] = sorted(out['files'], key=lambda x: (not x['rel'].startswith('originals'), x['name'].lower()))[:limit]
-    # etichette e testi: dalla libreria (le parti delle fonti e i loro testi, con le correzioni)
+    # etichette e testi: dalla libreria (le parti e le aree di testo dentro di loro, con le correzioni),
+    # ognuno con il taglio che lo mostra
     from .library import bridge
     lib = bridge.library(create=False)
     if lib:
-        rows = lib.db.execute(
-            "SELECT r.label, json_extract(r.source, '$.studio_rel') AS rel, json_extract(r.source, '$.studio_id') AS sid, "
-            "COALESCE((SELECT plain FROM current_text t WHERE t.region_id = r.id ORDER BY created_at DESC LIMIT 1), '') AS txt "
-            "FROM region r WHERE r.parent_id IS NULL AND r.kind = 'sheet' AND r.removed_at IS NULL").fetchall()
-        for r in rows:
-            hay = ((r['label'] or '') + '\n' + (r['txt'] or '')).lower()
-            if r['rel'] and all(w in hay for w in words):
-                i = hay.find(words[0])
-                out['text'].append({'rel': r['rel'], 'sheet': r['sid'], 'label': r['label'] or '',
-                                    'snippet': hay[max(0, i - 40): i + 80].replace('\n', ' ')})
-                if len(out['text']) >= limit:
-                    break
+        out['text'] = bridge.text_hits(lib, words, limit)
     if len(q) > 2:
         out['help'] = [{'id': h['id'], 'title': h['title'], 'chapter': h['chapter'], 'snippet': h['snippet']} for h in find(q, k=5) if h['score'] > 0.2]
     return out

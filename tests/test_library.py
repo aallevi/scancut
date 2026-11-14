@@ -282,6 +282,30 @@ class BridgeTest(unittest.TestCase):
         bridge.sync_rel(self.rel)
         self.assertIn('small note, fixed', [t['plain'] for t in bridge.texts_for_rel(lib, core.relpath(cut))])
 
+    def test_top_search_finds_strip_text_and_its_cut(self):
+        # la casella di ricerca in alto: anche il testo di un'area dentro una parte, e il risultato porta al taglio
+        from studio.library import bridge
+        from studio import core, help as helpdocs
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        first = st['sheets'][0]['id']
+        st['sheets'][0]['areas'] = [{'id': 'a1', 'box': [40, 60, 200, 120], 'text': 'ricetta della nonna', 'reader': 'GLM-OCR'}]
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        cut = core.relpath([n for sid, n in core.out_names(self.rel) if sid == first][0])
+        # prima del taglio dallo studio: il taglio dell'agente, per parte
+        hits = helpdocs.search('nonna ricetta')['text']
+        self.assertEqual([(h['rel'], h['sheet'], h['cut']) for h in hits], [(self.rel, first, cut)])
+        self.assertTrue(hits[0]['area'].startswith('text'))                 # l'area, non la parte intera
+        self.assertIn('ricetta della nonna', hits[0]['snippet'])
+        # il testo della parte intera si trova come prima, con il suo taglio
+        self.assertEqual([h['cut'] for h in helpdocs.search('sketchbook')['text']], [cut])
+        # dopo il taglio dallo studio il testo e' nei metadati del file: lo stesso taglio
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        self.assertEqual([h['cut'] for h in helpdocs.search('nonna')['text']], [cut])
+        self.assertEqual(helpdocs.search('zzz nonna')['text'], [])
+
     def test_rotation_is_one_thing(self):
         import numpy as np
         from PIL import Image
