@@ -1233,6 +1233,7 @@ DEFAULT_SETTINGS = {
     'trash_days': 91,                  # il cestino della libreria si svuota da solo dopo questi giorni (di base ogni tre mesi)
     'export_existing': 'new_copy',     # new_copy: un ritaglio diverso col nome gia' preso diventa "(2)"; replace: il vecchio in replaced/
     'export_subfolder': 'extra',
+    'archive_url': '',                 # il sito-archivio (Directus), in sola lettura; la chiave nel Portachiavi
     'verify_jxl': False,
     'keep_16bit': True,
     'ocr_on_export': False,            # riconoscere il testo (Apple Vision) e scriverlo nei metadati di ogni ritaglio

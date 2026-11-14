@@ -173,6 +173,57 @@ class Server(unittest.TestCase):
         stale = dict(st, version=st['version'] - 1)
         self.assertEqual(self.call('state', {'state': stale})[0], 409)
 
+    def test_other_origin_refused(self):
+        # una pagina qualsiasi aperta nel browser non parla con lo studio: ne' in lettura, ne' in scrittura
+        self.assertEqual(self.call('ping', headers={'Origin': 'https://evil.example'})[0], 403)
+        self.assertEqual(self.call('ping', headers={'Sec-Fetch-Site': 'cross-site'})[0], 403)
+        self.assertEqual(self.call('ping', headers={'Origin': f'http://127.0.0.1:{self.port}', 'Sec-Fetch-Site': 'same-origin'})[0], 200)
+        self.assertEqual(self.call('settings', {}, headers={'Origin': 'http://evil.example'})[0], 403)
+
+    def test_no_cors_and_security_headers(self):
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/', method='OPTIONS')
+        try:
+            urllib.request.urlopen(req); self.fail('OPTIONS answered')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 405)
+        with urllib.request.urlopen(f'http://127.0.0.1:{self.port}/') as r:
+            self.assertIn("script-src 'self'", r.headers.get('Content-Security-Policy', ''))
+            self.assertEqual(r.headers.get('X-Content-Type-Options'), 'nosniff')
+            self.assertNotIn('Access-Control-Allow-Origin', r.headers)
+            tag = r.headers.get('ETag')
+        self.assertTrue(tag)
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/app.js', headers={'If-None-Match': tag.replace('"', '"x')})
+        with urllib.request.urlopen(req) as r:
+            self.assertEqual(r.status, 200)
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/', headers={'If-None-Match': tag})
+        try:
+            urllib.request.urlopen(req); self.fail('no 304')
+        except urllib.error.HTTPError as e:
+            self.assertEqual(e.code, 304)
+
+    def test_static_outside_refused(self):
+        for path in ('/../server.py', '/..%2Fserver.py', '/.hidden'):
+            try:
+                urllib.request.urlopen(f'http://127.0.0.1:{self.port}{path}'); self.fail(path)
+            except urllib.error.HTTPError as e:
+                self.assertEqual(e.code, 404, path)
+
+    def test_bad_bodies_refused(self):
+        self.assertEqual(self.call('settings', [1, 2])[0], 400)                    # non un oggetto
+        req = urllib.request.Request(f'http://127.0.0.1:{self.port}/api/settings', b'{}', {'X-Studio': '1', 'Content-Length': str(server.MAX_JSON + 1)})
+        try:
+            urllib.request.urlopen(req); self.fail('too large accepted')
+        except (urllib.error.HTTPError, OSError) as e:
+            self.assertEqual(getattr(e, 'code', 413), 413)
+
+    def test_destinations_and_apps_are_checked(self):
+        # cartelle di sistema, la libreria e le fonti non sono destinazioni; solo le app per immagini presenti si aprono
+        for d in ('/usr/local', '/', '/System/Library', os.path.join(core.ROOT, 'originals'), os.path.join(core.ROOT, '.scancut', 'studio-data')):
+            self.assertEqual(self.call('library/export', {'dir': d})[0], 400, d)
+            self.assertEqual(self.call('library/journal', {'dir': d})[0], 400, d)
+        self.assertEqual(self.call('library/edit_in', {'asset': 'x', 'app': 'Terminal'})[0], 400)
+        self.assertEqual(self.call('library/archive', {'dir': '/usr/local'})[0], 400)
+
 
 import urllib.parse  # noqa: E402
 

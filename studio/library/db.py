@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.sql')
 PLACES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'places.sql')
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2          # 2: ogni parte e' un item (posto, numero, categoria sugli item); archive_link
 CATEGORIES = [('drawing', 'Drawing'), ('document', 'Document'), ('photograph', 'Digital photograph'), ('scan', 'Digital scan'), ('print', 'Print'), ('painting', 'Painting'), ('book', 'Book'), ('object', 'Object'), ('installation', 'Installation'), ('sculpture', 'Sculpture'), ('model', '3D model'), ('video', 'Digital video'), ('sound', 'Sound recording')]
 AGENT = 'Scan Studio'
 KEEP_SNAPSHOTS = 10
@@ -216,9 +216,34 @@ class Library:
                               ' created_at, modified_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                               (u, item_id, asset_id, parent_id, kind, label, json.dumps(geometry),
                                json.dumps(source) if source else None, pos, color, t, t))
+        rid = cur.lastrowid
+        if kind == 'sheet' and parent_id is None:
+            self.ensure_part(rid)                        # un foglio e' una parte: un item suo, da subito
         self.db.commit()
         self.touched(item_id)
+        return rid
+
+    def ensure_part(self, region_id):
+        # l'item di una parte (foglio): uno per zona, creato se manca. Eredita data e serie dalla fonte; il titolo
+        # e' l'etichetta della parte (vuoto: lo danno le viste, "part 2"); tolta la zona, l'item e' nel cestino
+        r = self.db.execute('SELECT id FROM item WHERE region_id = ?', (region_id,)).fetchone()
+        if r:
+            return r[0]
+        g = self.db.execute("SELECT g.item_id, g.label, g.removed_at FROM region g WHERE g.id = ? AND g.kind = 'sheet' AND g.parent_id IS NULL",
+                            (region_id,)).fetchone()
+        if not g:
+            return None
+        u, t = new_uuid(), now()
+        # data e serie restano vuote: valgono quelle della fonte finche' la parte non ne ha di sue (una cosa, un posto)
+        cur = self.db.execute('INSERT INTO item (uuid, kind, parent_id, region_id, title, created_at, modified_at, trashed_at) '
+                              'VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (u, 'part', g['item_id'], region_id, g['label'], t, t, g['removed_at']))
+        self.db.commit()
         return cur.lastrowid
+
+    def part_of(self, region_id):
+        # l'id dell'item di una parte (creato se manca), o None per una zona che non e' un foglio
+        r = self.db.execute('SELECT id FROM item WHERE region_id = ?', (region_id,)).fetchone()
+        return r[0] if r else self.ensure_part(region_id)
 
     def add_reading(self, asset_id, engine, plain, region_id=None, model=None, doc=None, raw=None, languages=None,
                     confidence=None, params=None, model_digest=None):
@@ -288,13 +313,10 @@ class Library:
 ''')
             self.log('migrate', 'library', self.meta('uuid'), added='trash')
         if 'place' not in have:
-            cols = {r[1] for r in self.db.execute('PRAGMA table_info(region)')}
+            cols = {r[1] for r in self.db.execute('PRAGMA table_info(item)')}
             self.db.executescript(open(PLACES).read().split('CREATE TRIGGER')[0])
             if 'place_id' not in cols:
-                self.db.executescript('ALTER TABLE region ADD COLUMN place_id INTEGER REFERENCES place(id) ON DELETE SET NULL; '
-                                      'ALTER TABLE region ADD COLUMN place_number INTEGER; ALTER TABLE region ADD COLUMN category TEXT; '
-                                      'ALTER TABLE item ADD COLUMN place_id INTEGER REFERENCES place(id) ON DELETE SET NULL; ALTER TABLE item ADD COLUMN category TEXT;')
-            self.db.executescript('CREATE TRIGGER' + 'CREATE TRIGGER'.join(open(PLACES).read().split('CREATE TRIGGER')[1:]))
+                self.db.executescript('ALTER TABLE item ADD COLUMN place_id INTEGER REFERENCES place(id) ON DELETE SET NULL; ALTER TABLE item ADD COLUMN category TEXT;')
             self.db.executemany('INSERT OR IGNORE INTO category (key, label, position) VALUES (?,?,?)', [(k, l, i) for i, (k, l) in enumerate(CATEGORIES)])
             self.db.commit()
             self.log('migrate', 'library', self.meta('uuid'), added='place, category')
@@ -309,6 +331,69 @@ class Library:
                 asset_id INTEGER NOT NULL REFERENCES asset(id) ON DELETE CASCADE, PRIMARY KEY (reading_id, asset_id)) STRICT;
                 CREATE INDEX text_link_asset ON text_link(asset_id);''')
             self.log('migrate', 'library', self.meta('uuid'), added='text_link')
+        if 'region_id' not in {r[1] for r in self.db.execute('PRAGMA table_info(item)')}:
+            self._migrate_parts_as_items()
+        if 'archive_link' not in have:
+            self.db.executescript('''CREATE TABLE IF NOT EXISTS archive_link (
+  entity TEXT NOT NULL CHECK (entity IN ('item', 'text', 'asset', 'place')), uuid TEXT NOT NULL, archive TEXT NOT NULL,
+  archive_id TEXT NOT NULL, sha256 TEXT, synced_at TEXT NOT NULL, PRIMARY KEY (entity, uuid, archive)) STRICT;
+CREATE INDEX IF NOT EXISTS archive_link_id ON archive_link(archive, archive_id);''')
+            self.log('migrate', 'library', self.meta('uuid'), added='archive_link')
+        # indici per le viste (liste, tagli, testi): si aggiungono a una libreria che non li ha
+        self.db.executescript('''CREATE INDEX IF NOT EXISTS item_asset_role ON item_asset(item_id, role, position);
+CREATE INDEX IF NOT EXISTS region_live ON region(kind, parent_id, removed_at, asset_id);
+CREATE INDEX IF NOT EXISTS item_place ON item(place_id, place_number);
+DROP INDEX IF EXISTS cut_region; CREATE INDEX cut_region ON cut(region_id, id);
+DROP INDEX IF EXISTS cut_path; CREATE INDEX cut_path ON cut(path, id);''')
+        if self.meta('schema_version') != str(SCHEMA_VERSION):
+            with self.db:
+                self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+        self.db.execute('PRAGMA optimize')
+
+    def _migrate_parts_as_items(self):
+        # versione 2: ogni foglio ha il suo item (kind 'part'); posto, numero e categoria passano dalla zona all'item.
+        # La tabella region si ricostruisce senza quelle colonne (procedura dei 12 passi di SQLite), chiavi esterne spente.
+        self.snapshot('before-parts-as-items')
+        self.db.commit()
+        self.db.execute('PRAGMA foreign_keys = OFF')
+        try:
+            rcols = {r[1] for r in self.db.execute('PRAGMA table_info(region)')}
+            for t in [r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")]:
+                self.db.execute(f'DROP TRIGGER IF EXISTS "{t}"')
+            self.db.executescript('ALTER TABLE item ADD COLUMN region_id INTEGER REFERENCES region(id) ON DELETE CASCADE; '
+                                  'ALTER TABLE item ADD COLUMN place_number INTEGER;')
+            had = 'place_id' in rcols
+            rows = self.db.execute(f'''SELECT g.id, g.item_id, g.label, g.created_at, g.modified_at, g.removed_at,
+                                           {'g.place_id, g.place_number, g.category' if had else 'NULL, NULL, NULL'}
+                                       FROM region g WHERE g.kind = 'sheet' AND g.parent_id IS NULL''').fetchall()
+            self.db.executemany('INSERT INTO item (uuid, kind, parent_id, region_id, title, created_at, modified_at, trashed_at, '
+                                'place_id, place_number, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                                [(new_uuid(), 'part', r[1], r[0], r[2], r[3], r[4], r[5], r[6], r[7], r[8]) for r in rows])
+            if had:
+                keep = [c for c in ('id', 'uuid', 'item_id', 'asset_id', 'parent_id', 'kind', 'label', 'geometry', 'source', 'ops', 'rotation', 'export_on',
+                                    'position', 'color', 'created_at', 'modified_at', 'removed_at') if c in rcols]
+                self.db.executescript(f'''CREATE TABLE region_v2 (
+  id INTEGER PRIMARY KEY, uuid TEXT NOT NULL UNIQUE, item_id INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
+  asset_id INTEGER NOT NULL REFERENCES asset(id) ON DELETE RESTRICT, parent_id INTEGER REFERENCES region(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL, label TEXT, geometry TEXT NOT NULL CHECK (json_valid(geometry)), source TEXT CHECK (source IS NULL OR json_valid(source)),
+  ops TEXT CHECK (ops IS NULL OR json_valid(ops)), rotation INTEGER NOT NULL DEFAULT 0, export_on INTEGER NOT NULL DEFAULT 1,
+  position INTEGER NOT NULL DEFAULT 0, color TEXT, created_at TEXT NOT NULL, modified_at TEXT NOT NULL, removed_at TEXT) STRICT;
+INSERT INTO region_v2 ({', '.join(keep)}) SELECT {', '.join(keep)} FROM region;
+DROP TABLE region;
+ALTER TABLE region_v2 RENAME TO region;
+CREATE INDEX region_item ON region(item_id, position);
+CREATE INDEX region_asset ON region(asset_id, removed_at, position);
+CREATE INDEX region_parent ON region(parent_id);''')
+            self.db.executescript('CREATE UNIQUE INDEX IF NOT EXISTS item_region ON item(region_id) WHERE region_id IS NOT NULL;')
+            self.db.executescript('CREATE TRIGGER' + 'CREATE TRIGGER'.join(open(PLACES).read().split('CREATE TRIGGER')[1:]))
+            bad = self.db.execute('PRAGMA foreign_key_check').fetchall()
+            if bad:
+                raise RuntimeError(f'foreign keys broken after the parts migration: {bad[:5]}')
+            self.db.commit()
+        finally:
+            self.db.execute('PRAGMA foreign_keys = ON')
+        n = self.db.execute("SELECT COUNT(*) FROM item WHERE kind = 'part'").fetchone()[0]
+        self.log('migrate', 'library', self.meta('uuid'), added='parts as items', parts=n)
 
     def _item_of(self, asset_id, region_id):
         if region_id:

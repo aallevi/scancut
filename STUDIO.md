@@ -103,7 +103,7 @@ or white lid (dark paper); those fill pixels are never saved.
 
 **Everything about sources, parts, cuts and texts lives in the library** (`<root>/Library.DocuLib/`, a package the Finder shows as one file;
 after **Move files in…** it also holds `originals/`, `cut/`, `failed/` as lossless JPEG XL;
-see docs/LIBRARY.md): the editor's state of a scan is built from its rows and written back to them
+see docs/LIBRARY.md and docs/DATABASE.md): the editor's state of a scan is built from its rows and written back to them
 (`studio/library/store.py`). Nothing else holds it: no JSON state files, no private text cache. Older
 `studio-data/state/` and `studio-data/text/` are moved in once, then set aside as `*.migrated-<date>`.
 Library › Check (⌥: pixels too) verifies that every file, cut and embedded text matches the library.
@@ -129,8 +129,21 @@ POST `detect {rel, engine, params, box?, replace?}`, `state {state}` (version-ch
 `compare {rel, engines}`, `export {rel}`, `settings {...}`,
 `jobs {kind: batch|export|claude, rels, engine, params, export | message, rel}`,
 `cancel {id}`, `open {what: finder|canon|imagecapture|eagle|kick|scripts, rel?}`
+GET  `library/archive?uuids=` (address, whether a token is in the Keychain, what was already sent),
+`library/archive/preview?items=&texts=inline|records|both` (the records as they would go, nothing sent)
+POST `library/archive {items?, regions?, texts?, sources?, dir?}` → job `archive`: with `dir` a package
+(`records.json` + cut files) in that folder, else a direct send to the Directus address in settings
+(token read from the Keychain; see docs/DATABASE.md for the record shape)
 
 `rel` is a path inside the root, e.g. `originals/sketchbook/sketchbook 3.png`.
+
+**Guard.** Only `Host` 127.0.0.1/localhost is answered (DNS rebinding); a request with another `Origin`
+or `Sec-Fetch-Site: cross-site` is refused; `OPTIONS` is 405 (no CORS, ever); POSTs need `X-Studio: 1`,
+a JSON object body under 64 MB (uploads under 16 GB). Pages carry a Content-Security-Policy that allows
+scripts only from the studio itself, `nosniff` and no referrer; static files are served with ETags.
+Destination folders (exports, transcriptions, archive packages) must be the user's own: never a system
+folder, the library, the inbox, the sources or the cuts. “Edit in…” opens only the image editors found
+on this Mac; the folder chooser passes its prompt as an argument, never inside the AppleScript.
 
 ## Tools
 

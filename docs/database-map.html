@@ -1,0 +1,269 @@
+<title>Scan Studio Database Map</title>
+<meta name="description" content="How the Scan Studio library is organised: tables by group, parts as items, texts, and the alignment with the Directus archive.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a catalog card. One column of running text, with two wide figures (the treemap and the alignment) that may scroll sideways. */
+:root {
+  --bg: #f7f5f0;          /* paper, warm */
+  --fg: #22262b;
+  --muted: #6b7078;
+  --rule: #d9d4ca;
+  --card: #ffffff;
+  --files: #8a6d3b;       /* group hues: files (kraft), things (ink blue), geometry (teal), text (plum), safety (grey) */
+  --things: #1e3287;
+  --geom: #0f766e;
+  --text: #7c3a7c;
+  --safety: #5b6470;
+  --archive: #b45309;
+  --sans: 'IBM Plex Sans', 'Helvetica Neue', Arial, sans-serif;
+  --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #171a1e; --fg: #e6e3dc; --muted: #9a9fa8; --rule: #343a42; --card: #1f2329; --files: #c9a46a; --things: #8ea2ff; --geom: #4fd1c5; --text: #d79ad7; --safety: #a3adb8; --archive: #f0a04b; color-scheme: dark } }
+:root[data-theme="dark"] { --bg: #171a1e; --fg: #e6e3dc; --muted: #9a9fa8; --rule: #343a42; --card: #1f2329; --files: #c9a46a; --things: #8ea2ff; --geom: #4fd1c5; --text: #d79ad7; --safety: #a3adb8; --archive: #f0a04b; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); line-height: 1.5; padding-inline: 16px; padding-block: 24px 48px; }
+main { max-width: 980px; margin: 0 auto; }
+h1 { font-size: 1.9rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; text-wrap: balance; }
+h2 { font-size: 1.15rem; font-weight: 600; margin: 36px 0 8px; text-wrap: balance; }
+p, li { max-width: 68ch; }
+.lede { color: var(--muted); margin: 0 0 20px; }
+.eyebrow { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+figure { margin: 16px 0 0; }
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--card); padding: 8px; }
+svg { display: block; max-width: 100%; height: auto; font-family: var(--sans); }
+svg text { fill: currentColor; font-size: 12px; }
+svg .mono { font-family: var(--mono); font-size: 11px; }
+svg .small { font-size: 10.5px; fill: var(--muted); }
+svg .grp { font-weight: 600; font-size: 12px; letter-spacing: 0.04em; }
+figcaption { font-size: 0.85rem; color: var(--muted); margin-top: 8px; max-width: 80ch; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+code { font-family: var(--mono); font-size: 0.86em; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 0.82rem; color: var(--muted); margin: 10px 0 0; }
+.legend span::before { content: ''; display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; background: var(--c); }
+.rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-top: 10px; }
+.rules div { border-left: 3px solid var(--things); padding: 2px 0 2px 12px; font-size: 0.9rem; }
+.rules b { display: block; font-weight: 600; }
+</style>
+<main>
+<div class="eyebrow">Scan Studio · library.sqlite · schema 2</div>
+<h1>Scan Studio Database Map</h1>
+<p class="lede">One SQLite catalog holds everything the studio knows; pixels are files it knows by checksum. Below: the tables grouped by what they hold, why every part is now an item, and how each thing lines up with a record of the archive site.</p>
+
+<h2>The treemap: tables by group</h2>
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 940 560" role="img" aria-label="Treemap of the library's tables in six groups: files, things, geometry, text, representations and places, safety and history, search and archive link">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+  </defs>
+  <!-- FILES -->
+  <rect x="10" y="10" width="200" height="150" rx="4" fill="var(--files)" opacity="0.10" stroke="var(--files)"/>
+  <text x="20" y="30" class="grp" fill="var(--files)">FILES · the real pixels</text>
+  <rect x="20" y="42" width="180" height="62" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="28" y="60" class="mono">asset</text>
+  <text x="28" y="76" class="small">sha256, size, path, w×h, dpi, bits, ICC</text>
+  <text x="28" y="92" class="small">derived_from (edited copy), technical</text>
+  <rect x="20" y="112" width="180" height="40" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="28" y="130" class="mono">capture</text>
+  <text x="28" y="145" class="small">scanner device, dpi, mode, area · or added</text>
+
+  <!-- THINGS -->
+  <rect x="222" y="10" width="330" height="270" rx="4" fill="var(--things)" opacity="0.10" stroke="var(--things)"/>
+  <text x="232" y="30" class="grp" fill="var(--things)">THINGS · every archived thing is an item</text>
+  <rect x="232" y="42" width="310" height="140" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="240" y="60" class="mono">item</text>
+  <text x="290" y="60" class="small">kind · parent_id · region_id · title · date (EDTF)</text>
+  <text x="240" y="78" class="small">place_id · place_number · category · series_id · notes · trashed_at</text>
+  <rect x="240" y="88" width="90" height="26" rx="3" fill="var(--things)" opacity="0.12"/>
+  <text x="246" y="106" class="mono">kind=scan</text>
+  <rect x="338" y="88" width="90" height="26" rx="3" fill="var(--things)" opacity="0.35"/>
+  <text x="344" y="106" class="mono" font-weight="600">kind=part</text>
+  <rect x="436" y="88" width="98" height="26" rx="3" fill="var(--things)" opacity="0.12"/>
+  <text x="442" y="106" class="mono">piece · cut · file</text>
+  <text x="240" y="134" class="small">a part = one item per sheet region (parent = its scan). Place, number,</text>
+  <text x="240" y="149" class="small">category, tags, collections and Trash live here, for parts as for scans.</text>
+  <text x="240" y="170" class="small">Triggers: number unique per place · number needs a place · known category</text>
+  <rect x="232" y="190" width="150" height="38" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="240" y="208" class="mono">item_asset</text>
+  <text x="240" y="222" class="small">view · edit · cutout …</text>
+  <rect x="392" y="190" width="150" height="38" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="400" y="208" class="mono">series</text>
+  <text x="400" y="222" class="small">the scanning session</text>
+  <rect x="232" y="236" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="240" y="254" class="mono">tag · item_tag</text>
+  <rect x="392" y="236" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="400" y="254" class="mono">collection · _item</text>
+  <text x="400" y="267" class="small">lists and saved searches</text>
+
+  <!-- GEOMETRY -->
+  <rect x="564" y="10" width="366" height="120" rx="4" fill="var(--geom)" opacity="0.10" stroke="var(--geom)"/>
+  <text x="574" y="30" class="grp" fill="var(--geom)">GEOMETRY · where on the file</text>
+  <rect x="574" y="42" width="346" height="78" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="582" y="60" class="mono">region</text>
+  <text x="640" y="60" class="small">kind=sheet (a part's outline) · kind=text (area in a sheet, or loose)</text>
+  <text x="582" y="78" class="small">geometry · ops (edits) · holes · rotation · export_on · label · position · color</text>
+  <text x="582" y="94" class="small">removed_at: taken away in the studio, kept as history</text>
+  <text x="582" y="110" class="small">one sheet region ⇄ one part item (item.region_id, unique)</text>
+
+  <!-- TEXT -->
+  <rect x="564" y="142" width="366" height="138" rx="4" fill="var(--text)" opacity="0.10" stroke="var(--text)"/>
+  <text x="574" y="162" class="grp" fill="var(--text)">TEXT · versions, never overwritten</text>
+  <rect x="574" y="174" width="170" height="60" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="582" y="192" class="mono">reading</text>
+  <text x="582" y="207" class="small">every OCR run: engine, model,</text>
+  <text x="582" y="221" class="small">plain, structured doc, raw</text>
+  <rect x="752" y="174" width="168" height="60" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="760" y="192" class="mono">correction</text>
+  <text x="760" y="207" class="small">hand versions on a reading</text>
+  <text x="760" y="221" class="small">→ view current_text</text>
+  <rect x="574" y="240" width="346" height="32" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="582" y="260" class="mono">text_link</text>
+  <text x="660" y="260" class="small">which cut files carry a text (the cut of the text's part)</text>
+
+  <!-- REPRESENTATIONS + PLACES -->
+  <rect x="10" y="172" width="200" height="108" rx="4" fill="var(--files)" opacity="0.10" stroke="var(--files)"/>
+  <text x="20" y="192" class="grp" fill="var(--files)">REPRESENTATIONS</text>
+  <rect x="20" y="204" width="180" height="66" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="28" y="222" class="mono">cut</text>
+  <text x="28" y="237" class="small">each cut file of a part: path,</text>
+  <text x="28" y="251" class="small">sha256, settings; a re-cut retires</text>
+  <text x="28" y="265" class="small">the old file into history</text>
+
+  <rect x="10" y="292" width="200" height="118" rx="4" fill="var(--things)" opacity="0.10" stroke="var(--things)"/>
+  <text x="20" y="312" class="grp" fill="var(--things)">WHERE THINGS ARE KEPT</text>
+  <rect x="20" y="324" width="180" height="44" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="28" y="342" class="mono">place</text>
+  <text x="28" y="357" class="small">chest › drawer › box › folder</text>
+  <rect x="20" y="374" width="180" height="30" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="28" y="394" class="mono">category</text>
+  <text x="110" y="394" class="small">Drawing, Document …</text>
+
+  <!-- SAFETY -->
+  <rect x="222" y="292" width="330" height="118" rx="4" fill="var(--safety)" opacity="0.10" stroke="var(--safety)"/>
+  <text x="232" y="312" class="grp" fill="var(--safety)">SAFETY AND HISTORY</text>
+  <rect x="232" y="324" width="150" height="38" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="240" y="342" class="mono">event</text>
+  <text x="240" y="356" class="small">PREMIS-style log of all</text>
+  <rect x="392" y="324" width="150" height="38" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="400" y="342" class="mono">trash</text>
+  <text x="400" y="356" class="small">what, from where, until when</text>
+  <rect x="232" y="368" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="240" y="386" class="mono">editstate</text>
+  <text x="240" y="399" class="small">studio session per file</text>
+  <rect x="392" y="368" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="400" y="386" class="mono">meta · setting</text>
+  <text x="400" y="399" class="small">schema version, library uuid</text>
+
+  <!-- SEARCH + ARCHIVE -->
+  <rect x="564" y="292" width="170" height="118" rx="4" fill="var(--text)" opacity="0.10" stroke="var(--text)"/>
+  <text x="574" y="312" class="grp" fill="var(--text)">SEARCH</text>
+  <rect x="574" y="324" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="582" y="342" class="mono">search (FTS5)</text>
+  <text x="582" y="355" class="small">title, notes, labels, text</text>
+  <rect x="574" y="368" width="150" height="36" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="582" y="386" class="mono">embedding</text>
+  <text x="582" y="399" class="small">vectors per model</text>
+
+  <rect x="746" y="292" width="184" height="118" rx="4" fill="var(--archive)" opacity="0.10" stroke="var(--archive)"/>
+  <text x="756" y="312" class="grp" fill="var(--archive)">EXCHANGE</text>
+  <rect x="756" y="324" width="164" height="80" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="764" y="342" class="mono">archive_link</text>
+  <text x="764" y="357" class="small">entity (item | text | asset | place)</text>
+  <text x="764" y="371" class="small">uuid → archive url, id there,</text>
+  <text x="764" y="385" class="small">sha256, synced_at: sending again</text>
+  <text x="764" y="399" class="small">updates instead of duplicating</text>
+
+  <!-- key relations -->
+  <line x1="338" y1="114" x2="338" y2="130" stroke="currentColor" opacity="0"/>
+  <path d="M428 101 L574 101" stroke="var(--things)" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <text x="470" y="96" class="small">region_id (1:1)</text>
+  <path d="M110 160 L110 172" stroke="var(--files)" stroke-width="1.5" fill="none" marker-end="url(#arr)" opacity="0"/>
+  <path d="M232 60 L210 60 L210 60" stroke="var(--files)" stroke-width="1.5" fill="none" marker-start="url(#arr)"/>
+  <text x="214" y="52" class="small" text-anchor="end">files</text>
+  <path d="M700 120 L700 174" stroke="var(--text)" stroke-width="1.5" fill="none" marker-end="url(#arr)"/>
+  <text x="706" y="150" class="small">region_id</text>
+  <path d="M110 204 L110 190 L220 190 L220 60" stroke="var(--files)" stroke-width="1" fill="none" stroke-dasharray="3 3"/>
+  <text x="124" y="187" class="small">cut.path = asset.path</text>
+  <path d="M200 240 L720 240 L720 234" stroke="var(--geom)" stroke-width="1" fill="none" stroke-dasharray="3 3" opacity="0"/>
+
+  <!-- footer: the rule -->
+  <rect x="10" y="424" width="920" height="122" rx="4" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="24" y="446" class="grp">ONE SOURCE</text>
+  <text x="24" y="468" class="small">Every characteristic of a part exists once. The studio sheet, the cut file (pixels, name, embedded text), the Text pane, the transcription folder,</text>
+  <text x="24" y="484" class="small">the library views and the archive record are representations of it. Change it anywhere and everything follows: re-cut, rename, metadata, trash.</text>
+  <text x="24" y="508" class="small">Parts follow their outline (bridge.parts_follow): region removed → part item trashed; back → back; label → title. Library › Check reports any drift.</text>
+  <text x="24" y="532" class="small">Only real pixels: cuts change transparency only; identical bytes are one file; nothing is overwritten, history goes to studio-data/replaced and the event log.</text>
+</svg>
+</div>
+<div class="legend"><span style="--c: var(--files)">Files and representations</span><span style="--c: var(--things)">Things and places</span><span style="--c: var(--geom)">Geometry</span><span style="--c: var(--text)">Text and search</span><span style="--c: var(--safety)">Safety</span><span style="--c: var(--archive)">Exchange with the archive</span></div>
+<figcaption>The catalog in six groups. The highlighted cell is the change of schema 2: a part is an item, with the same archival columns and rules as a scan or a document, linked one-to-one to its region.</figcaption>
+</figure>
+
+<h2>A part is an item</h2>
+<p>Until now a part was only a <code>region</code> row, and the archival facts of a part (place, number, category) sat on the geometry. Schema 2 gives every sheet region exactly one item of kind <code>part</code>. The region keeps the outline and the edits; the item keeps what the archive cares about, in the same table and under the same database rules as every other thing. A part without a place or category of its own follows its scan; a piece found on a cut follows the part the cut came from.</p>
+<div class="rules">
+  <div><b>Trashed with its outline</b>A part removed in the studio puts its item in the Trash; Undo brings it back, unless its number was taken meanwhile.</div>
+  <div><b>Titled by its label</b>The part's label is the item's title. The cut file's name is the fallback for the archive.</div>
+  <div><b>Numbered like the archive</b>Items and child places share one number sequence per place; the database refuses a second use.</div>
+  <div><b>Checked</b>Library › Check reports a part without its item, two items for one part, or an item out of step with its part.</div>
+</div>
+
+<h2>Text: part of the scan, and a thing of its own</h2>
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 940 230" role="img" aria-label="One text, stored once as readings and corrections on a region, rendered into four places: the cut file metadata, the transcription folder, the archive record's inscriptions, and an archive record of its own">
+  <defs><marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+  <rect x="20" y="70" width="230" height="90" rx="4" fill="var(--text)" opacity="0.12" stroke="var(--text)"/>
+  <text x="32" y="92" class="grp" fill="var(--text)">THE SOURCE</text>
+  <text x="32" y="112" class="mono">reading (versions) + correction</text>
+  <text x="32" y="130" class="small">on region_id: the part, an area in it, or a loose area</text>
+  <text x="32" y="146" class="small">current_text = latest correction, else the reading</text>
+  <g stroke="currentColor" stroke-width="1.2" fill="none">
+    <path d="M250 85 L420 40" marker-end="url(#arr2)"/>
+    <path d="M250 105 L420 100" marker-end="url(#arr2)"/>
+    <path d="M250 125 L420 160" marker-end="url(#arr2)"/>
+    <path d="M250 145 L420 215" marker-end="url(#arr2)"/>
+  </g>
+  <text x="300" y="56" class="small">embedded (XMP/IPTC/EXIF)</text>
+  <text x="300" y="98" class="small">written as a folder</text>
+  <text x="300" y="150" class="small">inscriptions</text>
+  <text x="300" y="190" class="small">a record of its own</text>
+  <rect x="424" y="22" width="490" height="34" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="434" y="44">The part's cut file <tspan class="small">(text_link): the text travels inside the image file</tspan></text>
+  <rect x="424" y="82" width="490" height="34" rx="3" fill="var(--card)" stroke="var(--rule)"/>
+  <text x="434" y="104">Transcriptions for nvim <tspan class="small">(Markdown or LaTeX, read-only, rewritten on change)</tspan></text>
+  <rect x="424" y="142" width="490" height="34" rx="3" fill="var(--card)" stroke="var(--archive)"/>
+  <text x="434" y="164">Archive: the part's record <tspan class="small">· inscriptions = current text</tspan></text>
+  <rect x="424" y="197" width="490" height="30" rx="3" fill="var(--card)" stroke="var(--archive)"/>
+  <text x="434" y="217">Archive: its own record <tspan class="small">· document · source_id text:&lt;region uuid&gt; · Part of the part</tspan></text>
+</svg>
+</div>
+<figcaption>Correcting the text in any view changes the rows on the left; the four representations on the right follow. The last two are chosen at export time (inside the part, a record of its own, or both).</figcaption>
+</figure>
+
+<h2>Alignment with the archive (Directus <code>records</code>)</h2>
+<div class="scroll">
+<table>
+<tr><th>Scan Studio</th><th>Archive record</th><th>Notes</th></tr>
+<tr><td>item kind=scan</td><td>category <code>scan</code>, no files</td><td>the “Part of” of its parts; originals stay in the library</td></tr>
+<tr><td>item kind=part</td><td>its category (else the scan's, else <code>drawing</code>), the cut as <code>media</code></td><td><code>source = scanstudio</code>, <code>source_id</code> = part uuid: stable across re-cuts; the cut's uuid and checksum travel with the file</td></tr>
+<tr><td>current text of the part</td><td><code>inscriptions</code>, and/or its own <code>document</code> record</td><td>chosen when exporting</td></tr>
+<tr><td>item.date (EDTF)</td><td><code>date_start</code>, <code>date_end</code>, <code>date_text</code></td><td><code>2014-05?</code> becomes start 2014-05-01 and the text as written</td></tr>
+<tr><td>region bbox × asset dpi</td><td><code>dimensions</code> “h × w cm”</td><td>rotation applied</td></tr>
+<tr><td>place (archive id known) + place_number</td><td><code>kept_in</code>, <code>number</code></td><td>first send only; the archive owns location afterwards</td></tr>
+<tr><td>provenance</td><td>private <code>notes</code></td><td>library uuid, region uuid, checksums</td></tr>
+<tr><td><code>archive_link</code></td><td>–</td><td>what went where, with which id and checksum; sending again updates <code>inscriptions</code>, <code>dimensions</code>, <code>media</code> only</td></tr>
+</table>
+</div>
+<p style="margin-top:12px">Two routes, one shape: <b>Package…</b> writes <code>records.json</code> and the cut files into a folder for the archive's importer and works with a read-only token or none. <b>Send to archive</b> posts the same records straight to Directus and needs a token allowed to create records and files.</p>
+
+<h2>Rules the database itself enforces</h2>
+<ul>
+<li>Foreign keys on, <code>STRICT</code> tables, JSON columns validated.</li>
+<li>A place cannot be inside itself; a place that still keeps things cannot be deleted.</li>
+<li>Two things in one place never share a number (items and child places together); a number needs a place; unknown categories are refused.</li>
+<li>A part item needs a sheet region and belongs to that region's item; one item per region.</li>
+<li>Managed files are named by checksum: identical bytes are one file.</li>
+</ul>
+</main>
