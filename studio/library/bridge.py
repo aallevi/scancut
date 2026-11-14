@@ -248,11 +248,13 @@ def address(lib, place_id, number=None):
 
 
 def places(lib):
-    # tutti i posti, con indirizzo e quante cose tengono (fogli che ci stanno, anche per la loro fonte)
+    # tutti i posti, con indirizzo e quante cose tengono (parti che ci stanno, anche per la loro fonte)
     out, count = [], {}
-    for (rid,) in lib.db.execute("SELECT g.id FROM region g JOIN item i ON i.id = g.item_id WHERE g.removed_at IS NULL AND g.parent_id IS NULL "
-                                 "AND g.kind = 'sheet' AND i.trashed_at IS NULL"):
-        pid = effective_place(lib, rid)[0]
+    for rid, pid, kind in lib.db.execute("SELECT g.id, COALESCE(p.place_id, i.place_id), i.kind FROM region g JOIN item i ON i.id = g.item_id "
+                                         "LEFT JOIN item p ON p.region_id = g.id WHERE g.removed_at IS NULL AND g.parent_id IS NULL "
+                                         "AND g.kind = 'sheet' AND i.trashed_at IS NULL").fetchall():
+        if not pid and kind == 'piece':
+            pid = effective_place(lib, rid)[0]           # un pezzo di un taglio senza posto suo: quello della parte d'origine
         if pid:
             count[pid] = count.get(pid, 0) + 1
     for r in lib.db.execute('SELECT p.*, 0 AS things, (SELECT uuid FROM place q WHERE q.id = p.parent_id) AS parent FROM place p ORDER BY p.parent_id IS NOT NULL, p.number, p.name'):
@@ -307,36 +309,34 @@ def resolve_address(lib, text):
 
 
 def put(lib, items=(), regions=(), place=..., number=..., category=...):
-    # mettere in un posto (con un numero) e/o dare una categoria: a fonti intere (le loro parti senza posto
-    # proprio lo seguono) o a singole parti. ... = non cambia. Ogni spostamento e' registrato.
+    # mettere in un posto (con un numero) e/o dare una categoria: a oggetti (fonti intere: le loro parti senza posto
+    # proprio le seguono; o parti, per il loro uuid) o a parti per l'uuid della loro zona. Tutto scrive sugli item:
+    # una parte E' un item. ... = non cambia. Ogni spostamento e' registrato.
     changed = 0
+    ids = []
+    for u in items:
+        r = lib.db.execute('SELECT id FROM item WHERE uuid = ?', (u,)).fetchone()
+        if r:
+            ids.append(r[0])
+    for u in regions:
+        r = lib.db.execute('SELECT id FROM region WHERE uuid = ?', (u,)).fetchone()
+        pid = lib.part_of(r[0]) if r else None
+        if pid:
+            ids.append(pid)
     with lib.db:
-        for u in items:
-            it = lib.db.execute('SELECT id, place_id, category FROM item WHERE uuid = ?', (u,)).fetchone()
-            if not it:
-                continue
-            if place is not ...:
-                new = _pid(lib, place)
-                if new != it['place_id']:
-                    lib.db.execute('UPDATE item SET place_id = ?, modified_at = ? WHERE id = ?', (new, now(), it['id']))
-                    lib.log('move', 'item', u, **{'from': (address(lib, it['place_id']) or {}).get('path'), 'to': (address(lib, new) or {}).get('path')})
-            if category is not ...:
-                lib.db.execute('UPDATE item SET category = ? WHERE id = ?', (category or None, it['id']))
-            changed += 1
-        for u in regions:
-            r = lib.db.execute('SELECT id, place_id, place_number FROM region WHERE uuid = ?', (u,)).fetchone()
-            if not r:
-                continue
-            new = _pid(lib, place) if place is not ... else r['place_id']
-            num = (int(number) if number not in (None, '') else None) if number is not ... else r['place_number']
-            if new is None:
-                num = None
-            if (new, num) != (r['place_id'], r['place_number']):
-                lib.db.execute('UPDATE region SET place_id = ?, place_number = ?, modified_at = ? WHERE id = ?', (new, num, now(), r['id']))
-                lib.log('move', 'region', u, **{'from': (address(lib, r['place_id'], r['place_number']) or {}).get('address'),
-                                                'to': (address(lib, new, num) or {}).get('address')})
-            if category is not ...:
-                lib.db.execute('UPDATE region SET category = ? WHERE id = ?', (category or None, r['id']))
+        for iid in ids:
+            it = lib.db.execute('SELECT id, uuid, place_id, place_number, category FROM item WHERE id = ?', (iid,)).fetchone()
+            new = _pid(lib, place) if place is not ... else it['place_id']
+            num = (int(number) if number not in (None, '') else None) if number is not ... else it['place_number']
+            if new is None or (new != it['place_id'] and number is ...):
+                num = None                                   # in un altro posto il numero di prima non vale: lo da' l'archivio
+            if (new, num) != (it['place_id'], it['place_number']):
+                lib.db.execute('UPDATE item SET place_id = ?, place_number = ?, modified_at = ? WHERE id = ?', (new, num, now(), it['id']))
+                lib.log('move', 'item', it['uuid'], **{'from': (address(lib, it['place_id'], it['place_number']) or {}).get('address'),
+                                                       'to': (address(lib, new, num) or {}).get('address')})
+            if category is not ... and (category or None) != it['category']:
+                lib.db.execute('UPDATE item SET category = ?, modified_at = ? WHERE id = ?', (category or None, now(), it['id']))
+                lib.log('categorize', 'item', it['uuid'], category=category or None)
             changed += 1
     return changed
 
@@ -350,8 +350,8 @@ def _origin_region(lib, region_id):
 
 def effective_place(lib, region_id, depth=0):
     # (posto, categoria) che valgono per un foglio: il suo, se no quello della sua fonte, se no quello della parte d'origine
-    r = lib.db.execute('SELECT g.place_id, g.category, i.place_id AS ip, i.category AS ic FROM region g JOIN item i ON i.id = g.item_id WHERE g.id = ?',
-                       (region_id,)).fetchone()
+    r = lib.db.execute('SELECT p.place_id, p.category, i.place_id AS ip, i.category AS ic FROM region g JOIN item i ON i.id = g.item_id '
+                       'LEFT JOIN item p ON p.region_id = g.id WHERE g.id = ?', (region_id,)).fetchone()
     if not r:
         return None, None
     pid, cat = r['place_id'] or r['ip'], r['category'] or r['ic']
@@ -365,14 +365,14 @@ def effective_place(lib, region_id, depth=0):
 
 def where_kept(lib, region_id):
     # il posto, il numero, la categoria di un foglio, con quel che eredita (dalla sua fonte, o dalla parte d'origine)
-    r = lib.db.execute('SELECT g.place_id, g.place_number, g.category, i.place_id AS ip, i.category AS ic FROM region g JOIN item i ON i.id = g.item_id '
+    r = lib.db.execute('SELECT p.uuid AS part, p.place_id, p.place_number, p.category FROM region g LEFT JOIN item p ON p.region_id = g.id '
                        'WHERE g.id = ?', (region_id,)).fetchone()
     if not r:
         return None
     pid, cat = effective_place(lib, region_id)
     a = address(lib, pid, r['place_number']) or {}
-    return {'place': lib.db.execute('SELECT uuid FROM place WHERE id = ?', (pid,)).fetchone()[0] if pid else None, 'own_place': bool(r['place_id']),
-            'number': r['place_number'], 'category': cat, 'own_category': bool(r['category']), **a}
+    return {'part': r['part'], 'place': lib.db.execute('SELECT uuid FROM place WHERE id = ?', (pid,)).fetchone()[0] if pid else None,
+            'own_place': bool(r['place_id']), 'number': r['place_number'], 'category': cat, 'own_category': bool(r['category']), **a}
 
 
 def categories(lib):
@@ -482,7 +482,7 @@ def restore(lib, uuid):
             lib.db.execute('UPDATE cut SET path = ? WHERE path = ?', (back, f['to']))
         if t['what'] == 'item':
             iid = lib.db.execute('SELECT id FROM item WHERE uuid = ?', (t['ref'],)).fetchone()[0]
-            lib.db.execute('UPDATE item SET trashed_at = NULL WHERE id = ? OR parent_id = ?', (iid, iid))
+            lib.db.execute('UPDATE item SET trashed_at = NULL WHERE id = ? OR (parent_id = ? AND (region_id IS NULL OR region_id IN (SELECT id FROM region WHERE removed_at IS NULL)))', (iid, iid))
         else:
             regs = json.loads(t['regions_off'] or '[]')
             for r in regs:
@@ -695,28 +695,43 @@ def item_list(lib, q=None, limit=500, offset=0, series=None, place=None):
         uu = [r['uuid'] for r in lib.search(q, limit=limit)]
         if not uu:
             return []
-        rows = lib.db.execute(f"SELECT * FROM item WHERE uuid IN ({','.join('?' * len(uu))})", uu).fetchall()
-        rows.sort(key=lambda r: uu.index(r['uuid']))
+        rows = lib.db.execute(f"SELECT * FROM item WHERE uuid IN ({','.join('?' * len(uu))}) AND kind != 'part'", uu).fetchall()
+        rank = {u: i for i, u in enumerate(uu)}
+        rows.sort(key=lambda r: rank[r['uuid']])
     else:
         rows = lib.db.execute("SELECT * FROM item i WHERE trashed_at IS NULL AND parent_id IS NULL AND kind != 'cut'"
                               + (' AND series_id IS NULL' if series == 'none' else ' AND series_id = (SELECT id FROM series WHERE uuid = ?)' if series else '')
                               + (_in_place_sql(lib, place_subtree(lib, place)) if place else '')
                               + ' ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
                               ((series,) if series and series != 'none' else ()) + (limit, offset)).fetchall()
+    if not rows:
+        return []
+    ids = [it['id'] for it in rows]
+    ph = ','.join('?' * len(ids))
+    # i conteggi e la miniatura di ogni oggetto in una query sola (prima: sei per riga)
+    facts = {r['id']: r for r in lib.db.execute(f'''
+        SELECT i.id, s.name AS series_name,
+          (SELECT a.id FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = i.id ORDER BY ia.role = 'edit', ia.position LIMIT 1) AS thumb_id,
+          (SELECT COUNT(*) FROM item_asset WHERE item_id = i.id) AS files,
+          (SELECT COUNT(*) FROM region WHERE item_id = i.id) AS regions,
+          (SELECT COUNT(*) FROM reading r JOIN region g ON g.id = r.region_id WHERE g.item_id = i.id) AS texts,
+          (SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.item_id = i.id AND ia.role = 'cutout' AND {LIVE}) AS cuts
+        FROM item i LEFT JOIN series s ON s.id = i.series_id WHERE i.id IN ({ph})''', ids)}
+    thumbs = {a['id']: a for a in lib.db.execute(f"SELECT * FROM asset WHERE id IN ({ph})", [facts[i]['thumb_id'] for i in ids if facts[i]['thumb_id']] or [-1])}
+    cut_thumbs = {}
+    for r in lib.db.execute(f"SELECT ia.item_id, a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id IN ({ph}) AND ia.role = 'cutout' AND {LIVE} "
+                            "ORDER BY ia.item_id, a.original_name", ids):
+        if len(cut_thumbs.setdefault(r['item_id'], [])) < 4:
+            cut_thumbs[r['item_id']].append(r)
     out = []
     for it in rows:
-        a = lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? ORDER BY ia.role = 'edit', ia.position LIMIT 1", (it['id'],)).fetchone()
-        n = lib.db.execute('SELECT (SELECT COUNT(*) FROM item_asset WHERE item_id = ?), (SELECT COUNT(*) FROM region WHERE item_id = ?),'
-                           ' (SELECT COUNT(*) FROM reading r JOIN region g ON g.id = r.region_id WHERE g.item_id = ?)', (it['id'],) * 3).fetchone()
-        sr = lib.db.execute('SELECT name FROM series WHERE id = ?', (it['series_id'],)).fetchone() if it['series_id'] else None
-        cuts = [rel_of(lib, c) for c in lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role = 'cutout' AND " + LIVE +
-                                                         " ORDER BY a.original_name LIMIT 4", (it['id'],))]
-        out.append({'uuid': it['uuid'], 'title': it['title'], 'kind': it['kind'], 'date': it['date'], 'batch': sr[0] if sr else None,
-                    'files': n[0], 'regions': n[1], 'texts': n[2], 'thumb': rel_of(lib, a) if a else None,
-                    'cut_thumbs': [c for c in cuts if c],
-                    'cuts': lib.db.execute("SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.item_id = ? AND ia.role = 'cutout' AND " + LIVE, (it['id'],)).fetchone()[0],
-                    'dpi': a['dpi'] if a else None, 'width': a['width'] if a else None, 'height': a['height'] if a else None,
-                    'added': it['created_at']})
+        f = facts[it['id']]
+        a = thumbs.get(f['thumb_id'])
+        out.append({'uuid': it['uuid'], 'title': it['title'], 'kind': it['kind'], 'date': it['date'], 'batch': f['series_name'],
+                    'files': f['files'], 'regions': f['regions'], 'texts': f['texts'], 'thumb': rel_of(lib, a) if a else None,
+                    'cut_thumbs': [c for c in (rel_of(lib, x) for x in cut_thumbs.get(it['id'], [])) if c],
+                    'cuts': f['cuts'], 'dpi': a['dpi'] if a else None, 'width': a['width'] if a else None, 'height': a['height'] if a else None,
+                    'added': it['created_at'], 'category': it['category']})
     return out
 
 
@@ -734,6 +749,8 @@ def item_detail(lib, uuid):
         g['geometry'] = json.loads(g['geometry'])
         e = lib.db.execute('SELECT path, created_at FROM cut WHERE region_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', (g['id'],)).fetchone()
         g['kept'] = where_kept(lib, g['id'])
+        p = lib.db.execute('SELECT uuid, title, date, notes FROM item WHERE region_id = ?', (g['id'],)).fetchone()
+        g['part'] = dict(p) if p else None                 # la parte come oggetto: il suo uuid e' quello dell'archivio
         g['cutout'] = None
         if e and os.path.exists(e['path']):
             p = os.path.realpath(e['path'])
@@ -742,7 +759,7 @@ def item_detail(lib, uuid):
     events = [dict(r) for r in lib.db.execute(
         "SELECT at, type, outcome, detail FROM event WHERE entity_uuid IN (SELECT uuid FROM asset WHERE id IN (SELECT asset_id FROM item_asset WHERE item_id = ?)) OR entity_uuid = ? ORDER BY at DESC LIMIT 30",
         (it['id'], it['uuid']))]
-    parts = [dict(r) for r in lib.db.execute('SELECT uuid, title FROM item WHERE parent_id = ? ORDER BY id', (it['id'],))]
+    parts = [dict(r) for r in lib.db.execute("SELECT uuid, title, kind FROM item WHERE parent_id = ? AND kind != 'part' AND trashed_at IS NULL ORDER BY id", (it['id'],))]
     sr = lib.db.execute('SELECT uuid, name FROM series WHERE id = ?', (it['series_id'],)).fetchone() if it['series_id'] else None
     pl = lib.db.execute('SELECT uuid FROM place WHERE id = ?', (it['place_id'],)).fetchone() if it['place_id'] else None
     return {'item': dict(it, batch=sr['name'] if sr else None, series_uuid=sr['uuid'] if sr else None, place=pl[0] if pl else None,
@@ -753,7 +770,8 @@ def item_detail(lib, uuid):
 def info(lib):
     q = lambda s: lib.db.execute(s).fetchone()[0]
     return {'path': lib.path, 'name': lib.meta('name'), 'uuid': lib.meta('uuid'),
-            'items': q('SELECT COUNT(*) FROM item WHERE trashed_at IS NULL'), 'files': q('SELECT COUNT(*) FROM asset'),
+            'items': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind != 'part'"), 'parts': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind = 'part'"),
+            'files': q('SELECT COUNT(*) FROM asset'),
             'texts': q('SELECT COUNT(*) FROM reading'), 'cutouts': q("SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.role = 'cutout' AND " + LIVE),
             'edits': q("SELECT COUNT(*) FROM item_asset WHERE role = 'edit'"), 'packed': core.sc.PACKED}
 
@@ -816,10 +834,6 @@ def apply_state(lib, rel, st, iid, aid):
         else:
             rid = r['id']
             if r['removed_at']:                                   # tornata (annulla): di nuovo viva
-                # il suo numero nel posto, se intanto l'ha preso un'altra cosa, non torna (la regola vince)
-                lib.db.execute("UPDATE region SET place_number = NULL WHERE id = ? AND place_number IS NOT NULL AND (EXISTS (SELECT 1 FROM region o WHERE o.id != region.id "
-                               "AND o.place_id = region.place_id AND o.place_number = region.place_number AND o.removed_at IS NULL) OR EXISTS (SELECT 1 FROM place p "
-                               "WHERE p.parent_id = region.place_id AND p.number = region.place_number))", (rid,))
                 lib.db.execute('UPDATE region SET removed_at = NULL WHERE id = ?', (rid,))
                 recut_needed = recut_needed or has_cut
             if r['rotation'] != rot:
@@ -878,6 +892,7 @@ def apply_state(lib, rel, st, iid, aid):
         if not gone:
             lib.db.execute('UPDATE region SET removed_at = ? WHERE id = ?', (now(), cid))
     lib.db.commit()
+    parts_follow(lib, aid)
     # il testo nei metadati dei tagli: dopo il salvataggio, fuori dal suo lucchetto (store.save lo chiama)
     pending = [r[0] for r in lib.db.execute('SELECT DISTINCT region_id FROM cut WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?)', (aid,))]
     if recut_needed:
@@ -888,6 +903,25 @@ def apply_state(lib, rel, st, iid, aid):
     if iid:
         lib.touched(iid)
     return pending
+
+
+def parts_follow(lib, aid):
+    # gli item delle parti di un file seguono le loro zone: una zona viva ha il suo item (creato se manca), una tolta
+    # ha l'item nel cestino, e il titolo e' l'etichetta. Un numero nel posto preso intanto da un'altra cosa non torna
+    # (la regola del posto vince). Le parti di una fonte nel cestino restano nel cestino.
+    for (rid,) in lib.db.execute("SELECT g.id FROM region g WHERE g.asset_id = ? AND g.kind = 'sheet' AND g.parent_id IS NULL "
+                                 "AND NOT EXISTS (SELECT 1 FROM item p WHERE p.region_id = g.id)", (aid,)).fetchall():
+        lib.ensure_part(rid)
+    with lib.db:
+        lib.db.execute("UPDATE item SET place_number = NULL WHERE region_id IN (SELECT id FROM region WHERE asset_id = ? AND removed_at IS NULL) "
+                       "AND trashed_at IS NOT NULL AND place_number IS NOT NULL AND (EXISTS (SELECT 1 FROM item o WHERE o.id != item.id AND o.place_id = item.place_id "
+                       "AND o.place_number = item.place_number AND o.trashed_at IS NULL) OR EXISTS (SELECT 1 FROM place p WHERE p.parent_id = item.place_id "
+                       "AND p.number = item.place_number))", (aid,))
+        lib.db.execute("UPDATE item SET trashed_at = (SELECT removed_at FROM region g WHERE g.id = item.region_id), "
+                       "title = (SELECT label FROM region g WHERE g.id = item.region_id), modified_at = ? "
+                       "WHERE region_id IN (SELECT id FROM region WHERE asset_id = ?) AND (SELECT trashed_at FROM item s WHERE s.id = item.parent_id) IS NULL "
+                       "AND (trashed_at IS NOT (SELECT removed_at FROM region g WHERE g.id = item.region_id) OR title IS NOT (SELECT label FROM region g WHERE g.id = item.region_id))",
+                       (now(), aid))
 
 
 def sync_text(lib, aid, rid, text, reader=None):
@@ -1478,9 +1512,9 @@ def _supersede(lib, path, why):
 
 def series_list(lib):
     return [dict(r) for r in lib.db.execute(
-        'SELECT s.uuid, s.name, s.notes, COUNT(i.id) AS items FROM series s LEFT JOIN item i ON i.series_id = s.id AND i.trashed_at IS NULL '
+        "SELECT s.uuid, s.name, s.notes, COUNT(i.id) AS items FROM series s LEFT JOIN item i ON i.series_id = s.id AND i.trashed_at IS NULL AND i.kind != 'part' "
         'GROUP BY s.id ORDER BY s.name COLLATE NOCASE')] + [{'uuid': None, 'name': None, 'items': lib.db.execute(
-        'SELECT COUNT(*) FROM item WHERE series_id IS NULL AND trashed_at IS NULL').fetchone()[0]}]
+        "SELECT COUNT(*) FROM item WHERE series_id IS NULL AND trashed_at IS NULL AND kind != 'part'").fetchone()[0]}]
 
 
 # ---------------------------------------------------------------- dove sta un file nella libreria
@@ -1574,6 +1608,7 @@ def check(lib, deep=False):
         if os.path.getsize(p) != a['size'] or (a['role'] == 'cutout' and sha256(p) != a['sha256']):
             add('file changed outside the library', a['original_name'], p)
     # 2) ogni parte viva gia' tagliata ha il suo taglio attuale, legato, con il testo della parte
+    text_checks = []
     for r in lib.db.execute("SELECT r.*, i.title FROM region r JOIN item i ON i.id = r.item_id WHERE r.removed_at IS NULL AND r.parent_id IS NULL "
                             "AND r.kind = 'sheet' AND i.trashed_at IS NULL AND EXISTS (SELECT 1 FROM cut WHERE region_id = r.id)").fetchall():
         c = lib.db.execute("SELECT path FROM cut WHERE region_id = ? AND path NOT LIKE '%/studio-data/replaced/%' AND path NOT LIKE '%/studio-data/trash/%' ORDER BY id DESC LIMIT 1", (r['id'],)).fetchone()
@@ -1589,9 +1624,7 @@ def check(lib, deep=False):
             add('cut not linked to its source', name, c['path'])
         want = '\n\n'.join(t['plain'] for t in region_texts(lib, r['id']) if t['plain'])
         if want and core.tool('exiftool'):
-            got = subprocess.run([core.tool('exiftool'), '-b', '-XMP-dc:Description', c['path']], capture_output=True, text=True).stdout   # -b: il valore esatto (a capo compresi)
-            if got.replace('\r', '') != want.replace('\r', ''):
-                add('cut text differs from its part', name, c['path'])
+            text_checks.append((name, c['path'], want))
         if deep:
             src = json.loads(r['source'] or '{}')
             st = core.load_state(src.get('studio_rel'), create=False) if src.get('studio_rel') else None
@@ -1605,6 +1638,16 @@ def check(lib, deep=False):
                     img = img[..., :3]                       # senza trasparenza: si confronta RGB
                 if img.shape != f.shape or img.dtype != f.dtype or not np.array_equal(img, f):
                     add('cut older than its part', name, c['path'], rel=src['studio_rel'], part=src['studio_id'])
+    for chunk in [text_checks[i:i + 200] for i in range(0, len(text_checks), 200)]:
+        # -j -b: i valori esatti (a capo compresi) di tutti i file in una volta
+        r = subprocess.run([core.tool('exiftool'), '-j', '-b', '-m', '-XMP-dc:Description', *[c[1] for c in chunk]], capture_output=True, text=True)
+        try:
+            got = {os.path.realpath(x.get('SourceFile', '')): (x.get('Description') or '') for x in json.loads(r.stdout or '[]')}
+        except ValueError:
+            got = {}
+        for name, path, want in chunk:
+            if str(got.get(os.path.realpath(path), '')).replace('\r', '') != want.replace('\r', ''):
+                add('cut text differs from its part', name, path)
     # 2b) una parte, un taglio al suo posto; un taglio di prima della libreria non legato a nessuna parte
     for it in lib.db.execute("SELECT DISTINCT i.id, i.title, a.id AS aid, a.path FROM item i JOIN item_asset ia ON ia.item_id = i.id AND ia.role = 'view' "
                              "JOIN asset a ON a.id = ia.asset_id WHERE i.trashed_at IS NULL AND EXISTS (SELECT 1 FROM region WHERE asset_id = a.id AND removed_at IS NULL)").fetchall():
@@ -1642,6 +1685,15 @@ def check(lib, deep=False):
                 if union and inter / union > 0.8:
                     nm = lambda r: r['label'] or f'part {r["position"] + 1}'
                     add('two parts on the same area', f'{rs[i][0]["title"]} › {nm(rs[i][0])} and {nm(rs[j][0])}', f'{inter / union:.0%} overlap')
+    # 2d) ogni foglio e' un item (la parte), uno solo, al passo con la zona (vivo/tolto) e con il titolo della sua etichetta
+    for r in lib.db.execute("SELECT g.label, g.position, i.title FROM region g JOIN item i ON i.id = g.item_id WHERE g.kind = 'sheet' AND g.parent_id IS NULL "
+                            "AND NOT EXISTS (SELECT 1 FROM item p WHERE p.region_id = g.id)").fetchall():
+        add('part without its item', f'{r["title"]} › {r["label"] or "part " + str(r["position"] + 1)}')
+    for r in lib.db.execute("SELECT p.uuid, p.title, s.title AS source FROM item p JOIN region g ON g.id = p.region_id JOIN item s ON s.id = p.parent_id "
+                            "WHERE s.trashed_at IS NULL AND ((p.trashed_at IS NULL) != (g.removed_at IS NULL) OR p.title IS NOT g.label OR p.parent_id != g.item_id)").fetchall():
+        add('part item out of step with its part', f'{r["source"]} › {r["title"] or "part"}', r['uuid'])
+    for r in lib.db.execute("SELECT uuid, title FROM item WHERE region_id IS NOT NULL AND kind != 'part'").fetchall():
+        add('item of a part with another kind', r['title'] or '', r['uuid'])
     # 3) niente vive piu' fuori dalla libreria
     for d in ('state', 'text'):
         dd = os.path.join(core.DATA, d)

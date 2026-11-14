@@ -1,4 +1,5 @@
--- posti e categorie (aggiunti dopo: anche migrazione in db.py)
+-- posti e categorie (aggiunti dopo: anche migrazione in db.py). Versione 2: le regole stanno sugli item
+-- (ogni parte e' un item), non piu' sulle zone.
 
 -- ------------------------------------------------------------ dove sono le cose (come l'archivio del sito)
 -- Un posto e' una cosa che ne tiene altre: cassettiera, cassetto, scatola, cartella (o un'opera che ne tiene).
@@ -37,28 +38,28 @@ END;
 CREATE TRIGGER place_number_free_i BEFORE INSERT ON place WHEN NEW.number IS NOT NULL AND NEW.parent_id IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'that number is taken in this place')
-  WHERE EXISTS (SELECT 1 FROM region WHERE place_id = NEW.parent_id AND place_number = NEW.number AND removed_at IS NULL);
+  WHERE EXISTS (SELECT 1 FROM item WHERE place_id = NEW.parent_id AND place_number = NEW.number AND trashed_at IS NULL);
 END;
 CREATE TRIGGER place_number_free_u BEFORE UPDATE OF number, parent_id ON place WHEN NEW.number IS NOT NULL AND NEW.parent_id IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'that number is taken in this place')
-  WHERE EXISTS (SELECT 1 FROM region WHERE place_id = NEW.parent_id AND place_number = NEW.number AND removed_at IS NULL);
+  WHERE EXISTS (SELECT 1 FROM item WHERE place_id = NEW.parent_id AND place_number = NEW.number AND trashed_at IS NULL);
 END;
-CREATE TRIGGER region_place_i BEFORE INSERT ON region WHEN NEW.place_number IS NOT NULL
+CREATE TRIGGER item_place_i BEFORE INSERT ON item WHEN NEW.place_number IS NOT NULL AND NEW.trashed_at IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'a number needs a place') WHERE NEW.place_id IS NULL;
   SELECT RAISE(ABORT, 'that number is taken in this place')
-  WHERE EXISTS (SELECT 1 FROM region WHERE place_id = NEW.place_id AND place_number = NEW.place_number AND removed_at IS NULL)
+  WHERE EXISTS (SELECT 1 FROM item WHERE place_id = NEW.place_id AND place_number = NEW.place_number AND trashed_at IS NULL)
      OR EXISTS (SELECT 1 FROM place WHERE parent_id = NEW.place_id AND number = NEW.place_number);
 END;
-CREATE TRIGGER region_place_u BEFORE UPDATE OF place_id, place_number, removed_at ON region WHEN NEW.place_number IS NOT NULL AND NEW.removed_at IS NULL
+CREATE TRIGGER item_place_u BEFORE UPDATE OF place_id, place_number, trashed_at ON item WHEN NEW.place_number IS NOT NULL AND NEW.trashed_at IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'a number needs a place') WHERE NEW.place_id IS NULL;
   SELECT RAISE(ABORT, 'that number is taken in this place')
-  WHERE EXISTS (SELECT 1 FROM region WHERE id != NEW.id AND place_id = NEW.place_id AND place_number = NEW.place_number AND removed_at IS NULL)
+  WHERE EXISTS (SELECT 1 FROM item WHERE id != NEW.id AND place_id = NEW.place_id AND place_number = NEW.place_number AND trashed_at IS NULL)
      OR EXISTS (SELECT 1 FROM place WHERE parent_id = NEW.place_id AND number = NEW.place_number);
 END;
-CREATE TRIGGER region_category BEFORE UPDATE OF category ON region WHEN NEW.category IS NOT NULL
+CREATE TRIGGER item_category_i BEFORE INSERT ON item WHEN NEW.category IS NOT NULL
 BEGIN
   SELECT RAISE(ABORT, 'unknown category') WHERE NOT EXISTS (SELECT 1 FROM category WHERE key = NEW.category);
 END;
@@ -66,9 +67,14 @@ CREATE TRIGGER item_category BEFORE UPDATE OF category ON item WHEN NEW.category
 BEGIN
   SELECT RAISE(ABORT, 'unknown category') WHERE NOT EXISTS (SELECT 1 FROM category WHERE key = NEW.category);
 END;
+-- una parte e' di una zona foglio viva o tolta, mai di un'area di testo; e il suo oggetto e' la fonte della zona
+CREATE TRIGGER item_part_i BEFORE INSERT ON item WHEN NEW.region_id IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'a part item needs a sheet region') WHERE NOT EXISTS (SELECT 1 FROM region WHERE id = NEW.region_id AND kind = 'sheet' AND parent_id IS NULL);
+  SELECT RAISE(ABORT, 'a part item belongs to the item of its region') WHERE NEW.parent_id IS NOT (SELECT item_id FROM region WHERE id = NEW.region_id);
+END;
 CREATE TRIGGER place_keeps BEFORE DELETE ON place
 BEGIN
   SELECT RAISE(ABORT, 'this place still keeps things: move them first')
-  WHERE EXISTS (SELECT 1 FROM place WHERE parent_id = OLD.id) OR EXISTS (SELECT 1 FROM region WHERE place_id = OLD.id AND removed_at IS NULL)
-     OR EXISTS (SELECT 1 FROM item WHERE place_id = OLD.id AND trashed_at IS NULL);
+  WHERE EXISTS (SELECT 1 FROM place WHERE parent_id = OLD.id) OR EXISTS (SELECT 1 FROM item WHERE place_id = OLD.id AND trashed_at IS NULL);
 END;

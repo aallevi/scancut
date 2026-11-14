@@ -47,34 +47,42 @@ CREATE TABLE series (
 ) STRICT;
 
 -- ------------------------------------------------------------ oggetti dell'archivio
--- Un item e' la cosa che si archivia: una scansione, una foto, un quaderno, un documento.
+-- Un item e' la cosa che si archivia: una scansione, una foto, un quaderno, un documento, UNA PARTE.
+-- Ogni parte (foglio ritagliato) e' un item a pieno titolo (kind 'part', parent_id la fonte, region_id la sua
+-- zona): ha posto, numero, categoria, etichette, raccolte e cestino come qualsiasi altro oggetto. La zona
+-- (region) tiene solo la geometria. Le cose dell'archivio (posto, numero, categoria) stanno qui e solo qui.
 CREATE TABLE item (
   id          INTEGER PRIMARY KEY,
   uuid        TEXT NOT NULL UNIQUE,
-  kind        TEXT NOT NULL DEFAULT 'scan',         -- scan | photo | document | object | ...
-  parent_id   INTEGER REFERENCES item(id) ON DELETE CASCADE,   -- parti: un quaderno e le sue pagine, un oggetto e i suoi pezzi
+  kind        TEXT NOT NULL DEFAULT 'scan',         -- scan | part | piece | cut | file | photo | document | object | ...
+  parent_id   INTEGER REFERENCES item(id) ON DELETE CASCADE,   -- parti: una scansione e i suoi fogli, un quaderno e le sue pagine
+  region_id   INTEGER REFERENCES region(id) ON DELETE CASCADE,  -- una parte: la zona (foglio) che rappresenta; una sola per zona
   title       TEXT,
   date        TEXT,                                 -- EDTF: quando e' stato fatto l'oggetto
   series_id   INTEGER REFERENCES series(id) ON DELETE SET NULL,   -- la serie (NULL: in nessuna)
   notes       TEXT,
   created_at  TEXT NOT NULL,
   modified_at TEXT NOT NULL,
-  trashed_at  TEXT,                                 -- nel cestino della libreria (mai cancellato subito)
-  place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove stanno le sue parti, se non lo dicono loro
-  category    TEXT
+  trashed_at  TEXT,                                 -- nel cestino della libreria (mai cancellato subito); una parte tolta: lo stesso
+  place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove sta (una parte senza posto proprio segue la fonte)
+  place_number INTEGER,                             -- il suo numero li' (vuoto: lo da' l'archivio)
+  category    TEXT                                  -- categoria dell'archivio (una parte senza: quella della fonte)
 ) STRICT;
 CREATE INDEX item_date ON item(trashed_at, date, created_at);
 CREATE INDEX item_series ON item(series_id);
 CREATE INDEX item_parent ON item(parent_id);
+CREATE UNIQUE INDEX item_region ON item(region_id) WHERE region_id IS NOT NULL;
+CREATE INDEX item_place ON item(place_id, place_number);
 
 CREATE TABLE item_asset (                -- pagine: fronte, retro, dettagli, piu' scansioni dello stesso oggetto
   item_id  INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
   asset_id INTEGER NOT NULL REFERENCES asset(id) ON DELETE RESTRICT,
-  role     TEXT NOT NULL DEFAULT 'view',            -- view | front | back | detail | edit (copia ritoccata)
+  role     TEXT NOT NULL DEFAULT 'view',            -- view | front | back | detail | edit (copia ritoccata) | cutout (taglio)
   position INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (item_id, asset_id)
 ) STRICT;
 CREATE INDEX item_asset_asset ON item_asset(asset_id);
+CREATE INDEX item_asset_role ON item_asset(item_id, role, position);
 
 -- ------------------------------------------------------------ zone: fogli, aree di testo, figure
 -- Una zona e' una selezione su un asset: il foglio ritagliato, un'area di scrittura, una figura.
@@ -96,13 +104,11 @@ CREATE TABLE region (
   color       TEXT,                                 -- il colore della selezione (vista testo, export)
   created_at  TEXT NOT NULL,
   modified_at TEXT NOT NULL,
-  removed_at  TEXT,                                 -- tolta nello studio: non si vede piu', resta nella storia
-  place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove sta questo foglio (vuoto: quello della sua fonte)
-  place_number INTEGER,                             -- il suo numero li' (vuoto: lo da' l'archivio)
-  category    TEXT                                  -- categoria dell'archivio (vuoto: quella della sua fonte)
+  removed_at  TEXT                                  -- tolta nello studio: non si vede piu', resta nella storia
 ) STRICT;
 CREATE INDEX region_item ON region(item_id, position);
 CREATE INDEX region_asset ON region(asset_id, removed_at, position);
+CREATE INDEX region_live ON region(kind, parent_id, removed_at, asset_id);
 
 -- la sessione di lavoro su un file nello studio: versione (per chi salva insieme), motore e impostazioni
 -- dell'ultimo rilevamento, quando e' stato tagliato, le versioni di prima delle parti (Earlier)
@@ -212,8 +218,22 @@ CREATE TABLE cut (
   created_at  TEXT NOT NULL
 ) STRICT;
 CREATE INDEX cut_item ON cut(item_id);
-CREATE INDEX cut_region ON cut(region_id);
-CREATE INDEX cut_path ON cut(path);
+CREATE INDEX cut_region ON cut(region_id, id);
+CREATE INDEX cut_path ON cut(path, id);
+
+-- ------------------------------------------------------------ l'archivio (il sito, Directus)
+-- Cosa e' gia' stato mandato all'archivio e con quale id la': oggetti, parti, testi, file. Una riga per cosa;
+-- il checksum dice se il file la' e' quello di adesso. L'archivio non scrive mai qui: e' una vista di quel che sa.
+CREATE TABLE archive_link (
+  entity      TEXT NOT NULL CHECK (entity IN ('item', 'text', 'asset', 'place')),
+  uuid        TEXT NOT NULL,                        -- uuid dell'oggetto/parte, della zona del testo, del file, del posto
+  archive     TEXT NOT NULL,                        -- l'archivio (url di base): si puo' avere piu' di un archivio
+  archive_id  TEXT NOT NULL,                        -- l'id del record (o del file) la'
+  sha256      TEXT,                                 -- per i file: quale versione e' la'
+  synced_at   TEXT NOT NULL,
+  PRIMARY KEY (entity, uuid, archive)
+) STRICT;
+CREATE INDEX archive_link_id ON archive_link(archive, archive_id);
 
 -- come e' arrivato un file: lo scanner (con le sue impostazioni), trascinato nella finestra, l'inbox.
 -- Si scrive appena il file esiste (per checksum); si lega al suo asset quando e' fra le fonti.

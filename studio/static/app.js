@@ -530,6 +530,7 @@ function sideLibrary(side) {
     h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens here; ⌘-click: in a new tab', onclick: e => libOpen(it.uuid, e) }, 'Open'),
       h('button', { class: 'btn', title: 'The source and its cuts go to the library’s Trash', onclick: () => libTrash({ items: [it.uuid] }, `“${it.title}” and its cuts`) }, 'Move to Trash'))),
     keptGroup(d),
+    archiveGroup(d),
     (() => { const cuts = d.assets.filter(a => a.role === 'cutout'); return group(`Cuts (${cuts.length})`, cuts.length ? h('div', { class: 'libcuts' }, ...cuts.map(a => a.rel ? h('img', { title: a.original_name + ' · click: open · ⌘-click: new tab', src: `/api/thumb?${qs({ rel: a.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss() }, onclick: e => openLoc('scan:' + a.rel, e) }) : null))
       : h('div', { class: 'small muted' }, 'Not cut yet: open it, find the parts, Cut.')); })(),
     group(`Source and other files (${d.assets.filter(a => a.role !== 'cutout').length})`, ...d.assets.filter(a => a.role !== 'cutout').map(a => h('div', { class: 'libasset' },
@@ -623,6 +624,44 @@ function keptGroup(d) {
             onchange: e => libPut({ regions: [g.uuid], place: k.place, number: e.target.value || null }) })),
         h('div', { class: 'row' }, catSelect(k.own_category ? k.category : null, v => libPut({ regions: [g.uuid], category: v }), it.category ? `Same as the source (${catName(it.category)})` : 'No category')));
     }));
+}
+
+// il gruppo "Archive" di una fonte: ogni parte e' un record dell'archivio (il sito), con il suo testo; la fonte
+// e' il record di cui le parti sono "Part of". Mandare due volte aggiorna solo testo, misure e file del taglio.
+function archiveGroup(d) {
+  const it = d.item, parts = d.regions.filter(g => g.part);
+  const box = h('div', { class: 'small muted' }, 'Looking…');
+  const sel = h('select', { class: 'f', title: 'How the transcribed texts travel' },
+    h('option', { value: 'inline' }, 'Text inside each part (Inscriptions)'),
+    h('option', { value: 'both' }, 'Inside each part, and a record of its own too'),
+    h('option', { value: 'records' }, 'A record of its own per text only'));
+  sel.value = store('archivetexts') || 'inline';
+  sel.onchange = () => store('archivetexts', sel.value);
+  const run = async body => {
+    status('Preparing for the archive…', true);
+    const r = await api.post('library/archive', { items: [it.uuid], texts: sel.value, ...body }).catch(e => ({ error: e.message }));
+    if (r.error) return status(r.error);
+    status(`Archive job started (${r.id}): see Jobs`); pollJobs?.();
+  };
+  const pack = async () => {
+    const r = await api.post('choose_folder', { prompt: 'Write the archive package into' });
+    if (r.dir) run({ dir: r.dir });
+  };
+  (async () => {
+    const a = await api.get('library/archive', { uuids: [it.uuid, ...parts.map(g => g.part.uuid)].join(',') }).catch(() => null);
+    box.innerHTML = '';
+    if (!a) return box.append('The archive is not reachable.');
+    const sent = a.sent || {}, n = parts.filter(g => sent[g.part.uuid]).length;
+    box.append(h('div', {}, `${parts.length} part(s) as records${sent[it.uuid] ? ', source sent' : ''}; ${n} already in the archive.`),
+      a.url ? h('div', { class: 'small muted' }, `${a.url}${a.has_token ? '' : ' · no token in the Keychain yet (Library menu › Archive site)'}`) : h('div', { class: 'small muted' }, 'No archive connected yet (Library menu › Archive site). A package works without one.'),
+      ...parts.map((g, i) => h('div', { class: 'small', style: { borderLeft: `3px solid ${g.color || COLORS[i % COLORS.length]}`, paddingLeft: '6px', margin: '2px 0' } },
+        h('b', {}, g.label || `Part ${i + 1}`), h('span', { class: 'muted' }, sent[g.part.uuid] ? ` · in the archive since ${new Date(sent[g.part.uuid].at).toLocaleDateString()}` : ' · not sent yet'))),
+      h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'Texts'), sel),
+      h('div', { class: 'btns' },
+        h('button', { class: 'btn small default', disabled: !(a.url && a.has_token), title: 'Each part becomes a draft record on the site (Directus); the source is their “Part of”. Sent again: only text, size and the cut file change. Needs a token allowed to create records and files.', onclick: () => run({}) }, 'Send to archive'),
+        h('button', { class: 'btn small', title: 'A folder with records.json and the cut files, for the archive’s importer', onclick: pack }, 'Package…')));
+  })();
+  return group('Archive', box);
 }
 
 // ------------------------------------------------------------ ricerca

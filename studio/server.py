@@ -7,7 +7,7 @@ import numpy as np, cv2
 from PIL import Image
 
 from . import core, scanner, readers, help as helpdocs
-from .library import bridge
+from .library import bridge, records
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
 PORT = 8765
@@ -365,6 +365,22 @@ class Jobs:
                 say(f'{x["status"]}: {core.relpath(x["path"])}')
             j['done'] += 1
 
+    def do_archive(self, j, say):
+        # per l'archivio (il sito): un pacchetto in una cartella, o l'invio diretto a Directus (gettone dal portachiavi)
+        a = j['args']
+        lib = bridge.library(create=False)
+        recs = records.build(lib, a.get('items'), a.get('regions'), a.get('texts') or 'inline', sources=a.get('sources', True))
+        j['total'] = max(1, len(recs))
+        say(f'{len(recs)} record(s) to send')
+        if a.get('dir'):
+            j['result'] = records.package(lib, a['dir'], recs, log=say)
+            j['done'] = j['total']
+        else:
+            def prog(i, n, title):
+                j['done'], j['current'] = i, title
+            j['result'] = records.push(lib, recs, log=say, progress=prog)
+            j['done'] = j['total']
+
     def do_claude(self, j, say):
         # Claude Code senza finestra, nella cartella del progetto (legge CLAUDE.md e STUDIO.md)
         a = j['args']
@@ -444,6 +460,31 @@ def next_scan_name(batch):
                     used.append(n)
     return os.path.join(core.scanning_dir(), f'{batch} {max(used) + 1}.tif')
 LAST_SEEN = [0.0]       # ultima richiesta dalla finestra (per chiudersi quando non c'e' piu')
+MAX_JSON = 64 << 20      # un corpo JSON piu' grande di 64 MB non e' dello studio
+MAX_UPLOAD = 16 << 30    # un file trascinato: fino a 16 GB (TIFF a 16 bit di un A3 a 1200 dpi ci sta comodo)
+# cosa la pagina puo' caricare: solo da questo server; niente script in linea (un testo letto da una scansione
+# che contenesse HTML non puo' far girare nulla), niente cornici da fuori
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+       "connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
+SYSTEM_DIRS = ('/System', '/usr', '/bin', '/sbin', '/etc', '/private/etc', '/private/var', '/var', '/Library', '/Applications', '/opt', '/dev', '/cores')
+
+
+def safe_dest(d):
+    # una cartella scelta dall'utente dove scrivere copie (esportazione, diario): assoluta, non di sistema,
+    # non dentro la libreria, l'inbox, le fonti o i tagli (l'agente e la libreria li registrerebbero)
+    if not d or not isinstance(d, str):
+        raise ValueError('no folder chosen')
+    d = os.path.realpath(os.path.expanduser(d))
+    if not os.path.isabs(d) or d == '/':
+        raise ValueError('choose a folder of your own')
+    for top in SYSTEM_DIRS:
+        if d == top or d.startswith(top + os.sep):
+            raise ValueError(f'{d}: a system folder; choose one of your own')
+    for top in [bridge.library_path(), core.DATA] + [core.abspath(x) for x in ('inbox', 'originals', 'cut', 'failed')]:
+        top = os.path.realpath(top)
+        if d == top or d.startswith(top + os.sep):
+            raise ValueError(f'{d}: inside the scans folder; the library would register the copies. Choose a folder outside')
+    return d
 
 
 # ---------------------------------------------------------------- HTTP
@@ -457,21 +498,39 @@ class Handler(BaseHTTPRequestHandler):
     def guard(self):
         if not self.path.startswith('/api/ping'):     # il Dock chiede se c'e' una finestra: non conta
             LAST_SEEN[0] = time.time()
-        # niente richieste da altri siti: host locale, e per le POST un'intestazione propria
+        # niente richieste da altri siti: host locale (contro il DNS rebinding), origine propria se dichiarata
+        # (contro una pagina qualsiasi aperta nel browser che chiamasse questo server), e per le POST
+        # un'intestazione propria (che una pagina d'altri non puo' aggiungere senza il permesso CORS, mai dato)
         host = (self.headers.get('Host') or '').split(':')[0]
-        if host not in ('127.0.0.1', 'localhost'):
+        if host not in ('127.0.0.1', 'localhost', '[::1]'):
+            self.send_error(403); return False
+        origin = self.headers.get('Origin')
+        if origin and origin.split('//', 1)[-1].split(':')[0] not in ('127.0.0.1', 'localhost', '[::1]'):
+            self.send_error(403); return False
+        site = self.headers.get('Sec-Fetch-Site')
+        if site and site not in ('same-origin', 'none'):
             self.send_error(403); return False
         if self.command == 'POST' and self.headers.get('X-Studio') != '1':
             self.send_error(403); return False
         return True
 
-    def send(self, body, ctype='application/json', code=200, cache=False):
+    def do_OPTIONS(self):
+        self.send_error(405)                          # niente CORS: nessun'altra origine ottiene il permesso
+
+    def send(self, body, ctype='application/json', code=200, cache=False, etag=None):
         if not isinstance(body, (bytes, bytearray)):
             body = json.dumps(body).encode()
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'max-age=86400' if cache else 'no-store')
+        self.send_header('Cache-Control', 'max-age=86400' if cache else 'no-cache' if etag else 'no-store')
+        if etag:
+            self.send_header('ETag', etag)
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        if ctype.startswith('text/html'):
+            self.send_header('Content-Security-Policy', CSP)
+            self.send_header('X-Frame-Options', 'DENY')
         self.end_headers()
         self.wfile.write(body)
 
@@ -488,12 +547,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path.startswith('/api/'):
                 return self.api_get(u.path[5:], q)
-            f = os.path.normpath(os.path.join(STATIC, u.path.lstrip('/') or 'index.html'))
-            if not f.startswith(STATIC) or not os.path.isfile(f):
+            f = os.path.realpath(os.path.join(STATIC, urllib.parse.unquote(u.path).lstrip('/') or 'index.html'))
+            if not f.startswith(STATIC + os.sep) or not os.path.isfile(f) or os.path.basename(f).startswith('.'):
                 return self.send_error(404)
             ct = {'.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
                   '.svg': 'image/svg+xml', '.png': 'image/png'}.get(os.path.splitext(f)[1], 'application/octet-stream')
-            self.send(open(f, 'rb').read(), ct)
+            st = os.stat(f)
+            tag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+            if self.headers.get('If-None-Match') == tag:
+                self.send_response(304); self.send_header('ETag', tag); self.send_header('Cache-Control', 'no-cache'); self.end_headers(); return
+            with open(f, 'rb') as fh:
+                self.send(fh.read(), ct, etag=tag)
         except Exception as e:
             traceback.print_exc()
             self.send({'error': f'{type(e).__name__}: {e}'}, code=500)
@@ -502,11 +566,22 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         u = urllib.parse.urlparse(self.path)
-        n = int(self.headers.get('Content-Length') or 0)
+        try:
+            n = int(self.headers.get('Content-Length') or 0)
+            if n < 0:
+                raise ValueError('bad length')
+        except ValueError:
+            return self.send({'error': 'bad Content-Length'}, code=400)
         try:
             if u.path == '/api/add_file':
+                if n > MAX_UPLOAD:
+                    return self.send({'error': 'file too large'}, code=413)
                 return self.add_file(urllib.parse.parse_qs(u.query), n)
+            if n > MAX_JSON:
+                return self.send({'error': 'request too large'}, code=413)
             body = json.loads(self.rfile.read(n) or b'{}')
+            if not isinstance(body, dict):
+                return self.send({'error': 'the body must be a JSON object'}, code=400)
             return self.api_post(u.path[5:], body)
         except core.Busy as e:
             self.send({'error': str(e)}, code=409)
@@ -650,6 +725,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(bridge.texts_for_rel(lib, rel) if lib else [])
         if path == 'library/editors':
             return self.send(bridge.editors())
+        if path == 'library/archive':
+            # l'archivio: indirizzo, se c'e' un gettone (mai il gettone), e cosa e' gia' la' per gli uuid chiesti
+            lib = bridge.library(create=False)
+            url = records.archive_url()
+            uu = [u for u in (q.get('uuids') or '').split(',') if u]
+            return self.send({'url': url, 'has_token': bool(url and records.token_get(url)), 'sent': records.status(lib, uu) if lib else {}})
+        if path == 'library/archive/preview':
+            # i record come andrebbero all'archivio, senza mandare nulla
+            lib = bridge.library(create=False)
+            items = [u for u in (q.get('items') or '').split(',') if u] or None
+            recs = records.build(lib, items, None, q.get('texts') or 'inline', sources=q.get('sources') != '0') if lib else []
+            return self.send([{k: v for k, v in r.items() if k != 'files'} | {'files': [f['name'] for f in r['files']]} for r in recs])
         if path == 'read_cached':
             return self.send({'text': core.read_cached(rel)})
         if path == 'help':
@@ -789,13 +876,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/empty':
             return self.send({'gone': bridge.empty_trash(bridge.library(), None, b.get('uuids') or None)})
         if path == 'library/export':
-            r = bridge.export_cuts(bridge.library(), b['dir'], b.get('structure') or 'place', b.get('series') or None, b.get('place') or None, b.get('cuts') or None)
+            try:
+                dest = safe_dest(b.get('dir'))
+            except ValueError as e:
+                return self.send({'error': str(e)}, code=400)
+            r = bridge.export_cuts(bridge.library(), dest, b.get('structure') or 'place', b.get('series') or None, b.get('place') or None, b.get('cuts') or None)
             if b.get('reveal'):
                 subprocess.run(['open', r['dir']])
             return self.send(r)
         if path == 'choose_folder':
-            # la finestra del Mac per scegliere una cartella
-            r = subprocess.run(['osascript', '-e', f'POSIX path of (choose folder with prompt "{b.get("prompt") or "Choose a folder"}")'], capture_output=True, text=True)
+            # la finestra del Mac per scegliere una cartella; il testo passa come argomento, mai dentro lo script
+            prompt = str(b.get('prompt') or 'Choose a folder')[:200]
+            r = subprocess.run(['osascript', '-e', 'on run argv', '-e', 'POSIX path of (choose folder with prompt (item 1 of argv))', '-e', 'end run', prompt],
+                               capture_output=True, text=True)
             return self.send({'dir': r.stdout.strip().rstrip('/') or None})
         if path == 'library/place':
             # un posto nuovo o cambiato (nome, dentro quale, numero) o tolto; le regole le tiene il database
@@ -830,19 +923,40 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/journal':
             lib = bridge.library(create=False)
             if b.get('dir'):
-                bridge.set_journal_dir(lib, b['dir'])
+                try:
+                    bridge.set_journal_dir(lib, safe_dest(b['dir']))
+                except ValueError as e:
+                    return self.send({'error': str(e)}, code=400)
             r = bridge.write_journal(lib)
             if r and r['dir'].startswith(core.ROOT):
                 r['rel'] = core.relpath(r['dir'])
             if r and b.get('reveal'):
                 subprocess.run(['open', r['dir']])
             return self.send(r or {'error': 'no folder chosen'})
+        if path == 'library/archive':
+            # un lavoro: pacchetto in una cartella (dir) o invio diretto
+            lib = bridge.library(create=False)
+            if not lib:
+                return self.send({'error': 'no library'}, code=404)
+            args = {k: b.get(k) for k in ('items', 'regions', 'texts') if b.get(k) is not None}
+            if 'sources' in b:
+                args['sources'] = bool(b['sources'])
+            if b.get('dir'):
+                try:
+                    args['dir'] = safe_dest(b['dir'])
+                except ValueError as e:
+                    return self.send({'error': str(e)}, code=400)
+            elif not records.archive_url():
+                return self.send({'error': 'no archive address: set it in Settings › Archive'}, code=400)
+            return self.send(JOBS.public(JOBS.add('archive', **args)))
         if path == 'library/correct':
             lib = bridge.library(create=False)
             bridge.correct_text(lib, int(b['reading']), str(b['text']))
             return self.send({'ok': True})
         if path == 'library/edit_in':
             lib = bridge.library(create=False)
+            if b.get('app') not in bridge.editors():        # solo le app per immagini che ci sono (mai un nome qualsiasi)
+                return self.send({'error': f'{b.get("app")}: not one of the editors found on this Mac'}, code=400)
             with JOBS.track('edit_in', rel=None, engine=None) as j:
                 work = bridge.edit_in(lib, b['asset'], b['app'])
                 j['current'] = os.path.basename(work)
@@ -882,7 +996,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(core.save_settings(b))
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install'):
+            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install', 'archive'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':

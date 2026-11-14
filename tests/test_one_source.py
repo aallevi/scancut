@@ -444,7 +444,7 @@ class CodeAudit(unittest.TestCase):
         keys = set(re.findall(r"\bstore\('([\w.-]+)'", js))
         # le sole preferenze dell'interfaccia (larghezze, sfondo, lente, pannelli, schede aperte, ordine e filtri)
         prefs = {'navw', 'sidew', 'bg', 'loupe', 'loupez', 'densshut', 'densr', 'tabs', 'textpane', 'shut', 'exportdir', 'navhide', 'sidehide', 'textview',
-                 'libmode', 'libsort', 'libdpi', 'libhideempty', 'jobsseen'}
+                 'libmode', 'libsort', 'libdpi', 'libhideempty', 'jobsseen', 'archivetexts'}
         self.assertTrue(keys <= prefs, f'browser storage used for something that is not a preference: {sorted(keys - prefs)}')
         self.assertNotIn('boxTexts', js, 'text kept only in the window is back')
         self.assertNotIn('localStorage.setItem(', js.replace("localStorage.setItem('studio.' + k, v)", ''), 'direct browser storage outside store()')

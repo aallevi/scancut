@@ -102,6 +102,7 @@ From a terminal, without the window:
 
 - [STUDIO.md](STUDIO.md): engines, how edits are stored, the local API, testing.
 - [docs/LIBRARY.md](docs/LIBRARY.md): the library: what it stores, the one-source rule, files inside.
+- [docs/DATABASE.md](docs/DATABASE.md): the database map: tables, parts as items, texts, the archive (Directus) alignment.
 - [CLAUDE.md](CLAUDE.md): how the automatic cut works, step by step, and the rules it keeps.
 
 ## Licence

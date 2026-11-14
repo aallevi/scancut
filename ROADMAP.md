@@ -48,6 +48,16 @@ time left, Cancel that parks the head, Space and timed sessions, each page filed
 scans" job). **First start on an existing folder:** old state migrated, old cuts linked to their parts
 by their pixels.
 
+**Schema 2 (0.11):** every part is an item of its own (`item.kind = 'part'`, one per sheet region), at the
+same level as scans and documents: place, number, category, tags, collections and Trash live on items only,
+with the rules in the database; parts follow their outline (removed → trashed, back → back, label → title).
+Records for the archive (`studio/library/records.py`): scan, parts (cut file, text as Inscriptions) and,
+when wanted, each text as a record of its own, "Part of" its part; as a package (`records.json` + files) or
+sent to Directus by stable ids (`source_id` = part uuid), updating instead of duplicating; `archive_link`
+remembers what went where. Server hardened (origin and host checks, no CORS, CSP, size limits, destination
+and app checks, AppleScript argument passing), lists in three queries, Check reads cut texts in one exiftool
+call. docs/DATABASE.md is the map. Bench: `tools/bench_library.py`.
+
 ## Next (library)
 
 1. **Cuts at the centre:** series and objects feature their cuts; the original shown as "source".

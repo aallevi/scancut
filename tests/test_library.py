@@ -416,7 +416,7 @@ class BridgeTest(unittest.TestCase):
         chest = bridge.save_place(lib, name='Chest', number=1)
         box = bridge.save_place(lib, name='Box 24', parent=chest, number=24)
         folder = bridge.save_place(lib, name='Folder 5', parent=box, number=5)
-        it = lib.db.execute('SELECT uuid FROM item').fetchone()[0]
+        it = lib.db.execute("SELECT uuid FROM item WHERE kind = 'scan'").fetchone()[0]
         regs = [r[0] for r in lib.db.execute("SELECT uuid FROM region WHERE kind = 'sheet' AND removed_at IS NULL AND parent_id IS NULL ORDER BY position")]
         bridge.put(lib, items=[it], place=folder, category='drawing')
         rid = lib.db.execute('SELECT id FROM region WHERE uuid = ?', (regs[0],)).fetchone()[0]
