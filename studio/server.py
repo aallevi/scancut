@@ -276,6 +276,7 @@ class Jobs:
             j['current'] = names.get(sid, sid)
             t = core.ocr_sheets(a['rel'], [sid]).get(sid)
             if t is not None:
+                bridge.on_read_sheet(a['rel'], sid, t)      # una lettura sua, con il nome del lettore: le altre restano
                 j['result'][sid] = t
             say(f'{names.get(sid, sid)}: ' + (f'{len(t.splitlines())} line(s)' if t else 'no text'))
             j['done'] += 1
@@ -622,6 +623,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/items':
             lib = bridge.library(create=False)
             return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None, place=q.get('place') or None) if lib else [])
+        if path == 'library/readings':
+            lib = bridge.library(create=False)
+            return self.send(bridge.readings(lib, q.get('rel'), q.get('id')) if lib else [])
         if path == 'library/journal':
             lib = bridge.library(create=False)
             return self.send({'dir': bridge.journal_dir(lib) if lib else None, 'format': bridge.journal_format(lib) if lib else 'md'})
@@ -798,6 +802,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'ok': bridge.restore(bridge.library(), b['uuid'])})
         if path == 'library/empty':
             return self.send({'gone': bridge.empty_trash(bridge.library(), None, b.get('uuids') or None)})
+        if path == 'library/use_reading':
+            try:
+                return self.send({'text': bridge.use_reading(bridge.library(), b.get('uuid'))})
+            except ValueError as e:
+                return self.send({'error': str(e)})
         if path == 'library/strays':
             return self.send({'trashed': bridge.retire_strays(bridge.library(), b.get('uuids'))})
         if path == 'library/export':
@@ -875,7 +884,10 @@ class Handler(BaseHTTPRequestHandler):
             os.replace(out + '.part', out)
             return self.send({'path': core.relpath(out) if out.startswith(core.ROOT) else out})
         if path == 'ocr_sheets':
-            return self.send(core.ocr_sheets(rel, b.get('ids') or []))
+            r = core.ocr_sheets(rel, b.get('ids') or [])
+            for sid, t in r.items():
+                bridge.on_read_sheet(rel, sid, t)
+            return self.send(r)
         if path == 'checked':
             return self.send({'done': core.mark_checked(b.get('rels') or [])})
         if path == 'sam_unload':

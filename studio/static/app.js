@@ -452,10 +452,10 @@ function libOpen(uuid, e) {
   const a = d?.assets.find(x => x.rel) || null;
   if (a) openLoc('scan:' + a.rel, e); else libSelect(uuid);
 }
-async function libCheck(deep) {
+async function libCheck(deep, before) {
   status(deep ? 'Checking everything, pixels included…' : 'Checking…', true);
   const p = await api.get('library/check', deep ? { deep: 1 } : {}).catch(e => [{ kind: 'error', what: e.message, detail: '' }]);
-  status(p.length ? `${p.length} problem(s) found` : 'Everything is consistent with the library');
+  status((before ? before + ' · ' : '') + (p.length ? `${p.length} problem(s) found` : 'Everything is consistent with the library'));
   const old = [...new Map(p.filter(x => ['cut older than its part', 'more than one cut of a part in place', 'old cut not linked to a part'].includes(x.kind) && x.rel && x.part)
     .map(x => [x.rel + '\n' + x.part, x])).values()];   // una volta per parte
   const strays = p.filter(x => x.kind === 'cut listed as a source');
@@ -475,7 +475,7 @@ async function libCheck(deep) {
       h('button', { class: 'btn', onclick: async e => {
         e.currentTarget.disabled = true;
         const r = await api.post('library/strays', { uuids: strays.map(x => x.detail) }).catch(e => ({ error: e.message }));
-        e.target.closest('.dlg-back')?.remove(); status(r.error || `${r.trashed} entr${r.trashed === 1 ? 'y' : 'ies'} moved to the Trash; their files stay where they are`); libCheck(deep);
+        e.target.closest('.dlg-back')?.remove(); libCheck(deep, r.error || `${r.trashed} entr${r.trashed === 1 ? 'y' : 'ies'} moved to the Trash; their files stay where they are`);
       } }, `Remove these from Sources (${strays.length})`),
       info('Entries that are only a cut (already a cut of its real source, or an old one in the history), left from before the library. Only the entry goes to the Trash: the files and the real sources do not move. Restore from the Trash if needed.')) : null));
 }
@@ -1008,22 +1008,25 @@ function renderTextPane() {
     ...lib,
     ...boxes.map((b, i) => h('div', { class: 'tblock box' },
       h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: '#888' } }), h('b', {}, 'Loose area'), h('small', {}, `outside any part · ${Math.round((b.box[2] - b.box[0]) / S.info.ppm)} × ${Math.round((b.box[3] - b.box[1]) / S.info.ppm)} mm${b.reader ? ' · ' + b.reader : ''}`),
+        h('span', { class: 'rr', title: 'Every reading of this area: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: `loose:${b.id}` }, e.currentTarget); } }, 'Versions ▾'),
         h('span', { class: 'x', title: 'Remove this area (kept in the history)', onclick: () => commit(() => { S.st.loose.splice(i, 1); }) }, '✕')),
-      h('textarea', { rows: Math.min(10, Math.max(3, (b.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { b.text = e.target.value; }) }, b.text || ''),
+      h('textarea', { rows: Math.min(10, Math.max(3, (b.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { b.text = e.target.value; delete b.reread; }) }, b.text || ''),
       h('div', { class: 'btns' }, h('button', { class: 'btn small', onclick: () => { navigator.clipboard?.writeText(b.text || ''); status('Text copied'); } }, 'Copy'),
         sheets.length ? h('button', { class: 'btn small', title: 'Make this the text of a part (added after what it already has); the box goes', onclick: e =>
           menu(e.currentTarget, sheets.map(sh => ({ label: `Add to ${letter(sh) || sh.label || 'sheet'}’s text`, do: () => mergeAreaText(sh, b, () => S.st.loose.splice(S.st.loose.indexOf(b), 1), letter(sh)) }))) }, 'Add to a part ▾') : null))),
     ...sheets.map((sh, i) => h('div', { class: 'tblock' + (isSel(sh.id) ? ' sel' : '') + (sh.on === false ? ' off' : '') },
       h('div', { class: 'tbh', onclick: () => { selectIds([sh.id]); renderSide(); draw(); renderTextPane(); } },
         h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not cut yet'),
-        h('span', { class: 'rr', title: 'Read this sheet again', onclick: e => { e.stopPropagation(); ocrSheets([sh]); } }, '↻')),
+        h('span', { class: 'rr', title: 'Read this sheet again (the reading you have now is kept: Versions)', onclick: e => { e.stopPropagation(); ocrSheets([sh]); } }, '↻'),
+        sh.ocr !== undefined ? h('span', { class: 'rr', title: 'Every reading of this part, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions(sh, e.currentTarget); } }, 'Versions ▾') : null),
       sh.ocr === undefined ? h('div', { class: 'small muted' }, (sh.areas || []).length ? 'Whole sheet not read (only its areas).' : 'Not read yet.')
         : h('textarea', { rows: Math.min(14, Math.max(2, (sh.ocr || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
             onchange: e => commit(() => { sh.ocr = e.target.value; }) }, sh.ocr || ''),
       ...(sh.areas || []).map((a, k) => h('div', { class: 'tarea', style: { borderLeftColor: sheetColor(S.st?.sheets?.[i], i) } },
         h('div', { class: 'tbh' }, h('b', {}, `${letter(sh) || 'sheet'}·${k + 1}`), h('small', {}, `secondary area · ${Math.round((a.box[2] - a.box[0]) / S.info.ppm)} × ${Math.round((a.box[3] - a.box[1]) / S.info.ppm)} mm · ${a.reader || ''}`),
+          h('span', { class: 'rr', title: 'Every reading of this area: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: `${sh.id}/${a.id}` }, e.currentTarget); } }, 'Versions ▾'),
           h('span', { class: 'x', title: 'Remove this area', onclick: () => commit(() => { sh.areas.splice(k, 1); }) }, '✕')),
-        h('textarea', { rows: Math.min(8, Math.max(2, (a.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { a.text = e.target.value; }) }, a.text || ''),
+        h('textarea', { rows: Math.min(8, Math.max(2, (a.text || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)', onchange: e => commit(() => { a.text = e.target.value; delete a.reread; }) }, a.text || ''),
         (a.text || '').trim() ? h('div', { class: 'btns' }, h('button', { class: 'btn small', title: 'Add this text to the part’s own text (e.g. when reading the whole part failed); the area goes',
           onclick: () => mergeAreaText(sh, a, () => sh.areas.splice(sh.areas.indexOf(a), 1), letter(sh)) }, `Add to ${letter(sh) || 'sheet'}’s text`)) : null)))),
     h('div', { class: 'tpf' },
@@ -1032,6 +1035,27 @@ function renderTextPane() {
         h('button', { class: 'btn small', onclick: () => { navigator.clipboard?.writeText(allText()); status('All text copied'); } }, 'Copy all'),
         h('button', { class: 'btn small', title: 'A Markdown file next to the cuts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
         h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
+}
+// le letture di una parte: ognuna resta (un lettore, poi un altro); si sceglie quella da usare, le altre restano
+async function readingVersions(sh, el) {
+  await flushSave();
+  const rel = S.rel, list = await api.get('library/readings', { rel, id: sh.id }).catch(() => []);
+  if (!list.length) return status('No readings in the library yet for this part');
+  const when = t => (t || '').replace('T', ' ').slice(0, 16);
+  const name = t => (t.engine === 'vision' ? 'Apple Vision' : t.model || t.engine);
+  menu(el, list.map(t => ({ label: `${t.current ? '✓ ' : ''}${name(t)} · ${when(t.at)}${t.corrections ? ` · corrected ×${t.corrections}` : ''}`,
+    note: (t.plain || '(no text)').replace(/\s+/g, ' ').slice(0, 90),
+    do: () => {
+      const pre = h('pre', { style: { whiteSpace: 'pre-wrap', maxHeight: '55vh', overflow: 'auto', margin: 0, font: '12px/1.45 Menlo, monospace' } }, t.plain || '(no text)');
+      dialog('Reading', `${name(t)} · ${when(t.at)}${t.current ? ' · in use' : ''}`, h('div', { style: { width: '620px' } }, pre,
+        h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Using it makes it the text of this part everywhere (its cut, the transcriptions, the side-by-side view). The one in use now stays in the list.')),
+        t.current ? [['Close', () => true, true]] : [['Use this one', async () => {
+          const r = await api.post('library/use_reading', { uuid: t.uuid }).catch(e => ({ error: e.message }));
+          if (r.error) return status(r.error);
+          if (S.rel === rel) { setState(await api.get('state', { rel })); renderSide(); draw(); renderTextPane(); renderMirror(); }
+          status(`Now using the ${name(t)} reading; the others stay in Versions`);
+        }, true], ['Cancel', () => true]]);
+    } })));
 }
 // il testo di un riquadro diventa testo della parte (in coda a quel che ha, o al posto di una lettura vuota);
 // il riquadro va via (resta nella storia). Un solo passo, annullabile.
@@ -1146,9 +1170,9 @@ function renderMirror() {
     const col = sheetColor(S.st?.sheets?.[i], i), L = sheetLetter(sh);
     // l'area principale (il foglio), poi le sue aree secondarie sopra
     block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }));
-    (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; }), true));
+    (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; delete a.reread; }), true));
   });
-  (S.st.loose || []).forEach(t => block(t.box, '#888888', t.text, 'loose', v => commit(() => { t.text = v; })));
+  (S.st.loose || []).forEach(t => block(t.box, '#888888', t.text, 'loose', v => commit(() => { t.text = v; delete t.reread; })));
   if (!sheets.some(x => x.ocr !== undefined)) (S.libTexts || []).forEach(t => block([0, 0, S.info.w, S.info.h], t.color || '#8a96a6', t.plain, `${t.title} › ${t.region}`,
     async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cuts'); renderMirror(); renderTextPane(); }));
   if (!pg.children.length) pg.append(h('div', { class: 'mempty', style: { fontSize: 4 * ppm + 'px', padding: 10 * ppm + 'px' } }, 'Read some text (Text pane) and it appears here, where it is on the scan.'));
@@ -2215,8 +2239,16 @@ async function ocrBox(box) {
   let r = null;
   try { r = await api.post('ocr_box', { rel, box }); } catch (e) { busy(false, null, rel); return alertDialog('Read text', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return;
-  const cx = (box[0] + box[2]) / 2, cy = (box[1] + box[3]) / 2;
-  const under = (S.st?.sheets || []).find(s => inside([cx, cy], s.poly) && !isInverted(s));
+  const under = (S.st?.sheets || []).filter(s => s.poly && !isInverted(s)).map(s => [s, boxCover(box, s.poly)]).filter(x => x[1] >= .5).sort((a, b) => b[1] - a[1])[0]?.[0];
+  // lo stesso riquadro di un'area che c'e' gia': una lettura in piu' di quell'area (Versions), non un'area doppia
+  const iou = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), hh = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * hh;
+    return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
+  const same = [...(S.st?.sheets || []).flatMap(s => s.areas || []), ...(S.st?.loose || [])].find(a => iou(a.box, box) >= .8);
+  if (same) {
+    commit(() => { same.text = r.text || ''; same.reader = ocrName(); same.reread = true; });
+    status(`Read again with ${ocrName()}: the reading before is kept (Versions)`);
+    toggleTextPane(true); renderMirror(); draw(); return;
+  }
   if (under) {
     // area secondaria: dentro il foglio (area principale), con il suo testo
     commit(() => { (under.areas ||= []).push({ id: 'a' + (Math.max(0, ...under.areas.map(a => +a.id.slice(1) || 0)) + 1), box: box.map(Math.round), text: r.text || '', reader: ocrName() }); });
@@ -2377,8 +2409,40 @@ document.addEventListener('keyup', e => { if (e.key === ' ') { spaceDown = false
 
 // ------------------------------------------------------------ storia e salvataggio
 function pushHist() { S.hist.push(JSON.stringify(S.st.sheets)); if (S.hist.length > 80) S.hist.shift(); S.fut = []; }
+// un'area di testo appartiene alla parte che ne copre la maggior parte (almeno meta' del riquadro): e' un altro testo
+// trovato su quel taglio. Fuori da ogni parte e' sciolta. Quando le parti cambiano (disegnate, trovate, tolte, spostate)
+// le aree seguono; "from" dice alla libreria da dove viene, cosi' l'area resta la stessa (letture e versioni comprese).
+function boxCover(box, poly) {
+  let n = 0;
+  for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++)
+    if (inside([box[0] + (i + .5) / 8 * (box[2] - box[0]), box[1] + (j + .5) / 8 * (box[3] - box[1])], poly)) n++;
+  return n / 64;
+}
+function rehomeAreas(st) {
+  const parts = (st.sheets || []).filter(s => s.poly && !isInverted(s));
+  const owner = box => { let best = null, bc = .5; for (const s of parts) { const c = boxCover(box, s.poly); if (c >= bc) { best = s; bc = c; } } return best; };
+  const nextArea = s => 'a' + (Math.max(0, ...(s.areas || []).map(a => +String(a.id).slice(1) || 0)) + 1);
+  const keep = [];
+  for (const a of st.loose || []) {
+    const s = owner(a.box);
+    if (s) (s.areas ||= []).push({ ...a, id: nextArea(s), from: a.from || 'loose:' + a.id });
+    else keep.push(a);
+  }
+  for (const s of st.sheets || []) {
+    if (!s.areas?.length) continue;
+    const stay = [];
+    for (const a of s.areas) {
+      if (!s.poly || isInverted(s) || boxCover(a.box, s.poly) >= .5) { stay.push(a); continue; }
+      const o = owner(a.box), from = a.from || `area:${s.id}/${a.id}`;
+      if (o && o !== s) (o.areas ||= []).push({ ...a, id: nextArea(o), from });
+      else keep.push({ ...a, id: 'l' + (Math.max(0, ...[...(st.loose || []), ...keep].map(x => +String(x.id).slice(1) || 0)) + 1), from });
+    }
+    s.areas = stay;
+  }
+  st.loose = keep;
+}
 function commit(fn) { pushHist(); fn(); afterEdit(); }
-function afterEdit() { S.st.sheets.forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
+function afterEdit() { S.st.sheets.forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); rehomeAreas(S.st); S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
 function undo() { if (!S.hist.length || S.view !== 'editor') return; S.fut.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.hist.pop()); afterEdit(); }
 function redo() { if (!S.fut.length || S.view !== 'editor') return; S.hist.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.fut.pop()); afterEdit(); }
 let saveTimer = null, saving = Promise.resolve();
@@ -2388,7 +2452,10 @@ function save() {
   const st = S.st, rel = S.rel;
   saving = saving.then(async () => {
     try {
+      // "from" e "reread" servono una volta sola, al salvataggio che li porta: dopo, la libreria conosce l'area col nome nuovo
+      const marks = [...(st.sheets || []).flatMap(x => x.areas || []), ...(st.loose || [])].filter(a => a.from || a.reread).map(a => [a, a.from, a.reread]);
       const r = await api.post('state', { state: st });
+      marks.forEach(([a, f, rr]) => { if (a.from === f) delete a.from; if (a.reread === rr) delete a.reread; });
       if (S.st === st) { st.version = r.version; }
       const fresh = await api.get('state', { rel }); if (S.rel === rel) { S.names = fresh.names || {}; renderSide(); }
       requestTile();

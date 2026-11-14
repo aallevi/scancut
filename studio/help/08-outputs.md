@@ -7,10 +7,15 @@ vendrdro 4 a`), plus one for a whole page read at once, into a folder you choose
 made on the cut itself, are headings in its file.
 
 - **Markdown** is shaped like a wiki note: front matter with `title`, `date` and `id` (the part's UUID, which
-  never changes), `source`, `part` and `cut` addresses. Prints with pandoc like any note.
-- **LaTeX** is a small plain document per cut with only standard commands (`\section*`, `\subsection*`,
-  `itemize`, the cut's picture when it is PNG/JPEG): it compiles on its own with lualatex or pdflatex, and
-  pandoc reads it into your own templates (EasyPrint). `journal.tex` gathers every cut by date (docmute).
+  never changes), `source` and `part` addresses (no file paths: the library is the only store). Prints with pandoc like any note.
+- **LaTeX** is made by **pandoc** from the text as read: headings, lists, tables, emphasis and formulas are kept,
+  and the lines of the page stay lines. It is a small plain document per cut with only standard packages: it
+  compiles on its own with lualatex or pdflatex, and pandoc reads it into your own templates (EasyPrint).
+  `journal.tex` gathers every cut by date (docmute).
+- **Pictures**: when the reader marks pictures on the page (LightOnOCR-2, Unlimited-OCR), each one is cut from the
+  cut's real pixels, made smaller only if needed for print (at most 2400 px on the long side, about 20 cm at
+  300 dpi), saved as PNG with its transparency in `figures/`, and placed where it is in the text (LaTeX and
+  Markdown alike). No other pictures and no file paths: just `scanstudio://` addresses.
 
 The files are read-only: correct the text in Scan Studio and they are rewritten a few seconds later.
 Your own files in the folder are never touched.

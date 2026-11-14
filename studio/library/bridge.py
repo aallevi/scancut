@@ -882,7 +882,7 @@ def item_detail(lib, uuid):
     regions = [dict(r) for r in lib.db.execute("SELECT * FROM region WHERE item_id = ? AND removed_at IS NULL AND parent_id IS NULL AND kind = 'sheet' "
                                                 "AND asset_id IN (SELECT asset_id FROM item_asset WHERE item_id = ? AND role != 'cutout') ORDER BY position", (it['id'], it['id']))]
     for g in regions:
-        t = lib.db.execute('SELECT plain, engine, model, corrected_version FROM current_text WHERE region_id = ? ORDER BY created_at DESC LIMIT 1', (g['id'],)).fetchone()
+        t = lib.db.execute('SELECT plain, engine, model, corrected_version FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (g['id'],)).fetchone()
         g['text'] = dict(t) if t else None
         g['geometry'] = json.loads(g['geometry'])
         e = lib.db.execute('SELECT path, created_at FROM cut WHERE region_id = ? ORDER BY created_at DESC, id DESC LIMIT 1', (g['id'],)).fetchone()
@@ -1003,8 +1003,9 @@ def apply_state(lib, rel, st, iid, aid):
                                (json.dumps({'box': ar['box']}), k, color, cid))
                 lib.db.commit()
             else:
-                cid = lib.add_region(iid, aid, 'text', {'box': ar['box']}, parent_id=rid, source={'studio_area': key, 'studio_rel': rel}, color=color)
-            sync_text(lib, aid, cid, ar.get('text'), reader=ar.get('reader'))
+                cid = _adopt_area(lib, aid, ar.get('from'), rid, key, rel, ar['box'], color) or \
+                    lib.add_region(iid, aid, 'text', {'box': ar['box']}, parent_id=rid, source={'studio_area': key, 'studio_rel': rel}, color=color)
+            sync_text(lib, aid, cid, ar.get('text'), reader=ar.get('reader'), reread=bool(ar.get('reread')))
         for key, (cid, gone) in sub.items():                # area tolta: non si vede piu', resta nella storia
             if not gone:
                 lib.db.execute('UPDATE region SET removed_at = ? WHERE id = ?', (now(), cid))
@@ -1025,8 +1026,9 @@ def apply_state(lib, rel, st, iid, aid):
             lib.db.execute('UPDATE region SET geometry = ?, position = ?, removed_at = NULL WHERE id = ?', (json.dumps({'box': ar['box']}), 1000 + k, cid))
             lib.db.commit()
         else:
-            cid = lib.add_region(iid, aid, 'text', {'box': ar['box']}, source={'studio_loose': ar['id'], 'studio_rel': rel}, color='#888888')
-        sync_text(lib, aid, cid, ar.get('text'), reader=ar.get('reader'))
+            cid = _adopt_area(lib, aid, ar.get('from'), None, ar['id'], rel, ar['box'], '#888888') or \
+                lib.add_region(iid, aid, 'text', {'box': ar['box']}, source={'studio_loose': ar['id'], 'studio_rel': rel}, color='#888888')
+        sync_text(lib, aid, cid, ar.get('text'), reader=ar.get('reader'), reread=bool(ar.get('reread')))
     for lid, (cid, gone) in loose.items():
         if not gone:
             lib.db.execute('UPDATE region SET removed_at = ? WHERE id = ?', (now(), cid))
@@ -1043,15 +1045,102 @@ def apply_state(lib, rel, st, iid, aid):
     return pending
 
 
-def sync_text(lib, aid, rid, text, reader=None):
+def _adopt_area(lib, aid, frm, parent_id, key, rel, box, color):
+    # un'area che ha cambiato parte (o e' diventata sciolta, o il contrario): la stessa riga, con le sue letture
+    if not frm or ':' not in frm:
+        return None
+    kind, old = frm.split(':', 1)
+    r = lib.db.execute("SELECT id FROM region WHERE asset_id = ? AND kind = 'text' AND json_extract(source, ?) = ? ORDER BY id DESC LIMIT 1",
+                       (aid, '$.studio_loose' if kind == 'loose' else '$.studio_area', old)).fetchone()
+    if not r:
+        return None
+    keys = ("json_remove(json_set(COALESCE(source, '{}'), '$.studio_area', ?, '$.studio_rel', ?), '$.studio_loose')" if parent_id else
+            "json_remove(json_set(COALESCE(source, '{}'), '$.studio_loose', ?, '$.studio_rel', ?), '$.studio_area')")
+    lib.db.execute(f'UPDATE region SET parent_id = ?, geometry = ?, color = ?, removed_at = NULL, source = {keys} WHERE id = ?',
+                   (parent_id, json.dumps({'box': box}), color, key, rel, r['id']))
+    lib.db.commit()
+    lib.log('move', 'region', None, studio_from=frm, studio_to=key)
+    return r['id']
+
+
+def sync_text(lib, aid, rid, text, reader=None, reread=False):
+    # testo nuovo: la prima lettura, una correzione a mano, o (reread) una lettura in piu' che lascia le altre
     if text is None:
         return
-    cur = lib.db.execute('SELECT reading_id, plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC LIMIT 1', (rid,)).fetchone()
-    if cur is None:
+    cur = lib.db.execute('SELECT reading_id, plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
+    if cur is None or (reread and cur['plain'] != text):
         e_, m_ = reader_of()
         lib.add_reading(aid, e_, text, region_id=rid, model=m_)
     elif cur['plain'] != text:
         lib.correct(cur['reading_id'], text)
+
+
+def _region_of(lib, rel, sid):
+    from . import store
+    a = store.asset_for(lib, rel, create=False)
+    if not a:
+        return None, None
+    # una parte (s1), un'area di una parte (s1/a2) o un'area sciolta (loose:l1)
+    path = '$.studio_loose' if sid.startswith('loose:') else '$.studio_area' if '/' in sid else '$.studio_id'
+    r = lib.db.execute("SELECT id FROM region WHERE asset_id = ? AND json_extract(source, ?) = ? AND removed_at IS NULL",
+                       (a['id'], path, sid.split(':', 1)[1] if sid.startswith('loose:') else sid)).fetchone()
+    return a['id'], (r[0] if r else None)
+
+
+def _text_changed(lib, rid):
+    # il testo di una parte e' cambiato: segue il taglio (metadati) e il diario; lo studio che l'ha chiesto rilegge da se'
+    from . import store
+    refresh_cutout_text(lib, rid)
+    store._cache.clear()                              # lo stato si ricompone dalla libreria alla prossima richiesta
+    schedule_journal()
+
+
+def on_read_sheet(rel, sid, text):
+    # una lettura del lettore di adesso: una lettura sua (con il suo nome), mai una correzione di quella di prima;
+    # le letture di prima restano, si possono riprendere
+    lib = library(create=False)
+    if not lib or not text:
+        return
+    aid, rid = _region_of(lib, rel, sid)
+    if not rid:
+        return                                        # parte nuova: la registra il salvataggio dello stato
+    cur = lib.db.execute('SELECT plain, engine, model FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
+    e_, m_ = reader_of()
+    if cur and cur['plain'] == text and (cur['engine'], cur['model']) == (e_, m_):
+        return
+    lib.add_reading(aid, e_, text, region_id=rid, model=m_)
+    _text_changed(lib, rid)
+
+
+def readings(lib, rel, sid):
+    # tutte le letture di una parte, la piu' nuova (quella in uso) prima; le copie di "usa questa" contano una volta
+    aid, rid = _region_of(lib, rel, sid)
+    if not rid:
+        return []
+    out, seen = [], set()
+    for k, t in enumerate(lib.db.execute('SELECT t.*, r.params, (SELECT COUNT(*) FROM correction c WHERE c.reading_id = t.reading_id) AS versions '
+                                         'FROM current_text t JOIN reading r ON r.id = t.reading_id WHERE t.region_id = ? '
+                                         'ORDER BY t.created_at DESC, t.reading_id DESC', (rid,))):
+        key = (t['engine'], t['model'], t['plain'])
+        if k and key in seen:
+            continue
+        seen.add(key)
+        out.append({'uuid': t['uuid'], 'engine': t['engine'], 'model': t['model'], 'at': t['created_at'], 'plain': t['plain'],
+                    'corrections': t['versions'], 'current': k == 0,
+                    'chosen_again': bool(t['params'] and 'chosen_from' in json.loads(t['params']))})
+    return out
+
+
+def use_reading(lib, uuid):
+    # riprendere una lettura di prima: diventa quella in uso come lettura nuova ("scelta di nuovo adesso"),
+    # con il suo testo corretto; nessuna si perde
+    t = lib.db.execute('SELECT t.*, r.doc AS rdoc, r.raw, r.languages, r.model_digest FROM current_text t JOIN reading r ON r.id = t.reading_id WHERE t.uuid = ?', (uuid,)).fetchone()
+    if not t or not t['region_id']:
+        raise ValueError('no such reading')
+    lib.add_reading(t['asset_id'], t['engine'], t['plain'], region_id=t['region_id'], model=t['model'], doc=json.loads(t['doc']) if t['doc'] else None,
+                    raw=t['raw'], languages=t['languages'], model_digest=t['model_digest'], params={'chosen_from': uuid})
+    _text_changed(lib, t['region_id'])
+    return t['plain']
 
 
 def on_export(rel, written, superseded=None):
@@ -1357,7 +1446,7 @@ def attach_doc_text(lib, a, text, reader=None):
     e = lib.db.execute('SELECT region_id FROM cut WHERE path = ? ORDER BY id DESC LIMIT 1', (lib.asset_path(a),)).fetchone()
     rid = e['region_id'] if e else None
     cur = lib.db.execute('SELECT reading_id, plain FROM current_text WHERE ' + ('region_id = ?' if rid else 'region_id IS NULL AND asset_id = ?') +
-                         ' ORDER BY created_at DESC LIMIT 1', (rid or a['id'],)).fetchone()
+                         ' ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid or a['id'],)).fetchone()
     if cur and cur['plain'] == text:
         r = cur['reading_id']                              # gia' cosi': niente doppioni
     else:
@@ -1713,7 +1802,7 @@ def doc_text(rel):
     e = lib.db.execute('SELECT region_id FROM cut WHERE path = ? ORDER BY id DESC LIMIT 1', (p,)).fetchone()
     rid = e['region_id'] if e else None
     t = lib.db.execute('SELECT plain FROM current_text WHERE ' + ('region_id = ?' if rid else 'region_id IS NULL AND asset_id = ?') +
-                       ' AND engine = ? AND model = ? ORDER BY created_at DESC LIMIT 1', (rid or a['id'], e_, m_)).fetchone()
+                       ' AND engine = ? AND model = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid or a['id'], e_, m_)).fetchone()
     return t['plain'] if t else None
 
 

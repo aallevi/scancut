@@ -364,10 +364,104 @@ class BridgeTest(unittest.TestCase):
         tex = open(os.path.join(d, names[0])).read()
         self.assertIn(r'\documentclass', tex)
         self.assertIn(r'\section*{', tex)
-        self.assertIn(r'\item one \& two', tex)
-        self.assertIn(r'50\% of \$5\_x', tex)
+        self.assertRegex(tex, r'\\item\s+one \\& two')
+        self.assertIn(r'50\% of', tex)
         self.assertNotIn(r'\scanstudio', tex)                                    # solo comandi standard
         self.assertIn('docmute', open(os.path.join(d, 'journal.tex')).read())
+
+    def test_journal_pictures_from_the_reader(self):
+        # una figura segnata dal lettore (riquadro su 0-1000 del taglio): pixel veri ritagliati dal taglio, in figures/,
+        # al suo posto nel testo; il resto (tabella) passa per pandoc
+        import shutil
+        from PIL import Image
+        from studio.library import bridge, journal
+        from studio import core
+        if not shutil.which('pandoc'):
+            self.skipTest('pandoc')
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'sopra\n\n![image](image_1.png)100,100,900,500\n\n| a | b |\n|---|---|\n| 1 | 2 |'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        d = os.path.join(self.root, 'journal')
+        journal.write(lib, d, 'tex')
+        figs = os.listdir(os.path.join(d, 'figures'))
+        self.assertEqual(len(figs), 1)
+        tex = open(os.path.join(d, [f for f in os.listdir(d) if f.endswith('.tex') and f != 'journal.tex' and 'figures/' in open(os.path.join(d, f)).read()][0])).read()
+        self.assertIn('figures/' + figs[0], tex)
+        self.assertIn('longtable', tex)
+        e = [x for x in journal.collect(lib) if 'image_1' in x['text']][0]
+        cut = Image.open(e['cut'])
+        fig = Image.open(os.path.join(d, 'figures', figs[0]))
+        self.assertEqual(fig.size, (round(0.9 * cut.width) - round(0.1 * cut.width), round(0.5 * cut.height) - round(0.1 * cut.height)))
+        self.assertEqual(fig.tobytes(), cut.crop((round(0.1 * cut.width), round(0.1 * cut.height), round(0.9 * cut.width), round(0.5 * cut.height))).convert(fig.mode).tobytes())
+        st['sheets'][0]['ocr'] = 'sopra'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        journal.write(lib, d, 'tex')
+        self.assertFalse(os.path.exists(os.path.join(d, 'figures')))           # niente figure: via anche la cartella
+
+    def test_several_readings_of_a_part_are_kept_and_one_is_chosen(self):
+        # un lettore, poi un altro: due letture, ognuna col suo nome; si riprende la prima, nessuna si perde
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        sid = st['sheets'][0]['id']
+        core.save_settings({'ocr_engine': 'vision'})
+        bridge.on_read_sheet(self.rel, sid, 'letto da vision')
+        st = core.load_state(self.rel); st['sheets'][0]['ocr'] = 'letto da vision, corretto'; core.save_state(st); bridge.sync_rel(self.rel)
+        core.save_settings({'ocr_engine': 'ollama:glm-ocr'})
+        bridge.on_read_sheet(self.rel, sid, 'letto da glm')
+        st = core.load_state(self.rel); st['sheets'][0]['ocr'] = 'letto da glm'; core.save_state(st); bridge.sync_rel(self.rel)
+        rs = bridge.readings(lib, self.rel, sid)
+        self.assertEqual([(r['model'], r['plain'], r['current']) for r in rs],
+                         [('glm-ocr', 'letto da glm', True), ('vision', 'letto da vision, corretto', False), ('vision', 'hello sketchbook', False)])
+        self.assertEqual(rs[1]['corrections'], 1)                                # la correzione resta con la sua lettura
+        bridge.use_reading(lib, rs[1]['uuid'])
+        self.assertEqual(core.load_state(self.rel)['sheets'][0]['ocr'], 'letto da vision, corretto')
+        rs = bridge.readings(lib, self.rel, sid)
+        self.assertEqual([r['plain'] for r in rs], ['letto da vision, corretto', 'letto da glm', 'hello sketchbook'])   # la scelta conta una volta
+        self.assertTrue(rs[0]['current'] and rs[0]['chosen_again'])
+
+    def test_an_area_follows_the_part_it_is_on_and_keeps_its_readings(self):
+        # un'area sciolta che finisce su una parte diventa un testo di quel taglio, la stessa riga con le sue letture;
+        # e torna sciolta se la parte va via
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        xs, ys = [p[0] for p in st['sheets'][0]['poly']], [p[1] for p in st['sheets'][0]['poly']]
+        cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        box = [round(cx - 20), round(cy - 10), round(cx + 20), round(cy + 10)]
+        st['loose'] = [{'id': 'l1', 'box': box, 'text': 'scritta', 'reader': 'Apple Vision'}]
+        core.save_state(st); bridge.sync_rel(self.rel)
+        rid = lib.db.execute("SELECT id FROM region WHERE json_extract(source, '$.studio_loose') = 'l1'").fetchone()[0]
+        lib.correct(lib.db.execute('SELECT id FROM reading WHERE region_id = ?', (rid,)).fetchone()[0], 'scritta corretta')
+        # la parte la copre: lo studio la sposta (rehomeAreas) e dice da dove viene
+        st = core.load_state(self.rel)
+        sid = st['sheets'][0]['id']
+        st['sheets'][0]['areas'] = [{'id': 'a1', 'box': box, 'text': 'scritta corretta', 'from': 'loose:l1'}]
+        st['loose'] = []
+        core.save_state(st); bridge.sync_rel(self.rel)
+        r = lib.db.execute('SELECT id, parent_id, removed_at, json_extract(source, \'$.studio_area\') AS k FROM region WHERE id = ?', (rid,)).fetchone()
+        self.assertEqual((r['k'], r['removed_at']), (f'{sid}/a1', None))
+        self.assertIsNotNone(r['parent_id'])
+        self.assertEqual([x['plain'] for x in bridge.region_texts(lib, r['parent_id'])][-1], 'scritta corretta')   # nel testo del taglio
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM correction WHERE reading_id IN (SELECT id FROM reading WHERE region_id = ?)', (rid,)).fetchone()[0], 1)
+        st = core.load_state(self.rel)
+        self.assertEqual([a['text'] for a in st['sheets'][0]['areas']], ['scritta corretta'])
+        self.assertEqual(st['loose'], [])
+        # di nuovo sciolta
+        st['sheets'][0]['areas'] = []
+        st['loose'] = [{'id': 'l2', 'box': box, 'text': 'scritta corretta', 'from': f'area:{sid}/a1'}]
+        core.save_state(st); bridge.sync_rel(self.rel)
+        r = lib.db.execute('SELECT parent_id, removed_at, json_extract(source, \'$.studio_loose\') AS k FROM region WHERE id = ?', (rid,)).fetchone()
+        self.assertEqual((r['parent_id'], r['removed_at'], r['k']), (None, None, 'l2'))
 
     def test_journal_markdown(self):
         # le trascrizioni come le note del wiki: front matter (title, date, id), una parte per titolo, in sola lettura

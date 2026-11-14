@@ -171,6 +171,11 @@ MLX_MODELS = [
     {'id': 'unlimited-ocr', 'repo': 'mlx-community/Unlimited-OCR-8bit', 'name': 'Unlimited-OCR', 'mb': 3700, 'prompt': 'document parsing.',
      'line': 'Printed documents with their layout: a box for every title, text block and picture, so the side-by-side view places '
              'them where they are. Not for handwriting (use GLM-OCR). Runs on the Apple GPU, about 3 GB in memory.'},
+    {'id': 'lightonocr-bbox', 'repo': 'lightonai/LightOnOCR-2-1B-bbox', 'name': 'LightOnOCR-2 (layout and pictures)', 'mb': 2100, 'prompt': ' ',
+     'max_tokens': 4096,
+     'line': 'Keeps the formatting (headings, lists, tables, formulas) and marks every picture on the page with its box, so the '
+             'transcriptions carry the pictures cut from the real pixels. Best on printed and typed pages; for hard handwriting '
+             'GLM-OCR reads better. Runs on the Apple GPU, about 2 GB.'},
 ]
 MLX_IDLE_S = 600
 _mlx, _mlx_used, _mlx_lock = None, 0.0, threading.Lock()
@@ -276,7 +281,7 @@ def ocr_mlx(path, mid, progress=None):
                 _mlx = subprocess.Popen([mlx_python(), '-I', os.path.join(core.REPO, 'studio', 'mlx_ocr_worker.py')],
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1,
                                         env=dict(os.environ, HF_HUB_OFFLINE='1', TOKENIZERS_PARALLELISM='false'))
-            _mlx.stdin.write(json.dumps({'image': tmp, 'model': m['repo'], 'prompt': m['prompt']}) + '\n'); _mlx.stdin.flush()
+            _mlx.stdin.write(json.dumps({'image': tmp, 'model': m['repo'], 'prompt': m['prompt'], 'max_tokens': m.get('max_tokens')}) + '\n'); _mlx.stdin.flush()
             line = _mlx.stdout.readline()
         _mlx_used = time.time()
     finally:

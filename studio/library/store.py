@@ -55,7 +55,7 @@ def _item_of_asset(lib, aid):
 
 
 def _text(lib, rid):
-    t = lib.db.execute('SELECT plain, model, engine FROM current_text WHERE region_id = ? ORDER BY created_at DESC LIMIT 1', (rid,)).fetchone()
+    t = lib.db.execute('SELECT plain, model, engine FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
     return t
 
 

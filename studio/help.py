@@ -114,7 +114,7 @@ def search(q, limit=8):
     if lib:
         rows = lib.db.execute(
             "SELECT r.label, json_extract(r.source, '$.studio_rel') AS rel, json_extract(r.source, '$.studio_id') AS sid, "
-            "COALESCE((SELECT plain FROM current_text t WHERE t.region_id = r.id ORDER BY created_at DESC LIMIT 1), '') AS txt "
+            "COALESCE((SELECT plain FROM current_text t WHERE t.region_id = r.id ORDER BY created_at DESC, reading_id DESC LIMIT 1), '') AS txt "
             "FROM region r WHERE r.parent_id IS NULL AND r.kind = 'sheet' AND r.removed_at IS NULL").fetchall()
         for r in rows:
             hay = ((r['label'] or '') + '\n' + (r['txt'] or '')).lower()

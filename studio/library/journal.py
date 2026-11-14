@@ -2,7 +2,7 @@
 # semplice che si compila da solo e che pandoc legge nei propri modelli). Una rappresentazione della libreria, mai
 # una copia da modificare: si corregge nello studio e la cartella si riscrive.
 
-import os, re, json, time
+import os, re, json, time, subprocess, hashlib
 
 from .. import core
 
@@ -50,7 +50,7 @@ def safe_name(s):
 
 
 def _texts(lib, rid):
-    t = lib.db.execute('SELECT plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC LIMIT 1', (rid,)).fetchone()
+    t = lib.db.execute('SELECT plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
     return t['plain'] if t and t['plain'].strip() else ''
 
 
@@ -103,26 +103,114 @@ TEX_HEAD = r"""\documentclass[12pt,a4paper]{article}
 \usepackage{iftex}
 \ifPDFTeX\usepackage[utf8]{inputenc}\usepackage[T1]{fontenc}\else\usepackage{fontspec}\fi
 \usepackage[margin=3cm]{geometry}
-\usepackage{graphicx}
+\usepackage{graphicx,longtable,booktabs,array,calc,amsmath,amssymb}
+\usepackage[normalem]{ulem}
+\usepackage{hyperref}
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\providecommand{\pandocbounded}[1]{#1}
+\makeatletter\@ifundefined{c@none}{\newcounter{none}}{}\makeatother
 \setlength{\parindent}{0pt}\setlength{\parskip}{.6em}
 \pagestyle{plain}
 """
 
 
-def as_tex(e, stamp):
+FIG = re.compile(r'^[ \t]*!\[[^\]\n]*\]\([^)\n]*\)[ \t]*(\d+)[ \t]*,[ \t]*(\d+)[ \t]*,[ \t]*(\d+)[ \t]*,[ \t]*(\d+)[ \t]*$', re.M)
+PRINT_PX = 2400                  # lato lungo delle figure: ~20 cm a 300 dpi, abbastanza per la stampa; mai ingrandite
+
+
+def figures(e, out_dir, texts):
+    # le figure che il lettore ha segnato (riquadri su 0-1000 del taglio letto): pixel veri ritagliati dal taglio,
+    # rimpiccioliti se servono per la stampa, PNG con la trasparenza, in figures/. Ritorna {(testo, n): nome}.
+    from PIL import Image
+    boxes = [(ti, k, tuple(map(int, m.groups()))) for ti, t in enumerate(texts) for k, m in enumerate(FIG.finditer(t or ''))]
+    if not boxes or not e['cut'] or not os.path.exists(e['cut']):
+        return {}
+    src, tmp = e['cut'], None
+    if src.lower().endswith('.jxl'):
+        tmp = os.path.join(out_dir, f'.fig-{os.getpid()}.png')
+        if subprocess.run(['djxl', src, tmp, '--quiet'], capture_output=True, timeout=600).returncode:
+            return {}
+        src = tmp
+    names = {}
+    try:
+        im = Image.open(src)
+        im.load()
+        if im.mode not in ('RGB', 'RGBA'):
+            im = im.convert('RGBA' if 'A' in im.mode or 'transparency' in im.info else 'RGB')
+        W, H = im.size
+        os.makedirs(os.path.join(out_dir, 'figures'), exist_ok=True)
+        for n, (ti, k, (a, b, c, d)) in enumerate(boxes, 1):
+            box = (round(min(a, c) / 1000 * W), round(min(b, d) / 1000 * H), round(max(a, c) / 1000 * W), round(max(b, d) / 1000 * H))
+            if box[2] - box[0] < 4 or box[3] - box[1] < 4:
+                continue
+            fig = im.crop(box)
+            if max(fig.size) > PRINT_PX:
+                fig.thumbnail((PRINT_PX, PRINT_PX), Image.LANCZOS)
+            name = f'{e["date"] or "undated"} {safe_name(e["name"])} figure {n}.png'
+            p = os.path.join(out_dir, 'figures', name)
+            import io
+            buf = io.BytesIO(); fig.save(buf, 'PNG', optimize=True)
+            if not os.path.exists(p) or open(p, 'rb').read() != buf.getvalue():
+                with open(p + '.part', 'wb') as f:
+                    f.write(buf.getvalue())
+                os.replace(p + '.part', p)
+            names[(ti, k)] = name
+    finally:
+        if tmp and os.path.exists(tmp):
+            os.remove(tmp)
+    return names
+
+
+def _with_figures(text, ti, names, md):
+    # la riga della figura diventa un segnaposto (LaTeX) o un'immagine Markdown con il file ritagliato
+    k = [-1]
+
+    def sub(m):
+        k[0] += 1
+        n = names.get((ti, k[0]))
+        if not n:
+            return ''
+        return f'![](figures/{n})' if md else f'SCANSTUDIOFIGURE{hashlib.md5(n.encode()).hexdigest()}'
+    return FIG.sub(sub, text or '')
+
+
+def pandoc_tex(text):
+    # il Markdown del lettore in LaTeX con pandoc (titoli, elenchi, tabelle, enfasi, formule); le righe restano righe
+    try:
+        r = subprocess.run(['pandoc', '-f', 'markdown+hard_line_breaks-raw_tex-raw_html-auto_identifiers', '-t', 'latex', '--wrap=preserve',
+                            '--shift-heading-level-by=1'], input=text, capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            # i titoli del testo stanno sotto quello del taglio, senza numeri (come lui)
+            return re.sub(r'\\((?:sub)*section|paragraph)\{', r'\\\1*{', r.stdout.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return md_to_tex(text)                                # senza pandoc: la conversione semplice di prima
+
+
+def _figure_tex(n):
+    return (r'\begin{center}\includegraphics[width=\linewidth,height=.6\textheight,keepaspectratio]{figures/' + n + r'}\end{center}')
+
+
+def as_tex(e, stamp, names=None):
     # un documento intero e semplice: si compila da solo (lualatex o pdflatex), pandoc lo legge nei propri
     # modelli (EasyPrint), journal.tex li raccoglie tutti con docmute. Solo comandi standard.
+    names = names or {}
     title = esc(e['name'])
     sub = ' · '.join(esc(x) for x in (e['date'], e['series'], f'from {e["source"]}' if e['source'] and e['source'] != e['name'] else '') if x)
     body = [f'\\section*{{{title}}}', f'\\emph{{{sub}}}' if sub else '', '']
+    figs = {f'SCANSTUDIOFIGURE{hashlib.md5(n.encode()).hexdigest()}': n for n in names.values()}
+
+    def conv(t, ti):
+        out = pandoc_tex(_with_figures(t, ti, names, False))
+        for k, n in figs.items():
+            out = out.replace(k, _figure_tex(n))
+        return out
     if e['text']:
-        body += [_tex_lines(e['text']), '']
-    for head, t in e['areas']:
-        body += [f'\\subsection*{{{esc(head)}}}', _tex_lines(t), '']
-    if e['cut'] and e['cut'].lower().endswith(('.png', '.jpg', '.jpeg', '.pdf')):
-        body += [r'\begin{center}\includegraphics[width=.8\linewidth,height=.6\textheight,keepaspectratio]{' + e['cut'] + r'}\end{center}', '']
+        body += [conv(e['text'], 0), '']
+    for i, (head, t) in enumerate(e['areas'], 1):
+        body += [f'\\subsection*{{{esc(head)}}}', conv(t, i), '']
     return (f'% Scan Studio · read-only, written {stamp}. Correct the text in Scan Studio: this file is rewritten.\n'
-            f'% scanstudio://region/{e["uuid"]} · source scanstudio://item/{e["item"]}' + (f' · cut {e["cut"]}' if e['cut'] else '') + '\n'
+            f'% scanstudio://region/{e["uuid"]} · source scanstudio://item/{e["item"]}\n'
             + TEX_HEAD + '\\begin{document}\n' + '\n'.join(body).rstrip() + '\n\\end{document}\n')
 
 
@@ -130,18 +218,20 @@ def _yaml(v):
     return '"' + str(v).replace('\\', '\\\\').replace('"', '\\"') + '"'
 
 
-def as_md(e, stamp):
+def as_md(e, stamp, names=None):
     # come le note del wiki: front matter con title, date e id (l'uuid della parte, che non cambia), poi il testo
     head = ['---', f'title: {_yaml(e["name"])}', f'date: {e["date"]}', f'id: {e["uuid"]}']
     if e['series']:
         head.append(f'series: {_yaml(e["series"])}')
     if e['source'] and e['source'] != e['name']:
         head.append(f'from: {_yaml(e["source"])}')
-    head += [f'source: scanstudio://item/{e["item"]}', f'part: scanstudio://region/{e["uuid"]}'] + ([f'cut: {_yaml(e["cut"])}'] if e['cut'] else [])
+    # solo indirizzi della libreria, nessun percorso di file: il testo e' testo, le cartelle non contano
+    head += [f'source: scanstudio://item/{e["item"]}', f'part: scanstudio://region/{e["uuid"]}']
     head += ['readonly: true', f'# Scan Studio · read-only, written {stamp}. Correct the text in Scan Studio: this file is rewritten.', '---', '']
-    body = [e['text'].strip(), ''] if e['text'] else []
-    for h, t in e['areas']:
-        body += [f'## {h}', '', t.strip(), '']
+    names = names or {}
+    body = [_with_figures(e['text'], 0, names, True).strip(), ''] if e['text'] else []
+    for i, (h, t) in enumerate(e['areas'], 1):
+        body += [f'## {h}', '', _with_figures(t, i, names, True).strip(), '']
     return '\n'.join(head + body).rstrip() + '\n'
 
 
@@ -150,10 +240,12 @@ def write(lib, out_dir, fmt='md'):
     os.makedirs(out_dir, exist_ok=True)
     stamp = time.strftime('%Y-%m-%dT%H:%M:%S')
     ext = '.tex' if fmt == 'tex' else '.md'
-    files = []
+    files, figs_kept = [], set()
     same = lambda a, b: [l for l in a.splitlines() if 'written 2' not in l] == [l for l in b.splitlines() if 'written 2' not in l]
     for e in collect(lib):
-        text = (as_tex if fmt == 'tex' else as_md)(e, stamp)
+        names = figures(e, out_dir, [e['text']] + [t for _, t in e['areas']])
+        figs_kept.update(names.values())
+        text = (as_tex if fmt == 'tex' else as_md)(e, stamp, names)
         name = f'{e["date"] or "undated"} {safe_name(e["name"])}{ext}'
         k = 2
         while name in files:                                  # due voci con lo stesso nome: la seconda prende un numero
@@ -175,6 +267,13 @@ def write(lib, out_dir, fmt='md'):
             if head.startswith('% Scan Studio') or head.startswith('% scanstudio.sty') or '# Scan Studio · read-only' in head:
                 os.chmod(fp, 0o644)
                 os.remove(fp)
+    fd = os.path.join(out_dir, 'figures')                # figure di testi che non le hanno piu': via (sono una rappresentazione)
+    if os.path.isdir(fd):
+        for f in os.listdir(fd):
+            if f.endswith('.png') and ' figure ' in f and f not in figs_kept:
+                os.remove(os.path.join(fd, f))
+        if not os.listdir(fd):
+            os.rmdir(fd)
     if fmt == 'tex':
         master = ('% Scan Studio journal: every transcription, one file per cut, by date. Read-only, rewritten by Scan Studio.\n'
                   '% Compile this file (lualatex or pdflatex), or \\input any single file into your own document with docmute.\n'
