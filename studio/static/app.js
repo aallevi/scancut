@@ -1185,8 +1185,12 @@ const mdEsc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, 
 function mdInline(t) {
   return mdEsc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>').replace(/`([^`]+)`/g, '<code>$1</code>');
 }
-function mdToHtml(text, region) {
-  // region: [x0, y0, x1, y1] della zona letta, per le figure
+function mdToHtml(text, region, rot) {
+  // region: [x0, y0, x1, y1] della zona letta, per le figure; rot: giro del taglio letto (gradi orari, quarti).
+  // I riquadri delle figure stanno sul taglio come lo ha visto il lettore, girato: tornano sul foglio prima di
+  // misurarsi sulla scansione (lo stesso giro di np.rot90(k=-q) in core.cutout, al contrario)
+  const q = ((Math.round((rot || 0) / 90) % 4) + 4) % 4;
+  const unturn = (u, v) => q === 1 ? [v, 1 - u] : q === 2 ? [1 - u, 1 - v] : q === 3 ? [1 - v, u] : [u, v];
   const lines = (text || '').split('\n'), out = [];
   let list = null, table = null;
   const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push('</table>'); table = null; } };
@@ -1195,8 +1199,8 @@ function mdToHtml(text, region) {
     const fig = l.match(/!\[[^\]]*\]\([^)]*\)\s*(\d+),(\d+),(\d+),(\d+)/);
     if (fig && region && S.rel) {
       close();
-      const [a, b, c, d] = fig.slice(1).map(Number), W = region[2] - region[0], H = region[3] - region[1];
-      const x = region[0] + a / 1000 * W, y = region[1] + b / 1000 * H, w = (c - a) / 1000 * W, hh = (d - b) / 1000 * H;
+      const [p, r] = [fig.slice(1, 3), fig.slice(3, 5)].map(([u, v]) => unturn(u / 1000, v / 1000)), W = region[2] - region[0], H = region[3] - region[1];
+      const x = region[0] + Math.min(p[0], r[0]) * W, y = region[1] + Math.min(p[1], r[1]) * H, w = Math.abs(r[0] - p[0]) * W, hh = Math.abs(r[1] - p[1]) * H;
       out.push(`<img class="mfig" src="/api/tile?${qs({ rel: S.rel, x, y, w, h: hh, out: Math.min(1200, Math.round(w)) })}">`);
       continue;
     }
@@ -1237,11 +1241,11 @@ function renderMirror() {
   const ppm = S.info.ppm, sheets = S.st.sheets;
   // un rettangolo per testo; secondary: area dentro un foglio (bordo tratteggiato, sopra il foglio).
   // Doppio clic: si scrive dentro, nello stesso posto; uscendo il testo si salva dove appartiene
-  const block = (b, col, text, title, onEdit, secondary) => {
+  const block = (b, col, text, title, onEdit, secondary, rot) => {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
-    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b), S.find?.words) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
+    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
     const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
       style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
       h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title), body);
@@ -1262,7 +1266,7 @@ function renderMirror() {
     if (isInverted(sh) || (sh.ocr === undefined && !(sh.areas || []).length)) return;
     const col = sheetColor(S.st?.sheets?.[i], i), L = sheetLetter(sh);
     // l'area principale (il foglio), poi le sue aree secondarie sopra
-    block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }));
+    block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }), false, sh.rot);
     (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; delete a.reread; }), true));
   });
   (S.st.loose || []).forEach(t => block(t.box, '#888888', t.text, 'loose', v => commit(() => { t.text = v; delete t.reread; })));

@@ -16,6 +16,8 @@ made on the cut itself, are headings in its file.
   cut's real pixels, made smaller only if needed for print (at most 2400 px on the long side, about 20 cm at
   300 dpi), saved as PNG with its transparency in `figures/`, and placed where it is in the text (LaTeX and
   Markdown alike). No other pictures and no file paths: just `scanstudio://` addresses.
+  The reader sees the cut as it is turned, so a picture's box is in the turned frame: the text view beside
+  the scan turns it back before showing the picture where it is on the sheet.
 
 The files are read-only: correct the text in Scan Studio and they are rewritten a few seconds later.
 Your own files in the folder are never touched.
