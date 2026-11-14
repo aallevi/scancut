@@ -494,7 +494,7 @@ class BridgeTest(unittest.TestCase):
         lib = bridge.library()
         bridge.import_root(lib)
         st = core.load_state(self.rel)
-        st['sheets'][0]['ocr'] = 'Domenica\nGIORNATE "ODIOSE"'
+        st['sheets'][0]['ocr'] = 'Domenica\nGIORNATE "ODIOSE"\n\n# \\( \\frac{d}{dx} \\)\n\n\\[ a = b \\]'
         core.save_state(st)
         bridge.sync_rel(self.rel)
         d = os.path.join(self.root, 'journal')
@@ -508,6 +508,10 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('part: scanstudio://region/', md)
         self.assertRegex(md, r'\nid: [0-9a-f-]{36}\n')
         self.assertIn('GIORNATE "ODIOSE"', md)
+        # le formule del lettore nei dollari di Markdown: pandoc (EasyPrint) le stampa, "\( \)" le stampava crude
+        self.assertIn('# $\\frac{d}{dx}$', md)
+        self.assertIn('$$a = b$$', md)
+        self.assertNotIn('\\(', md)
         self.assertFalse(os.stat(os.path.join(d, name)).st_mode & 0o222)        # nessuno ci scrive
         mtime = os.path.getmtime(os.path.join(d, name))
         journal.write(lib, d)                                                    # uguale: non si riscrive

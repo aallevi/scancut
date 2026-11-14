@@ -161,6 +161,15 @@ def figures(e, out_dir, texts):
     return names
 
 
+MATH = re.compile(r'\\\((.+?)\\\)|\\\[(.+?)\\\]', re.S)
+
+
+def math_md(text):
+    # le formule come le scrivono i lettori (\( x \) e \[ x \], alla LaTeX) nei dollari di Markdown: pandoc le legge
+    # solo cosi'; altrimenti stampa la parentesi e il comando crudo ("( \frac{d}{dx} )" in cima a vendrdro 8)
+    return MATH.sub(lambda m: f'${m.group(1).strip()}$' if m.group(1) is not None else f'$${m.group(2).strip()}$$', text or '')
+
+
 def _with_figures(text, ti, names, md):
     # la riga della figura diventa un segnaposto (LaTeX) o un'immagine Markdown con il file ritagliato
     k = [-1]
@@ -171,7 +180,7 @@ def _with_figures(text, ti, names, md):
         if not n:
             return ''
         return f'![](figures/{n})' if md else f'SCANSTUDIOFIGURE{hashlib.md5(n.encode()).hexdigest()}'
-    return FIG.sub(sub, text or '')
+    return FIG.sub(sub, math_md(text))
 
 
 def pandoc_tex(text):

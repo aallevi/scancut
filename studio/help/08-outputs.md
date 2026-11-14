@@ -16,6 +16,9 @@ made on the cut itself, are headings in its file.
   cut's real pixels, made smaller only if needed for print (at most 2400 px on the long side, about 20 cm at
   300 dpi), saved as PNG with its transparency in `figures/`, and placed where it is in the text (LaTeX and
   Markdown alike). No other pictures and no file paths: just `scanstudio://` addresses.
+- **Formulas**: readers write them LaTeX-style, `\( x \)` and `\[ x \]`; the files carry them between dollars
+  (`$x$`, `$$x$$`), the only form pandoc renders, so a print shows the formula and not `( \frac{d}{dx} )`.
+  A formula the reader imagined (a doodle read as maths) is a text correction, made in the studio as any other.
 
 The files are read-only: correct the text in Scan Studio and they are rewritten a few seconds later.
 Your own files in the folder are never touched.
