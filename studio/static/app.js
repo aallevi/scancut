@@ -658,7 +658,18 @@ function searchBox() {
     const sect = (title, list) => { if (list.length) { pop.append(h('div', { class: 'sh' }, title)); list.forEach(x => { items.push(x); pop.append(h('div', { class: 'si', onmousedown: e => { e.preventDefault(); pop.classList.remove('on'); x.do(e); } }, x.label, x.sub ? h('small', {}, x.sub) : null)); }); } };
     pop.innerHTML = '';
     sect('Scans and cuts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel) : openScan(f.rel)) })));
-    sect('Labels and text', r.text.map(t => ({ label: t.rel.split('/').pop() + (t.label ? ' · ' + t.label : ''), sub: '…' + t.snippet + '…', do: async () => { await openScan(t.rel); selectIds([t.sheet]); renderSide(); draw(); } })));
+    // un testo trovato apre il taglio che lo mostra (⌘: in una scheda nuova); ⌥-clic, o senza taglio, la fonte
+    // con la parte scelta. Le aree di testo dentro una parte (strisce lette con "Read a box") contano come la parte
+    sect('Labels and text', r.text.map(t => ({
+      label: (t.cut ? t.cut.split('/').pop() : t.rel.split('/').pop()) + (t.label ? ' · ' + t.label : '') + (t.area ? ' › ' + t.area : ''),
+      sub: '…' + t.snippet + '…' + (t.cut ? '' : ' · not cut yet: opens the source'),
+      do: async e => {
+        const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+        if (t.cut && !e?.altKey) { if (e?.metaKey) return newTab('scan:' + t.cut); await openScan(t.cut); return findInText(words); }
+        if (e?.metaKey) return newTab('scan:' + t.rel);
+        await openScan(t.rel); if (t.sheet) { selectIds([t.sheet]); renderSide(); draw(); }
+        findInText(words);
+      } })));
     sect('Help', [...r.help.map(x => ({ label: x.title, sub: x.chapter + ' · ' + x.snippet, do: () => showHelpTopic(x.id) })),
                   { label: `Search the help for “${q}”`, do: () => openHelp(q) }]);
     sect('Ask', [{ label: `Ask Claude: “${q}”`, sub: 'can also do jobs for you', do: () => toggleChat(true, 'claude', q) }]);
@@ -963,6 +974,29 @@ function clickItem(e, it, idx, items) {
 S.textPane = store('textpane') === '1';
 // riquadri letti fuori da ogni parte: aree "sciolte" della fonte, salvate nella libreria come tutto il resto
 const looseNext = () => 'l' + (Math.max(0, ...(S.st?.loose || []).map(a => +String(a.id).slice(1) || 0)) + 1);
+// le parole cercate segnate in un HTML (fuori dai tag)
+function markWords(html, words) {
+  return (words || []).reduce((t, w) => t.replace(new RegExp(`(?![^<]*>)(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>'), html);
+}
+// dopo un risultato della ricerca: il pannello Testo si apre, il blocco con le parole cercate e' incorniciato e
+// le parole sono selezionate nel suo testo; nella vista affiancata sono segnate. Vale finche' resta questa scansione
+function findInText(words) {
+  if (!words?.length) return;
+  S.find = { words, shown: false };
+  toggleTextPane(true); renderMirror();
+}
+function showFound() {
+  const f = S.find; if (!f || f.shown) return;
+  const pane = $('#textpane'); if (!pane) return;
+  const w = f.words[0];
+  const ta = [...pane.querySelectorAll('textarea')].find(t => t.value.toLowerCase().includes(w));
+  if (!ta) return;                                            // il testo arriva ancora (quelli della libreria): si riprova al prossimo rendering
+  f.shown = true;
+  const blk = ta.closest('.tarea, .tblock'); blk?.classList.add('found');
+  const i = ta.value.toLowerCase().indexOf(w);
+  ta.focus({ preventScroll: true }); ta.setSelectionRange(i, i + w.length);
+  blk?.scrollIntoView({ block: 'center' });
+}
 function toggleTextPane(on) {
   S.textPane = on ?? !S.textPane; store('textpane', S.textPane ? '1' : '');
   renderTextPane(); renderCmdbar();
@@ -1038,6 +1072,7 @@ function renderTextPane() {
         h('button', { class: 'btn small', onclick: () => { navigator.clipboard?.writeText(allText()); status('All text copied'); } }, 'Copy all'),
         h('button', { class: 'btn small', title: 'A Markdown file next to the cuts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
         h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
+  if (S.find) requestAnimationFrame(showFound);
 }
 // le letture di una parte: ognuna resta (un lettore, poi un altro); si sceglie quella da usare, le altre restano
 // i testi della libreria mostrati su un taglio: si rileggono e si scelgono sulla loro scansione (la zona e' una sola)
@@ -1167,7 +1202,7 @@ function renderMirror() {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
-    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? mdToHtml(text, b) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
+    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b), S.find?.words) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
     const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
       style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
       h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title), body);
@@ -1664,7 +1699,7 @@ async function openScan(rel) {
   if (S.view === 'editor' && S.rel !== rel) await flushSave();
   remember('scan:' + rel);
   useRemembered(rel);
-  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; if (S.focus && S.focus.src !== rel) S.focus = null; S.libTexts = []; S.where = null; V.tile = V.mtile = null;
+  S.rel = rel; S.selSheet = null; S.compare = null; S.hist = []; S.fut = []; if (S.focus && S.focus.src !== rel) S.focus = null; S.libTexts = []; S.where = null; S.find = null; V.tile = V.mtile = null;
   // niente dell'immagine di prima resta a schermo mentre arriva questa (si vedeva l'originale, o un altro disegno)
   S.info = null; S.st = null; V.img = null; clearTimeout(tileTimer); tileSeq++;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
@@ -3229,7 +3264,7 @@ async function renderHelp() {
   const cur = HELP.chapters.find(c => c.id === HELP.cur) || HELP.chapters[0];
   if (!cur) return main.append(h('div', { class: 'empty' }, 'No help found.'));
   const words = HELP.q ? HELP.q.toLowerCase().split(/\s+/).filter(w => w.length > 2) : [];
-  const mark = html => words.reduce((t, w) => t.replace(new RegExp(`(?![^<]*>)(${w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'), '<mark>$1</mark>'), html);
+  const mark = html => markWords(html, words);
   const show = (cid, sid) => { HELP.cur = cid; HELP.sec = sid || null; renderHelp(); };
   const search = h('input', { type: 'search', class: 'f', placeholder: 'Search the help', value: HELP.q, oninput: e => {
     clearTimeout(HELP.t); HELP.t = setTimeout(() => { HELP.q = e.target.value.trim(); HELP.hits = null; renderHelp().then(() => { const i = $('#helpq'); i?.focus(); i?.setSelectionRange(i.value.length, i.value.length); }); }, 250); } });

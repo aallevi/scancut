@@ -591,7 +591,8 @@ html.native .window { overflow: hidden; }
 .helpart .mtext { height: auto; overflow: visible; cursor: auto; font-size: 13px; line-height: 1.5; }
 .helpart .mtext table { border-collapse: collapse; margin: 6px 0; }
 .helpart .mtext td, .helpart .mtext th { border: 1px solid #d6dde8; padding: 3px 8px; text-align: left; }
-.helpart mark { background: #fff3a8; }
+.helpart mark, .mirror mark { background: #fff3a8; }
+.textpane .found { box-shadow: 0 0 0 2px #f2c94c; border-radius: 3px; }
 .helpnav { display: flex; justify-content: space-between; margin-top: 30px; padding-top: 10px; border-top: 1px solid #e3e8f0; }
 
 /* file trascinati sulla finestra */
