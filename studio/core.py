@@ -1244,6 +1244,8 @@ DEFAULT_SETTINGS = {
     'frame_sets': {},                  # nome -> [[sinistra, alto, larghezza, altezza] mm, ...]
     'llm_url': 'http://localhost:11434/v1',   # assistente locale: Ollama, o qualunque server compatibile OpenAI
     'claude_model': 'sonnet',
+    'archive_url': '',                 # il sito-archivio (Directus), in sola lettura; la chiave nel Portachiavi
+    'travel': {},                      # destinazione -> i campi che viaggiano con i tagli (eagle, archive, folder)
     'ocr_engine': 'vision',            # vision (Apple, sul Mac) o ollama:<modello> (GLM-OCR, Qwen3-VL: anche a mano)          # Chiedi a Claude: sonnet (equilibrato), haiku (veloce), opus, o vuoto
 }
 

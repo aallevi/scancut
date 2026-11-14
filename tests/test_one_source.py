@@ -443,7 +443,7 @@ class CodeAudit(unittest.TestCase):
         js = open(os.path.join(REPO, 'studio', 'static', 'app.js'), encoding='utf-8').read()
         keys = set(re.findall(r"\bstore\('([\w.-]+)'", js))
         # le sole preferenze dell'interfaccia (larghezze, sfondo, lente, pannelli, schede aperte, ordine e filtri)
-        prefs = {'navw', 'sidew', 'bg', 'loupe', 'loupez', 'densshut', 'densr', 'tabs', 'textpane', 'shut', 'exportdir', 'navhide', 'sidehide', 'textview',
+        prefs = {'navw', 'sidew', 'bg', 'loupe', 'loupez', 'densshut', 'densr', 'tabs', 'textpane', 'shut', 'exportdir', 'exportkind', 'navhide', 'sidehide', 'textview',
                  'libmode', 'libsort', 'libdpi', 'libhideempty', 'jobsseen'}
         self.assertTrue(keys <= prefs, f'browser storage used for something that is not a preference: {sorted(keys - prefs)}')
         self.assertNotIn('boxTexts', js, 'text kept only in the window is back')

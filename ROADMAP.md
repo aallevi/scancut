@@ -40,7 +40,10 @@ history log, embeddings table, full-text search; checksums, snapshots, sidecars)
 the studio; Library views Objects / Cuts / Texts with links between them; cuts carry their texts and
 IDs in their metadata; the one-source rule (re-cut, rename and history when a part changes; only the
 changed part is re-cut; rotation and text shared both ways); "export" renamed "cut"; refining a cut
-on its source ("Edit its part"); a cut's own parts; series and places as data; Trash with days to keep;
+on its source ("Edit its part"); a cut's own parts; transcriptions for nvim as read-only Markdown
+shaped like wiki notes (or LaTeX), with `nvim/scanstudio.lua` to open, search, take and insert parts;
+"what travels" with exported cuts chosen per destination (Eagle, archive, folder), metadata only;
+a read-only link to the Directus archive (token in the Keychain); series and places as data; Trash with days to keep;
 Edit in Affinity / Preview (saves come back as linked versions). **Files inside:** "Move files in…"
 puts originals and cuts in the package as lossless JPEG XL, checked pixel for pixel; the agent and the
 scanner file new scans straight in, flushed to disk before the source goes. **Scanner:** phases and
@@ -62,11 +65,11 @@ by their pixels.
 5. **Parts and views:** group objects (a notebook and its pages, front/back/detail views); label and
    order editable from the library; tags and collections in the interface.
 6. **Exports as representations:** LaTeX that can make a book (your preamble, mixed languages marked,
-   figures from cuts) and the nvim journal (read-only, dated, linked back); searchable PDF (positioned
-   text layer); Word; BagIt package.
+   figures from cuts); searchable PDF (positioned text layer); Word; BagIt package.
 7. **Archive link:** Scan Studio prepares material for the archive (Directus) as an export package
    its importer already reads, upserted by stable IDs (`source` / `source_id`), each field owned by one
-   side; read-only lookups of the archive's lists; later a "Send to archive" button. Details to settle.
+   side. Done: the read-only link and the export with a `.json` per cut. Next: the archive's importer
+   reads those folders; show in the library which cuts the archive already has.
 8. **Several libraries:** open in separate windows (like Tropy), merge without duplicates.
 9. **Models per Mac:** stored once, shared by all libraries; a library that needs a missing model
    asks to download it (like a missing font).
@@ -87,8 +90,8 @@ by their pixels.
 
 ## Later
 
-17. **Scanner:** driving a flatbed directly (Canon LiDE 400): frame sets, presets, settings per frame,
-    optical-only resolutions, prescan zoom, 16-bit originals.
+17. **Scanner:** done through SANE (areas and frame sets, settings per area, optical resolutions only,
+    area preview, 48-bit); left: named presets of settings, and a check against ImageCaptureCore.
 18. **Colour calibration (IT8.7/2):** ArgyllCMS profile embedded; pixels untouched.
 19. **"Fake pixels" copies,** off by default: descreen (moiré), 16-bit curves, BM3D noise reduction.
 20. **Wizard and job manager:** a step-by-step batch wizard and a fuller jobs view.

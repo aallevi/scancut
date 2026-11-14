@@ -1,6 +1,7 @@
 # la libreria (catalogo SQLite): import senza doppioni, fissita', zone e testo con le versioni,
 # ricerca, sidecar piccoli, copie del catalogo
 import os, glob, json, time, unittest
+import numpy as np, cv2
 from helpers import scratch_root, remove_root, fake_scan
 from studio.library.db import Library
 
@@ -346,25 +347,110 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(lib.db.execute("SELECT COUNT(*) FROM series WHERE name = 'IMG'").fetchone()[0], 0)
 
     def test_journal_latex(self):
-        # le trascrizioni come LaTeX: un file per oggetto, journal.tex, scanstudio.sty; caratteri speciali protetti
+        # LaTeX: un documento semplice per taglio (si compila da solo, pandoc lo legge), journal.tex li raccoglie
         from studio.library import bridge, journal
         from studio import core
         lib = bridge.library()
         bridge.import_root(lib)
         st = core.load_state(self.rel)
         st['sheets'][0]['ocr'] = '# Title\n- one & two\n50% of $5_x'
+        st['sheets'][1]['ocr'] = 'second sheet'
         core.save_state(st)
         bridge.sync_rel(self.rel)
         d = os.path.join(self.root, 'journal')
-        r = journal.write(lib, d)
-        self.assertEqual(r['files'], 1)
-        tex = open(os.path.join(d, [f for f in os.listdir(d) if f.endswith('.tex') and f != 'journal.tex'][0])).read()
-        self.assertIn(r'\paragraph{Title}', tex)
+        r = journal.write(lib, d, 'tex')
+        self.assertEqual(r['files'], 2)                                          # una per parte, non una per fonte
+        names = sorted(f for f in os.listdir(d) if f != 'journal.tex')
+        tex = open(os.path.join(d, names[0])).read()
+        self.assertIn(r'\documentclass', tex)
+        self.assertIn(r'\section*{', tex)
         self.assertIn(r'\item one \& two', tex)
         self.assertIn(r'50\% of \$5\_x', tex)
-        self.assertIn('scanstudio://item/', tex)
-        self.assertIn(r'\input{', open(os.path.join(d, 'journal.tex')).read())
-        self.assertTrue(os.path.exists(os.path.join(d, 'scanstudio.sty')))
+        self.assertNotIn(r'\scanstudio', tex)                                    # solo comandi standard
+        self.assertIn('docmute', open(os.path.join(d, 'journal.tex')).read())
+
+    def test_journal_markdown(self):
+        # le trascrizioni come le note del wiki: front matter (title, date, id), una parte per titolo, in sola lettura
+        from studio.library import bridge, journal
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'Domenica\nGIORNATE "ODIOSE"'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        d = os.path.join(self.root, 'journal')
+        os.makedirs(d)
+        open(os.path.join(d, 'mine.md'), 'w').write('# my own note\n')
+        r = journal.write(lib, d)
+        self.assertEqual((r['files'], r['format']), (1, 'md'))
+        name = [f for f in os.listdir(d) if f != 'mine.md'][0]
+        md = open(os.path.join(d, name)).read()
+        self.assertTrue(md.startswith('---\ntitle: '))
+        self.assertIn('part: scanstudio://region/', md)
+        self.assertRegex(md, r'\nid: [0-9a-f-]{36}\n')
+        self.assertIn('GIORNATE "ODIOSE"', md)
+        self.assertFalse(os.stat(os.path.join(d, name)).st_mode & 0o222)        # nessuno ci scrive
+        mtime = os.path.getmtime(os.path.join(d, name))
+        journal.write(lib, d)                                                    # uguale: non si riscrive
+        self.assertEqual(os.path.getmtime(os.path.join(d, name)), mtime)
+        st['sheets'][0]['ocr'] = ''
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        journal.write(lib, d)                                                    # niente testo: via il file, il proprio resta
+        self.assertEqual(os.listdir(d), ['mine.md'])
+
+    def test_what_travels_with_a_cut(self):
+        # la copia porta solo i campi scelti, nei metadati; i pixel restano quelli; il .json per l'archivio
+        import shutil, json as js, subprocess
+        from studio.library import bridge
+        from studio import core
+        if not core.tool('exiftool'):
+            self.skipTest('exiftool')
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'parole sul foglio'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        out = os.path.join(self.root, 'travel')
+        r = bridge.export_cuts(lib, os.path.join(out, 'on'), 'flat', fields=['text', 'title', 'ids', 'sidecar'])
+        self.assertEqual(r['copied'], 2)
+        self.assertEqual(bridge.export_cuts(lib, os.path.join(out, 'on'), 'flat', fields=['text', 'title', 'ids', 'sidecar'])['same'], 2)
+        bridge.export_cuts(lib, os.path.join(out, 'off'), 'flat', fields=[])
+        desc = lambda d: subprocess.run([core.tool('exiftool'), '-s3', '-XMP-dc:Description', '-r', os.path.join(out, d)], capture_output=True, text=True).stdout
+        self.assertIn('parole sul foglio', desc('on'))
+        self.assertNotIn('parole', desc('off'))
+        sides = [js.load(open(os.path.join(out, 'on', f))) for f in os.listdir(os.path.join(out, 'on')) if f.endswith('.json')]
+        self.assertEqual({x['source_system'] for x in sides}, {'scanstudio'})
+        self.assertTrue(all(x['source_id'] == x['uuid'] for x in sides))
+        for f in os.listdir(os.path.join(out, 'off')):
+            src = [c for c in bridge.cutout_list(lib) if c['name'] == f][0]
+            a = lib.db.execute('SELECT * FROM asset WHERE uuid = ?', (src['uuid'],)).fetchone()
+            same = lambda p: cv2.imread(p, cv2.IMREAD_UNCHANGED)
+            self.assertTrue(np.array_equal(same(lib.asset_path(a)), same(os.path.join(out, 'off', f))))
+
+    def test_a_cut_listed_as_a_source_is_found_and_removed(self):
+        # una voce fatta solo del taglio di un'altra fonte: Check la dice, si toglie (solo la voce), si rimette
+        from studio.library import bridge
+        from studio.library.db import new_uuid, now
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        cut = lib.db.execute("SELECT asset_id FROM item_asset WHERE role = 'cutout' LIMIT 1").fetchone()[0]
+        u = new_uuid()
+        lib.db.execute("INSERT INTO item (uuid, kind, title, created_at, modified_at) VALUES (?, 'file', 'stray', ?, ?)", (u, now(), now()))
+        lib.db.execute("INSERT INTO item_asset (item_id, asset_id, role) VALUES ((SELECT id FROM item WHERE uuid = ?), ?, 'view')", (u, cut))
+        lib.db.commit()
+        self.assertIn('cut listed as a source', [p['kind'] for p in bridge.check(lib)])
+        path = lib.db.execute('SELECT path FROM asset WHERE id = ?', (cut,)).fetchone()[0]
+        self.assertEqual(bridge.retire_strays(lib), 1)
+        self.assertTrue(os.path.exists(path))                                    # il file resta dov'e'
+        self.assertNotIn('cut listed as a source', [p['kind'] for p in bridge.check(lib)])
+        bridge.restore(lib, lib.db.execute("SELECT uuid FROM trash WHERE ref = ?", (u,)).fetchone()[0])
+        self.assertEqual([x['uuid'] for x in bridge.stray_items(lib)], [u])
 
     def test_reading_a_cut_is_reading_its_part(self):
         # "leggi il documento intero" su un taglio: e' il testo della sua parte, visibile anche sulla fonte

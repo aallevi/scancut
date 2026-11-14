@@ -455,6 +455,38 @@ def trash(lib, items=(), cuts=()):
     return n
 
 
+def stray_items(lib):
+    # voci fra le fonti che sono solo un taglio: ogni loro file e' nella storia o e' gia' il taglio di un'altra fonte
+    # (nate al primo avvio, quando i tagli di prima furono registrati anche come fonti)
+    out = []
+    for it in lib.db.execute("SELECT id, uuid, title FROM item WHERE kind = 'file' AND trashed_at IS NULL").fetchall():
+        if lib.db.execute('SELECT 1 FROM item WHERE parent_id = ? AND trashed_at IS NULL', (it['id'],)).fetchone():
+            continue
+        assets = lib.db.execute('SELECT a.id, a.path FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ?', (it['id'],)).fetchall()
+        if assets and all(_in_history(a['path']) or lib.db.execute(
+                "SELECT 1 FROM item_asset ia JOIN item i ON i.id = ia.item_id WHERE ia.asset_id = ? AND ia.role = 'cutout' AND i.id != ? AND i.trashed_at IS NULL",
+                (a['id'], it['id'])).fetchone() for a in assets):
+            out.append(dict(it))
+    return out
+
+
+def retire_strays(lib, uuids=None):
+    # nel cestino solo la voce, i file restano dove sono (sono tagli di altre fonti, o storia); si puo' rimettere
+    from .db import new_uuid
+    n = 0
+    with files_lock:
+        for it in stray_items(lib):
+            if uuids is not None and it['uuid'] not in uuids:
+                continue
+            lib.db.execute('UPDATE item SET trashed_at = ? WHERE id = ?', (now(), it['id']))
+            lib.db.execute('INSERT INTO trash (uuid, what, ref, title, files, trashed_at) VALUES (?,?,?,?,?,?)',
+                           (new_uuid(), 'item', it['uuid'], it['title'], '[]', now()))
+            lib.log('trash', 'item', it['uuid'], why='only a cut, listed as a source')
+            n += 1
+        lib.db.commit()
+    return n
+
+
 def trash_list(lib):
     days = int(core.settings().get('trash_days') or 91)
     out = []
@@ -543,13 +575,108 @@ def _safe_dir(name):
     return re.sub(r'[/:\\]+', '-', (name or '').strip()) or 'untitled'
 
 
-def export_cuts(lib, dest, structure='place', series=None, place=None, cuts=None):
+# Cosa viaggia con i tagli: per ogni destinazione (Eagle, archivio, cartella) i campi scelti. Il taglio della
+# libreria non cambia: la copia porta quei campi nei suoi metadati (mai nei pixel) e, se si vuole, un .json accanto.
+TRAVEL_FIELDS = [
+    ('text', 'Transcription (description)'),
+    ('title', 'Title and part label'),
+    ('date', 'Date'),
+    ('series', 'Series (as a keyword)'),
+    ('place', 'Where it is kept (private: box, folder, number)'),
+    ('size', 'Size: dpi, pixels, centimetres'),
+    ('ids', 'Scan Studio IDs and the source scan (to find it again)'),
+    ('scan', 'The scan’s own metadata (scanner, date, colour profile)'),
+    ('sidecar', 'A .json beside each file with all of the above'),
+]
+TRAVEL_PRESETS = {
+    'eagle': ['text', 'title', 'date', 'series', 'size', 'ids', 'scan'],
+    'archive': ['text', 'title', 'date', 'series', 'place', 'size', 'ids', 'scan', 'sidecar'],
+    'folder': ['text', 'title', 'date', 'size', 'ids', 'scan'],
+}
+
+
+def travel_choice(dest_kind):
+    mine = (core.settings().get('travel') or {}).get(dest_kind)
+    return list(mine) if mine is not None else list(TRAVEL_PRESETS.get(dest_kind, TRAVEL_PRESETS['folder']))
+
+
+def cut_facts(lib, c):
+    # tutto quel che la libreria sa di un taglio, dalla sua parte e dalla sua fonte
+    f = {'uuid': c['uuid'], 'file': c['name'], 'width': c['width'], 'height': c['height'], 'dpi': c['dpi'], 'sha256': c['sha256']}
+    r = lib.db.execute('SELECT r.uuid, r.label, r.kind, r.position, i.uuid AS item, i.title, i.date, s.name AS series, a.original_name AS source '
+                       'FROM cut x JOIN region r ON r.id = x.region_id JOIN item i ON i.id = r.item_id LEFT JOIN series s ON s.id = i.series_id '
+                       'LEFT JOIN asset a ON a.id = r.asset_id WHERE x.path = (SELECT path FROM asset WHERE uuid = ?) ORDER BY x.id DESC LIMIT 1',
+                       (c['uuid'],)).fetchone()
+    own = lib.db.execute('SELECT i.title, i.date, s.name AS series FROM item i LEFT JOIN series s ON s.id = i.series_id WHERE i.uuid = ?', (c['item'],)).fetchone()
+    f['title'] = (r['title'] if r else None) or (own['title'] if own else None) or os.path.splitext(c['name'])[0]
+    f['label'] = (r['label'] or '') if r else ''
+    f['date'] = (r['date'] if r else None) or (own['date'] if own else None) or ''
+    f['series'] = (r['series'] if r else None) or (own['series'] if own else None) or ''
+    f['source'] = r['source'] if r else ''
+    f['source_item'] = r['item'] if r else c['item']
+    f['region'] = r['uuid'] if r else None
+    k = c.get('kept') or {}
+    f['place'] = k.get('path') or ''
+    f['number'] = k.get('number')
+    f['text'] = '\n\n'.join(t['plain'] for t in reversed(c.get('texts') or []) if (t.get('plain') or '').strip())
+    if c['dpi']:
+        f['cm'] = [round(c['width'] / c['dpi'] * 2.54, 1), round(c['height'] / c['dpi'] * 2.54, 1)]
+    return f
+
+
+def _travel_tags(f, fields):
+    # gli argomenti di exiftool per la copia: si aggiunge quel che e' scelto, si toglie quel che non lo e'
+    a = []
+    if 'scan' not in fields:
+        a += ['-all=', '-tagsFromFile', '@', '-icc_profile', '-XMP-tiff:all', '-XMP-exif:PixelXDimension', '-XMP-exif:PixelYDimension',
+              '-XMP-dc:Description', '-IPTC:Caption-Abstract', '-IFD0:ImageDescription', '-XMP-dc:Identifier', '-XMP-dc:Relation', '-XMP-dc:Source']
+    if 'text' not in fields:
+        a += ['-XMP-dc:Description=', '-IPTC:Caption-Abstract=', '-IFD0:ImageDescription=']
+    if 'ids' not in fields:
+        a += ['-XMP-dc:Identifier=', '-XMP-dc:Relation=', '-XMP-dc:Source=']
+    if 'size' not in fields:
+        a += ['-XMP-tiff:XResolution=', '-XMP-tiff:YResolution=', '-XMP-tiff:ResolutionUnit=']
+    if 'title' in fields:
+        t = f['title'] + (f' · {f["label"]}' if f['label'] else '')
+        a += [f'-XMP-dc:Title={t}', f'-IPTC:ObjectName={t[:64]}']
+    if 'date' in fields and f['date']:
+        a += [f'-XMP-photoshop:DateCreated={f["date"]}']
+    kw = []
+    if 'series' in fields and f['series']:
+        kw.append(f'series: {f["series"]}')
+    if 'place' in fields and f['place']:
+        kw.append(f'place: {f["place"]}' + (f' #{f["number"]}' if f['number'] else ''))
+    for k in kw:
+        a += [f'-XMP-dc:Subject+={k}', f'-IPTC:Keywords+={k}']
+    if 'ids' in fields and f['source']:
+        a += [f'-XMP-dc:Source={f["source"]}']
+    return a
+
+
+def _sidecar(f, fields):
+    keep = {'uuid', 'file', 'sha256'}
+    keep |= {'text'} if 'text' in fields else set()
+    keep |= {'title', 'label'} if 'title' in fields else set()
+    keep |= {'date'} if 'date' in fields else set()
+    keep |= {'series'} if 'series' in fields else set()
+    keep |= {'place', 'number'} if 'place' in fields else set()
+    keep |= {'width', 'height', 'dpi', 'cm'} if 'size' in fields else set()
+    keep |= {'source', 'source_item', 'region'} if 'ids' in fields else set()
+    d = {k: v for k, v in f.items() if k in keep and v not in (None, '', [])}
+    d['source_system'] = 'scanstudio'             # come lo legge l'importatore dell'archivio: source / source_id
+    d['source_id'] = f['uuid']
+    return d
+
+
+def export_cuts(lib, dest, structure='place', series=None, place=None, cuts=None, fields=None, kind='folder'):
     import filecmp
     dest = os.path.abspath(os.path.expanduser(dest))
+    fields = travel_choice(kind) if fields is None else list(fields)
     rows = cutout_list(lib, limit=100000, series=series, place=place)
     if cuts:
         rows = [c for c in rows if c['uuid'] in set(cuts)]
     done = {'copied': 0, 'same': 0, 'dir': dest}
+    tool = core.tool('exiftool')
     for c in rows:
         a = lib.db.execute('SELECT * FROM asset WHERE uuid = ?', (c['uuid'],)).fetchone()
         src = lib.asset_path(a)
@@ -567,12 +694,38 @@ def export_cuts(lib, dest, structure='place', series=None, place=None, cuts=None
         d = os.path.join(dest, *sub)
         os.makedirs(d, exist_ok=True)
         out = os.path.join(d, name)
-        if os.path.exists(out) and filecmp.cmp(src, out, shallow=False):
-            done['same'] += 1; continue
-        out = core.sc.unique(out)
-        shutil.copy2(src, out)
-        done['copied'] += 1
-    lib.log('export', 'library', lib.meta('uuid'), dir=dest, structure=structure, copied=done['copied'])
+        f = cut_facts(lib, c)
+        tmp = os.path.join(d, f'.travel-{os.getpid()}-{c["uuid"]}{os.path.splitext(src)[1]}')   # nascosto finche' non e' pronto
+        shutil.copy2(src, tmp)
+        tags = _travel_tags(f, fields)
+        txt = None
+        if 'text' in fields and f['text']:                # il testo dalla libreria (la fonte), non da quel che il file aveva
+            txt = tmp + '.txt'
+            with open(txt, 'w', encoding='utf-8') as fh:
+                fh.write(f['text'])
+            tags += [f'-XMP-dc:Description<={txt}', f'-IPTC:Caption-Abstract<={txt}', f'-IFD0:ImageDescription<={txt}']
+        if tool and tags:
+            r = subprocess.run([tool, '-q', '-q', '-m', '-overwrite_original', *tags, tmp], capture_output=True, text=True, timeout=120)
+            if txt:
+                os.remove(txt)
+            if r.returncode != 0:
+                os.remove(tmp)
+                raise ValueError(f'metadata for {name}: {r.stderr.strip()[-200:]}')
+        if os.path.exists(out) and filecmp.cmp(tmp, out, shallow=False):
+            os.remove(tmp)
+            done['same'] += 1
+        else:
+            out = core.sc.unique(out)
+            os.replace(tmp, out)
+            done['copied'] += 1
+        if 'sidecar' in fields:
+            side = os.path.splitext(out)[0] + '.json'
+            body = json.dumps(_sidecar(f, fields), ensure_ascii=False, indent=1)
+            if not (os.path.exists(side) and open(side, encoding='utf-8').read() == body):
+                with open(side + '.part', 'w', encoding='utf-8') as fh:
+                    fh.write(body)
+                os.replace(side + '.part', side)
+    lib.log('export', 'library', lib.meta('uuid'), dir=dest, structure=structure, copied=done['copied'], fields=fields, kind=kind)
     return done
 
 
@@ -1474,6 +1627,8 @@ def _supersede(lib, path, why):
     lib.db.execute('UPDATE cut SET path = ? WHERE path = ?', (dst, path))
     lib.db.commit()
     lib.log('superseded', 'asset', a['uuid'] if a else None, old_path=path, kept_at=dst, why=why)
+    if a:                                             # una voce che era solo questo file non resta fra le fonti
+        retire_strays(lib, [r[0] for r in lib.db.execute("SELECT i.uuid FROM item i JOIN item_asset ia ON ia.item_id = i.id WHERE ia.asset_id = ? AND i.kind = 'file'", (a['id'],))])
 
 
 def series_list(lib):
@@ -1515,15 +1670,22 @@ def journal_dir(lib):
     return json.loads(r[0]) if r else None
 
 
-def set_journal_dir(lib, d):
+def journal_format(lib):
+    r = lib.db.execute("SELECT value FROM setting WHERE key = 'journal_format'").fetchone()
+    return json.loads(r[0]) if r else ('tex' if journal_dir(lib) else 'md')    # chi aveva gia' il LaTeX lo tiene
+
+
+def set_journal_dir(lib, d, fmt=None):
     with lib.db:
         lib.db.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('journal_dir', ?)", (json.dumps(d),))
+        if fmt in ('md', 'tex'):
+            lib.db.execute("INSERT OR REPLACE INTO setting (key, value) VALUES ('journal_format', ?)", (json.dumps(fmt),))
 
 
 def write_journal(lib):
     from . import journal
     d = journal_dir(lib)
-    return journal.write(lib, os.path.expanduser(d)) if d else None
+    return journal.write(lib, os.path.expanduser(d), journal_format(lib)) if d else None
 
 
 def schedule_journal(delay=3):
@@ -1647,20 +1809,28 @@ def check(lib, deep=False):
         dd = os.path.join(core.DATA, d)
         if os.path.isdir(dd) and os.listdir(dd):
             add('data outside the library', f'studio-data/{d}', dd)
-    # 4) il diario (se c'e') dice quello che dice la libreria
+    # 3b) un taglio non e' una fonte: voci fra le fonti fatte solo di tagli
+    for it in stray_items(lib):
+        add('cut listed as a source', it['title'], it['uuid'])
+    # 4) il diario (se c'e') dice quello che dice la libreria: un file per taglio, con il suo testo
     jd = journal_dir(lib)
     if jd and os.path.isdir(os.path.expanduser(jd)):
         from . import journal
-        for it in lib.db.execute("SELECT id, title, date FROM item WHERE trashed_at IS NULL").fetchall():
-            texts = [t['plain'] for t in lib.db.execute("SELECT t.plain FROM current_text t JOIN region r ON r.id = t.region_id WHERE r.item_id = ? "
-                                                        "AND r.removed_at IS NULL AND t.plain != ''", (it['id'],))]
-            if not texts:
-                continue
-            f = os.path.join(os.path.expanduser(jd), f'{it["date"] or "undated"} {journal.safe_name(it["title"] or "")}.tex')
+        tex = journal_format(lib) == 'tex'
+        seen = set()
+        for e in journal.collect(lib):
+            name = f'{e["date"] or "undated"} {journal.safe_name(e["name"])}'
+            k = 2
+            while name in seen:
+                name = f'{e["date"] or "undated"} {journal.safe_name(e["name"])} ({k})'; k += 1
+            seen.add(name)
+            f = os.path.join(os.path.expanduser(jd), name + ('.tex' if tex else '.md'))
             body = open(f, encoding='utf-8').read() if os.path.exists(f) else ''
-            first = journal.inline(texts[-1].splitlines()[0]) if texts[-1].strip() else ''
+            t = e['text'] or (e['areas'][0][1] if e['areas'] else '')
+            line = t.strip().splitlines()[0].strip() if t.strip() else ''
+            first = journal.inline(line) if tex else line
             if not body or (first and first not in body):
-                add('journal out of date', it['title'], f)
+                add('journal out of date', e['name'], f)
     return problems
 
 

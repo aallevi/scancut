@@ -6,7 +6,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import numpy as np, cv2
 from PIL import Image
 
-from . import core, scanner, readers, help as helpdocs
+from . import core, scanner, readers, archive, help as helpdocs
 from .library import bridge
 
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
@@ -624,7 +624,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(bridge.item_list(lib, q.get('q') or None, series=q.get('series') or None, place=q.get('place') or None) if lib else [])
         if path == 'library/journal':
             lib = bridge.library(create=False)
-            return self.send({'dir': bridge.journal_dir(lib) if lib else None})
+            return self.send({'dir': bridge.journal_dir(lib) if lib else None, 'format': bridge.journal_format(lib) if lib else 'md'})
         if path == 'library/switch':
             return self.send(bridge.switch_plan(bridge.library(create=True)))
         if path == 'library/check':
@@ -670,6 +670,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(st)
         if path == 'settings':
             return self.send(core.settings())
+        if path == 'travel':
+            k = q.get('kind') or 'folder'
+            return self.send({'fields': bridge.TRAVEL_FIELDS, 'chosen': bridge.travel_choice(k), 'presets': bridge.TRAVEL_PRESETS})
+        if path == 'archive/status':
+            return self.send(archive.status())
+        if path == 'archive/lookup':
+            try:
+                return self.send(archive.lookup(q.get('kind') or 'records', q.get('q') or ''))
+            except ValueError as e:
+                return self.send({'error': str(e)})
         if path == 'jobs':
             return self.send([JOBS.public(j) for j in sorted(JOBS.jobs.values(), key=lambda j: -j['created'])][:50])
         if path == 'job':
@@ -788,8 +798,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'ok': bridge.restore(bridge.library(), b['uuid'])})
         if path == 'library/empty':
             return self.send({'gone': bridge.empty_trash(bridge.library(), None, b.get('uuids') or None)})
+        if path == 'library/strays':
+            return self.send({'trashed': bridge.retire_strays(bridge.library(), b.get('uuids'))})
         if path == 'library/export':
-            r = bridge.export_cuts(bridge.library(), b['dir'], b.get('structure') or 'place', b.get('series') or None, b.get('place') or None, b.get('cuts') or None)
+            try:
+                r = bridge.export_cuts(bridge.library(), b['dir'], b.get('structure') or 'place', b.get('series') or None, b.get('place') or None, b.get('cuts') or None,
+                                       b.get('fields'), b.get('kind') or 'folder')
+            except ValueError as e:
+                return self.send({'error': str(e)})
             if b.get('reveal'):
                 subprocess.run(['open', r['dir']])
             return self.send(r)
@@ -830,7 +846,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/journal':
             lib = bridge.library(create=False)
             if b.get('dir'):
-                bridge.set_journal_dir(lib, b['dir'])
+                bridge.set_journal_dir(lib, b['dir'], b.get('format'))
             r = bridge.write_journal(lib)
             if r and r['dir'].startswith(core.ROOT):
                 r['rel'] = core.relpath(r['dir'])
@@ -880,6 +896,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'written': w})
         if path == 'settings':
             return self.send(core.save_settings(b))
+        if path == 'archive/connect':
+            try:
+                return self.send(archive.connect(b.get('url'), b.get('token')))
+            except (ValueError, subprocess.CalledProcessError) as e:
+                return self.send({'error': str(e)})
+        if path == 'archive/forget':
+            return self.send(archive.forget())
+        if path == 'archive/open':
+            # la pagina dell'archivio dove si fa la chiave: un utente "Scan Studio" con un permesso di sola lettura
+            u = (b.get('url') or archive.url() or '').rstrip('/')
+            if not u.startswith(('http://', 'https://')):
+                return self.send({'error': 'give the archive address first'})
+            subprocess.run(['open', u + (b.get('page') or '/admin/users')])
+            return self.send({'ok': True})
         if path == 'jobs':
             kind = b.pop('kind')
             if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install'):

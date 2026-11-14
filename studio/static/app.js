@@ -228,13 +228,13 @@ function renderCmdbar() {
       ];
     } }),
     cmd('Outputs', null, { title: 'What the library gives to other tools: text for nvim and LaTeX, files, the archive site', menu: () => [
-      { label: 'Transcriptions for nvim (LaTeX)…', do: journalDialog, note: 'One .tex per source, by date, read-only; rewritten whenever a text changes.' },
+      { label: 'Transcriptions for nvim…', do: journalDialog, note: 'One Markdown (or LaTeX) file per cut, by date, read-only; rewritten whenever a text changes.' },
       { label: 'Show the transcriptions folder', do: () => api.post('library/journal', { reveal: true }).then(r => r.error && status('Choose a folder first')) },
       '-',
       { label: 'Export cuts in folders…', do: exportCutsDialog, note: 'A copy of the cuts in a folder of your choice, by place (box and folder), by series, or all together. Same bytes, never over another file.' },
       '-',
       { label: 'Searchable PDF', disabled: true, note: 'Coming: the cut with its text laid over it, selectable.' },
-      { label: 'Send to the archive site (Directus)', disabled: true, note: 'Coming: cuts, transcriptions and where they come from, one way.' },
+      { label: 'Archive site (Directus)…', do: archiveDialog, note: 'Connect your archive with a read-only token: Scan Studio sees what is already there, never writes.' },
     ] }),
     cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cuts of the parts (⌘S). After that they follow every change of their part.' }),
     cmd('Batch', null, { menu: () => [
@@ -458,6 +458,7 @@ async function libCheck(deep) {
   status(p.length ? `${p.length} problem(s) found` : 'Everything is consistent with the library');
   const old = [...new Map(p.filter(x => ['cut older than its part', 'more than one cut of a part in place', 'old cut not linked to a part'].includes(x.kind) && x.rel && x.part)
     .map(x => [x.rel + '\n' + x.part, x])).values()];   // una volta per parte
+  const strays = p.filter(x => x.kind === 'cut listed as a source');
   dialog('Check', p.length ? `${p.length} thing(s) do not match the library` : 'Everything is consistent', h('div', { style: { width: '560px', maxHeight: '60vh', overflow: 'auto' } },
     p.length ? h('table', { class: 'table' }, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Where'), h('th', {}, '')),
       ...p.map(x => h('tr', {}, h('td', {}, x.kind), h('td', {}, x.what), h('td', { class: 'small muted' }, (x.detail || '').split('/').slice(-2).join('/')))))
@@ -469,7 +470,14 @@ async function libCheck(deep) {
         for (const [k, x] of old.entries()) { status(`Re-cutting ${k + 1} of ${old.length}: ${x.what}`, true); await api.post('recut_part', { rel: x.rel, id: x.part }).catch(() => null); }
         btn.closest('.dlg-back')?.remove(); status(`${old.length} cut(s) redone from their parts; the previous files are in the history`); libCheck(deep);
       } }, `Re-cut these (${old.length})`),
-      info('These cuts were made before their part was last changed, or are extra copies left beside a part’s cut. Re-cutting makes each part’s cut from the part as it is now and moves the old files to the history (studio-data/replaced).')) : null));
+      info('These cuts were made before their part was last changed, or are extra copies left beside a part’s cut. Re-cutting makes each part’s cut from the part as it is now and moves the old files to the history (studio-data/replaced).')) : null,
+    strays.length ? h('div', { class: 'btns', style: { marginTop: '8px' } },
+      h('button', { class: 'btn', onclick: async e => {
+        e.currentTarget.disabled = true;
+        const r = await api.post('library/strays', { uuids: strays.map(x => x.detail) }).catch(e => ({ error: e.message }));
+        e.target.closest('.dlg-back')?.remove(); status(r.error || `${r.trashed} entr${r.trashed === 1 ? 'y' : 'ies'} moved to the Trash; their files stay where they are`); libCheck(deep);
+      } }, `Remove these from Sources (${strays.length})`),
+      info('Entries that are only a cut (already a cut of its real source, or an old one in the history), left from before the library. Only the entry goes to the Trash: the files and the real sources do not move. Restore from the Trash if needed.')) : null));
 }
 // i file dentro la libreria: prima il piano (niente cambia), poi, confermato, il lavoro (con la barra)
 async function libSwitch() {
@@ -522,7 +530,9 @@ function sideLibrary(side) {
         h('button', { class: 'btn small', title: 'This cut goes to the Trash; its part is left out of the cut until it comes back', onclick: () => libTrash({ cuts: [c.uuid] }, `“${c.name}”`) }, 'Move to Trash'))));
     return;
   }
-  if (!d) return side.append(group('Library', h('div', { class: 'muted' }, 'Select a source. Double-click opens it in the editor.')));
+  if (!d) return side.append(group('Library', h('div', { class: 'muted' }, LIB.mode === 'cutouts' ? 'Select a cut. Double-click opens it in the editor.'
+    : LIB.mode === 'texts' ? 'Every text read, each beside the part it comes from.' : LIB.mode === 'trash' ? 'Each entry has its own Put back and Delete now.'
+    : 'Select a source. Double-click opens it in the editor.')));
   const it = d.item;
   const roleName = { view: 'Source', front: 'Front', back: 'Back', detail: 'Detail', edit: 'Edited copy', cutout: 'Cut' };
   side.append(group(it.title || '(untitled)',
@@ -709,7 +719,7 @@ function renderNavTree() {
 
 // ------------------------------------------------------------ viste
 async function go(view) {
-  if (['jobs', 'scanners', 'scripts', 'addons', 'library'].includes(view)) remember('view:' + view);
+  if (['jobs', 'scanners', 'scripts', 'addons', 'library', 'help'].includes(view)) remember('view:' + view);
   if (S.view === 'editor' && view !== 'editor') leaveEditor();
   S.view = view;
   renderCmdbar(); renderNav(); renderNavbar();
@@ -1182,12 +1192,48 @@ async function readWholeScan() {
   toggleTextPane(true); renderMirror(); draw();
 }
 async function journalDialog() {
-  const cur = (await api.get('library/journal').catch(() => ({}))).dir;
-  const inp = h('input', { type: 'text', class: 'f', value: cur || '~/Documents/Scan Studio transcriptions' });
-  dialog('Transcriptions for nvim', 'LaTeX, read-only, always current', h('div', { style: { width: '520px', lineHeight: 1.5 } },
-    h('div', {}, 'Every transcription goes into a folder: one .tex file per source (named by date), journal.tex that \\inputs them all by date, and scanstudio.sty with plain default commands your own config can redefine. Correct the text here: the folder is rewritten a few seconds after every change. Pictures of the cuts are referenced, not copied.'),
-    h('div', { class: 'row', style: { marginTop: '10px' } }, h('label', {}, 'Folder'), inp)),
-    [['Write and keep updated', async () => { const r = await api.post('library/journal', { dir: inp.value.trim(), reveal: true }).catch(e => ({ error: e.message })); status(r.error || `Transcriptions: ${r.files} source(s) in ${r.dir}`); }, true], ['Cancel', () => true]]);
+  const cur = await api.get('library/journal').catch(() => ({}));
+  const inp = h('input', { type: 'text', class: 'f', value: cur.dir || '~/Documents/Scan Studio transcriptions' });
+  let fmt = cur.format || 'md';
+  const radio = (v, label) => h('label', { class: 'radio', style: { display: 'block' } }, h('input', { type: 'radio', name: 'jf', checked: fmt === v, onchange: () => fmt = v }), ' ' + label);
+  dialog('Transcriptions for nvim', 'Read-only, always current', h('div', { style: { width: '540px', lineHeight: 1.5 } },
+    h('div', {}, 'Every transcription goes into a folder, one file per cut (named like the cut, with its date first), plus one for a whole page read at once. The files are read-only: take from them in nvim, correct the text here, and the folder is rewritten a few seconds after every change. Your own files in the folder are never touched.'),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'As'),
+    radio('md', 'Markdown, like wiki notes: front matter with title, date and id (the part’s, it never changes), areas as headings. Prints with pandoc like any note.'),
+    radio('tex', 'LaTeX: a small plain document per cut that compiles on its own, or prints through your own pandoc templates (EasyPrint reads it); journal.tex gathers them all by date.'),
+    h('div', { class: 'row', style: { marginTop: '10px' } }, h('label', {}, 'Folder'), inp,
+      h('button', { class: 'btn small', onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Write the transcriptions into' }); if (r.dir) inp.value = r.dir; } }, 'Choose…'))),
+    [['Write and keep updated', async () => { const r = await api.post('library/journal', { dir: inp.value.trim(), format: fmt, reveal: true }).catch(e => ({ error: e.message })); status(r.error || `Transcriptions: ${r.files} source(s) in ${r.dir}`); }, true], ['Cancel', () => true]]);
+}
+// il sito-archivio, in sola lettura: indirizzo nelle impostazioni, chiave nel Portachiavi
+async function archiveDialog() {
+  const st = await api.get('archive/status').catch(e => ({ error: e.message }));
+  const url = h('input', { type: 'text', class: 'f', placeholder: 'https://your-archive.example:8055', value: st.url || '' });
+  const key = h('input', { type: 'password', class: 'f', placeholder: st.connected ? 'saved in the Keychain' : 'paste the token here', autocomplete: 'off' });
+  const out = h('div', { class: 'small', style: { marginTop: '8px', minHeight: '3em' } });
+  const show = r => {
+    out.innerHTML = '';
+    if (r.error) return out.append(h('div', { style: { color: '#b00' } }, r.error));
+    if (!r.connected) return out.append(h('div', { class: 'muted' }, 'Not connected.'));
+    out.append(h('div', {}, `Connected as ${r.user}. Reads: ${r.reads.join(', ') || 'nothing'}.` + (r.records != null ? ` ${r.records} records, ${r.from_studio || 0} from Scan Studio.` : '')));
+    if (r.writes?.length) out.append(h('div', { style: { color: '#b00' } }, `This token can also change ${r.writes.join(', ')}. Scan Studio never writes, but a read-only token is safer: give its user a policy with Read only.`));
+  };
+  show(st);
+  const steps = h('ol', { style: { margin: '6px 0 0 18px', padding: 0 } },
+    h('li', {}, 'Settings › Access Policies › Create: “Scan Studio (read)”, App access off; in Permissions give Read (only) on records, events, makers, item_kinds and Files.'),
+    h('li', {}, 'User Directory › Create user “Scan Studio”, add that policy, then at the bottom Token › Generate, copy it, and save the user.'),
+    h('li', {}, 'Paste it here and Connect. It goes into the Mac’s Keychain, never into a file.'));
+  dialog('Archive site', 'A read-only link to your Directus archive', h('div', { style: { width: '560px', lineHeight: 1.5 } },
+    h('div', { class: 'row' }, h('label', {}, 'Address'), url),
+    h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'Token'), key),
+    h('div', { class: 'gh', style: { marginTop: '10px' } }, 'Making a read-only token'), steps,
+    h('div', { style: { marginTop: '6px' } },
+      h('button', { class: 'btn small', onclick: () => api.post('archive/open', { url: url.value.trim(), page: '/admin/settings/policies/+' }).then(r => r.error && show(r)) }, 'Open Access Policies'), ' ',
+      h('button', { class: 'btn small', onclick: () => api.post('archive/open', { url: url.value.trim(), page: '/admin/users/+' }).then(r => r.error && show(r)) }, 'Open New user')),
+    out),
+    [['Connect', async () => { out.textContent = 'Checking…'; const r = await api.post('archive/connect', { url: url.value.trim(), token: key.value.trim() }).catch(e => ({ error: e.message })); show(r); if (r.connected) status(`Archive connected: ${r.url}`); return false; }, true],
+     ['Forget', async () => { show(await api.post('archive/forget', {})); return false; }],
+     ['Close', () => true]]);
 }
 // una copia dei tagli in cartelle, come l'esportazione di Eagle: per posto, per serie, o tutti insieme
 async function exportCutsDialog() {
@@ -1196,7 +1242,16 @@ async function exportCutsDialog() {
   const radio = (name, v, label, on, set) => h('label', { class: 'radio' }, h('input', { type: 'radio', name, checked: on, onchange: () => set(v) }), ' ' + label);
   const shown = LIB.place ? (LIB.places || []).find(p => p.uuid === LIB.place)?.name : LIB.series ? (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name : null;
   const picks = LIB.mode === 'cutouts' ? [...(LIB.picks || [])] : [];
-  dialog('Export cuts in folders', 'A copy of your cuts, in folders', h('div', { style: { width: '540px', lineHeight: 1.6 } },
+  // cosa viaggia: per destinazione, i campi scelti si ricordano
+  let kind = store('exportkind') || 'folder';
+  const tv = await api.get('travel', { kind }).catch(() => ({ fields: [], chosen: [] }));
+  let chosen = new Set(tv.chosen);
+  const boxes = h('div', {});
+  const drawBoxes = () => { boxes.innerHTML = ''; tv.fields.forEach(([k, l]) => boxes.append(h('label', { class: 'radio', style: { display: 'block' } },
+    h('input', { type: 'checkbox', checked: chosen.has(k), onchange: e => e.target.checked ? chosen.add(k) : chosen.delete(k) }), ' ' + l))); };
+  drawBoxes();
+  const pickKind = async v => { kind = v; chosen = new Set((await api.get('travel', { kind: v })).chosen); drawBoxes(); };
+  dialog('Export cuts in folders', 'A copy of your cuts, in folders', h('div', { style: { width: '600px', lineHeight: 1.6 } },
     h('div', { class: 'row' }, h('label', {}, 'Into'), inp, h('button', { class: 'btn small', onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Export the cuts into' }); if (r.dir) inp.value = r.dir; } }, 'Choose…')),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Folders'),
     radio('st', 'place', 'By place: Chest › Box 24 › Folder 5 (each file starts with its number there)', true, v => structure = v),
@@ -1206,10 +1261,15 @@ async function exportCutsDialog() {
     radio('sc', 'all', 'All cuts', true, v => scope = v),
     shown ? radio('sc', 'shown', `Those in “${shown}”`, false, v => scope = v) : null,
     picks.length ? radio('sc', 'picks', `The ${picks.length} selected`, false, v => scope = v) : null,
-    h('div', { class: 'small muted' }, 'Text exports (transcriptions, PDF) stay flat; this is for the image files.')),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'For'),
+    ...[['eagle', 'Eagle'], ['archive', 'The archive site (its importer reads the .json)'], ['folder', 'Just a folder']].map(([v, l]) => radio('kd', v, l, kind === v, pickKind)),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'What travels with each file'), boxes,
+    h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, 'Only metadata: the pixels are the cut’s, byte for byte. The cut in the library keeps everything; this only chooses what the copy carries.')),
     [['Export', async () => {
-      store('exportdir', inp.value.trim());
-      const body = { dir: inp.value.trim(), structure, reveal: true };
+      store('exportdir', inp.value.trim()); store('exportkind', kind);
+      const travel = { ...(S.settings?.travel || {}), [kind]: [...chosen] };
+      S.settings = await api.post('settings', { travel });
+      const body = { dir: inp.value.trim(), structure, reveal: true, kind, fields: [...chosen] };
       if (scope === 'shown') { if (LIB.place) body.place = LIB.place; else body.series = LIB.series; }
       if (scope === 'picks') body.cuts = picks;
       status('Exporting…', true);
@@ -2545,7 +2605,7 @@ async function pollJobs() {
   if (S.view === 'jobs') renderJobs();
   const active = S.jobs.some(j => j.status === 'running' || j.status === 'queued');
   if (active || S.view === 'jobs') jobTimer = setTimeout(pollJobs, active ? 900 : 3000);
-  if (!active && S._wasActive) { refreshItems(); renderNav(); if (S.view === 'editor') { const st = await api.get('state', { rel: S.rel }); if (st.version !== S.st.version) { setState(st); renderSide(); draw(); } } }
+  if (!active && S._wasActive) { refreshItems(); renderNav(); if (S.view === 'editor' && S.st && S.rel) { const rel = S.rel, st = await api.get('state', { rel }).catch(() => null); if (st && rel === S.rel && S.st && st.version !== S.st.version) { setState(st); renderSide(); draw(); } } }
   S._wasActive = active;
 }
 // avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato

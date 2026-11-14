@@ -21,3 +21,5 @@ media/
 studio/ocr
 .venv/
 install.log
+# cartelle di lavoro di Claude Code
+.claude/worktrees/
