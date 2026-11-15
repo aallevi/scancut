@@ -2928,7 +2928,8 @@ async function openJob(j, e) {
     if (j.kind === 'ocr_sheets' && a.ids) { selectIds(a.ids.filter(id => S.st?.sheets.some(x => x.id === id))); renderSide(); renderTextPane(); draw(); }
     return;
   }
-  if (a.rels?.length) {
+  if (j.kind === 'multipage') return openLoc('view:library', e);
+  if (a.rels?.length && typeof a.rels[0] === 'string') {
     const dirs = [...new Set(a.rels.map(dirOf))];
     await openLoc('dir:' + dirs[0], e);
     a.rels.filter(r => dirOf(r) === dirs[0]).forEach(r => S.sel.add(r)); renderGallery(); renderSide(); renderCmdbar();
@@ -2940,9 +2941,11 @@ function renderJobs() {
   const main = $('#main'); main.innerHTML = '';
   const live = S.jobs.filter(j => ['running', 'queued'].includes(j.status)), past = S.jobs.filter(j => !['running', 'queued'].includes(j.status));
   const dur = j => { const t = (j.finished || Date.now() / 1000) - (j.started || j.created); return t < 60 ? `${t.toFixed(t < 10 ? 1 : 0)} s` : `${Math.floor(t / 60)} min ${Math.round(t % 60)} s`; };
-  const what = j => { const a = j.args || {}; return a.rel ? a.rel.split('/').pop() : a.rels ? (a.rels.length === 1 ? a.rels[0].split('/').pop() : `${a.rels.length} files`) : a.what ? String(a.what).replace(/^pull:/, 'download ') : a.message ? '“' + a.message.slice(0, 50) + '”' : ''; };
+  // una scansione tiene in rels le sue aree (non nomi di file): si dice la serie e quante aree
+  const what = j => { const a = j.args || {}, rels = Array.isArray(a.rels) && typeof a.rels[0] === 'string' ? a.rels : null;
+    return j.kind === 'scan' ? `${a.batch || ''}${(a.areas || []).length > 1 ? ` · ${a.areas.length} areas` : ''}` : a.rel ? a.rel.split('/').pop() : rels ? (rels.length === 1 ? rels[0].split('/').pop() : `${rels.length} files`) : a.items ? `${a.items.length} source(s)` : a.what ? String(a.what).replace(/^pull:/, 'download ') : a.message ? '“' + a.message.slice(0, 50) + '”' : ''; };
   const icon = j => ({ done: ['✓', 'ok'], failed: ['✗', 'bad'], cancelled: ['–', 'off'] }[j.status] || ['…', 'off']);
-  const summary = j => j.status === 'failed' ? (j.log.find(l => l.startsWith('ERROR')) || 'failed').replace(/^ERROR \w+: /, '') : j.status === 'cancelled' ? 'Cancelled' : (j.log.filter(l => !l.startsWith('done in')).at(-1) || 'Done');
+  const summary = j => j.status === 'failed' ? (j.log.find(l => l.startsWith('ERROR')) || 'failed').replace(/^ERROR \w+: /, '') : j.status === 'cancelled' ? 'Cancelled' : (j.log.filter(l => !l.startsWith('done in')).at(-1) || 'Done').replace(/ · \d+(\.\d+)? s$/, '');
   const row = j => {
     const going = ['running', 'queued'].includes(j.status), [ic, cls] = icon(j);
     return h('div', { class: 'jrow' + (going ? ' live' : ''), title: 'Open where this job works', onclick: e => { if (!e.target.closest('button, details')) openJob(j, e); } },
