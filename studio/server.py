@@ -158,6 +158,7 @@ class Jobs:
                 break
             say(f'  read: {os.path.basename(out)}')
             outs.append(out)
+            bed_preview(a['dev'], out, area, res)             # il letto mostra la scansione appena fatta, non l'anteprima di prima
             # come e' nata questa scansione (scanner, impostazioni, area): nella libreria, legata al file per checksum
             u = bridge._safe(bridge.record_capture, lib, out, 'scanner', series=batch, device=a['dev'],
                          settings={'res': res, 'mode': mode, 'area': [round(v, 1) for v in area[:4]] if area else None,
@@ -366,6 +367,57 @@ class Jobs:
                 say(f'{x["status"]}: {core.relpath(x["path"])}')
             j['done'] += 1
 
+    def do_multipage(self, j, say):
+        # un file a piu' pagine dalle fonti scelte (le scansioni, o i loro tagli): PDF senza perdita (Flate,
+        # trasparenza come SMask) o TIFF a piu' pagine. Pixel veri, 8 bit per canale; la pagina ha la misura della scansione
+        a = j['args']
+        dest = safe_dest(a.get('dir'))
+        os.makedirs(dest, exist_ok=True)
+        lib = bridge.library(create=False)
+        pages = bridge.pages_for(lib, a.get('items') or [], a.get('use') or 'sources')
+        if not pages:
+            raise ValueError('nothing to put in the file: no ' + ('cuts' if a.get('use') == 'cuts' else 'files') + ' for these sources')
+        fmt = 'tiff' if a.get('format') == 'tiff' else 'pdf'
+        name = bridge._safe_dir(a.get('name')) or 'pages'
+        out = os.path.join(dest, name + ('.tif' if fmt == 'tiff' else '.pdf'))
+        n = 2
+        while os.path.exists(out):                           # mai sopra un file che c'e'
+            out = os.path.join(dest, f'{name} ({n})' + ('.tif' if fmt == 'tiff' else '.pdf')); n += 1
+        j['total'] = len(pages)
+        tmp = os.path.join(dest, '.' + os.path.basename(out) + '.part')
+        def load(k):
+            rel, title, fname = pages[k]
+            j['current'] = fname
+            rgb, icc, dpi, ppm = core.image(rel)
+            al = core.alpha(rel)
+            say(f'page {k + 1}: {fname} ({rgb.shape[1]} x {rgb.shape[0]} px, {round(dpi)} dpi)')
+            return rgb, al, dpi
+        try:
+            if fmt == 'pdf':
+                write_pdf(tmp, len(pages), load, lambda k: j.__setitem__('done', k + 1), lambda: j['status'] == 'cancelled')
+            else:
+                ims = []
+                for k in range(len(pages)):
+                    if j['status'] == 'cancelled':
+                        break
+                    rgb, al, dpi = load(k)
+                    im = Image.fromarray(np.dstack([rgb, al]) if al is not None else rgb)
+                    im.info['dpi'] = (dpi, dpi)
+                    ims.append(im); j['done'] = k + 1
+                if ims:
+                    ims[0].save(tmp, format='TIFF', save_all=True, append_images=ims[1:], compression='tiff_adobe_deflate', dpi=(ims[0].info['dpi']))
+            if j['status'] == 'cancelled':
+                os.path.exists(tmp) and os.remove(tmp)
+                say('cancelled: no file written')
+                return
+            os.replace(tmp, out)
+        except Exception:
+            os.path.exists(tmp) and os.remove(tmp)
+            raise
+        j['result'] = {'path': out}
+        say(f'{len(pages)} page(s) -> {out} ({mb(os.path.getsize(out))})')
+        subprocess.run(['open', '-R', out])
+
     def do_archive(self, j, say):
         # per l'archivio (il sito): un pacchetto in una cartella, o l'invio diretto a Directus (gettone dal portachiavi)
         a = j['args']
@@ -432,6 +484,30 @@ JOBS = None
 FILING = threading.Lock()      # una archiviazione alla volta (l'inbox e la libreria), anche con scansioni una dopo l'altra
 
 
+def bed_preview(dev, path, area, res):
+    # l'anteprima del letto (75 dpi) prende la scansione appena fatta al posto suo: la pagina Scanners
+    # mostra quello che c'e' davvero sul vetro, non la panoramica di prima
+    try:
+        d = os.path.join(core.DATA, 'scanner'); os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, 'preview.png')
+        o = scanner.options(dev)
+        W, H = round(o['width_mm'] / 25.4 * 75), round(o['height_mm'] / 25.4 * 75)
+        im = Image.open(path)
+        im.draft('RGB', (im.width * 75 // res + 1, im.height * 75 // res + 1))
+        im = im.convert('RGB')
+        im = im.resize((max(1, round(im.width * 75 / res)), max(1, round(im.height * 75 / res))), Image.BOX)
+        if area:
+            bed = Image.open(p).convert('RGB') if os.path.exists(p) else Image.new('RGB', (W, H), 'white')
+            if bed.size != (W, H):
+                bed = bed.resize((W, H))
+            bed.paste(im, (round(area[0] / 25.4 * 75), round(area[1] / 25.4 * 75)))
+        else:
+            bed = im
+        bed.save(p + '.tmp.png'); os.replace(p + '.tmp.png', p)
+    except Exception as e:
+        print('bed preview:', e, file=sys.stderr)
+
+
 def scan_progress(j, k, sizes):
     # avanzamento di una scansione: prima lo scanner si prepara (lampada, calibrazione: niente percentuale),
     # poi legge. Le aree pesano per i pixel che hanno (una piccola e una grande non valgono meta' e meta');
@@ -468,6 +544,53 @@ MAX_UPLOAD = 16 << 30    # un file trascinato: fino a 16 GB (TIFF a 16 bit di un
 CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
        "connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
 SYSTEM_DIRS = ('/System', '/usr', '/bin', '/sbin', '/etc', '/private/etc', '/private/var', '/var', '/Library', '/Applications', '/opt', '/dev', '/cores')
+
+
+def mb(n):
+    return f'{n / 1e6:.1f} MB'
+
+
+def write_pdf(path, n, load, progress, cancelled):
+    # un PDF scritto a mano, pagina per pagina: ogni immagine e' uno stream Flate (senza perdita), la trasparenza
+    # una SMask; la pagina misura quanto la scansione (pixel / dpi). Nessuna libreria: cosi' niente JPEG di nascosto
+    import zlib
+    objs = []                                                # offset di ogni oggetto, nell'ordine dei numeri
+    with open(path, 'wb') as f:
+        f.write(b'%PDF-1.4\n%\xe2\xe3\xcf\xd3\n')
+        def obj(body, stream=None):
+            objs.append(f.tell())
+            num = len(objs)
+            f.write(f'{num} 0 obj\n'.encode() + body)
+            if stream is not None:
+                f.write(b'\nstream\n' + stream + b'\nendstream')
+            f.write(b'\nendobj\n')
+            return num
+        objs.extend([None, None])                            # 1: catalogo, 2: pagine (scritti alla fine)
+        page_ids = []
+        for k in range(n):
+            if cancelled():
+                return
+            rgb, al, dpi = load(k)
+            h, w = rgb.shape[:2]
+            smask = None
+            if al is not None:
+                data = zlib.compress(np.ascontiguousarray(al).tobytes(), 6)
+                smask = obj(f'<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length {len(data)} >>'.encode(), data)
+            data = zlib.compress(np.ascontiguousarray(rgb).tobytes(), 6)
+            im = obj((f'<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /Length {len(data)}'
+                      + (f' /SMask {smask} 0 R' if smask else '') + ' >>').encode(), data)
+            pw, ph = w * 72.0 / dpi, h * 72.0 / dpi
+            content = f'q {pw:.4f} 0 0 {ph:.4f} 0 0 cm /Im Do Q'.encode()
+            cid = obj(f'<< /Length {len(content)} >>'.encode(), content)
+            page_ids.append(obj(f'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {pw:.4f} {ph:.4f}] /Resources << /XObject << /Im {im} 0 R >> >> /Contents {cid} 0 R >>'.encode()))
+            progress(k)
+        objs[0] = f.tell(); f.write(b'1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n')
+        objs[1] = f.tell(); f.write(f'2 0 obj\n<< /Type /Pages /Count {len(page_ids)} /Kids [{" ".join(f"{i} 0 R" for i in page_ids)}] >>\nendobj\n'.encode())
+        xref = f.tell()
+        f.write(f'xref\n0 {len(objs) + 1}\n0000000000 65535 f \n'.encode())
+        for o in objs:
+            f.write(f'{o:010d} 00000 n \n'.encode())
+        f.write(f'trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n'.encode())
 
 
 def safe_dest(d):
@@ -595,10 +718,17 @@ class Handler(BaseHTTPRequestHandler):
         # poi con un nome libero (mai sopra un altro). Fonti: nell'inbox, l'agente le mette fra le fonti;
         # tagli: in cut/added/, nella libreria come tagli portati da fuori.
         to = (q.get('to') or ['sources'])[0]
-        name = os.path.basename((q.get('name') or ['file'])[0]).strip() or 'file'
+        orig = os.path.basename((q.get('name') or ['file'])[0]).strip() or 'file'
+        name = orig
         if not core.is_image(name) and not name.lower().endswith('.pdf'):
             self.rfile.read(n)
             return self.send({'error': f'{name}: not an image'}, code=400)
+        # lasciato cadere su una serie: il nome della serie e il numero dopo, come una scansione; il nome di prima
+        # resta nella registrazione d'arrivo
+        series = (q.get('series') or [''])[0].strip()
+        series = core.sc.clean_stem(series) if series and to == 'sources' else ''
+        if series:
+            name = os.path.splitext(os.path.basename(next_scan_name(series)))[0] + os.path.splitext(orig)[1].lower()
         d = core.abspath('inbox' if to == 'sources' else os.path.join('cut', 'added'))
         os.makedirs(d, exist_ok=True)
         part = os.path.join(d, '.' + name + f'.{os.getpid()}-{threading.get_ident()}.part')
@@ -616,7 +746,7 @@ class Handler(BaseHTTPRequestHandler):
         os.link(part, dst); os.remove(part)                  # mai sopra un file che c'e'
         lib = bridge.library(create=True)
         if to == 'sources':
-            bridge.record_capture(lib, dst, 'added', name=name)
+            bridge.record_capture(lib, dst, 'added', name=orig, series=series or None, settings={'original_name': orig} if series else None)
         else:
             bridge.add_cut_file(lib, dst)
         return self.send({'ok': True, 'rel': core.relpath(dst)})
@@ -840,6 +970,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': 'changed elsewhere', 'state': cur}, code=409)
             st.pop('names', None)
             return self.send(core.save_state(st))                  # salvare = scrivere la libreria
+        if path == 'whole':
+            # tutta la scansione come una parte, per ogni scansione scelta; poi il taglio, in un lavoro
+            rels = b.get('rels') or []
+            for rel in rels:
+                core.keep_whole(rel, b.get('rot') or 0)
+            return self.send(JOBS.public(JOBS.add('export', rels=rels)) if rels else {'ok': True})
         if path == 'recut_part':
             # "Fatto" dopo aver ritoccato una parte venendo dal suo taglio: si rifa' solo quel taglio, subito
             bridge.recut_now(b['rel'], {b['id']})
@@ -943,8 +1079,16 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'add_done':
             # i file trascinati sono tutti arrivati: fra le fonti e nella libreria
             core.file_inbox()
-            new = bridge.register_new(bridge.library(create=True))
-            return self.send({'rels': bridge.new_rels(bridge.library(), new)})
+            lib = bridge.library(create=True)
+            new = bridge.register_new(lib)
+            if b.get('place') and new:
+                # lasciati cadere su un posto: ci vanno (con il numero che il posto da')
+                uu = [lib.db.execute('SELECT uuid FROM item WHERE id = ?', (iid,)).fetchone()[0] for iid, _ in new]
+                try:
+                    bridge.put(lib, uu, place=b['place'])
+                except sqlite3.IntegrityError as e:
+                    return self.send({'rels': bridge.new_rels(lib, new), 'error': str(e)})
+            return self.send({'rels': bridge.new_rels(lib, new)})
         if path == 'library/journal':
             lib = bridge.library(create=False)
             if b.get('dir'):
@@ -1049,7 +1193,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'ok': True})
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install', 'archive'):
+            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install', 'archive', 'multipage'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':

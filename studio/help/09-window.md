@@ -7,6 +7,13 @@ right-click › Open in new tab opens a new one. ⌘T new tab, ⌘W close, ⌃Ta
 place, zoom, selection and undo; work keeps running when you switch. Back in a tab opened from
 another goes back to it and closes the tab.
 
+## The bar at the bottom
+
+Left to right: the status line, previous and next scan (in a gallery they move the selection; in
+the editor they open the scan before or after), the round button (in the editor: Cut; elsewhere:
+scan the next page), then undo and redo in the editor, or Back and Forward (⌘[ and ⌘]) elsewhere.
+A button that can do nothing right now is dimmed.
+
 ## Panes
 
 Click a section's title to fold it (in the sidebar and in the right pane). To give the image all the

@@ -81,6 +81,8 @@ const I = {
   zout: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5" stroke="#fff" stroke-width="1.6"/></svg>',
   fit: '<svg viewBox="0 0 18 18"><path d="M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
   undo: '<svg viewBox="0 0 18 18"><path d="M6 4L2 8l4 4" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M2 8h9a4.5 4.5 0 010 9H8" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
+  back: '<svg viewBox="0 0 18 18"><path d="M15 9H4M8 5L4 9l4 4" fill="none" stroke="#fff" stroke-width="1.8"/></svg>',
+  fwd: '<svg viewBox="0 0 18 18"><path d="M3 9h11M10 5l4 4-4 4" fill="none" stroke="#fff" stroke-width="1.8"/></svg>',
   redo: '<svg viewBox="0 0 18 18"><path d="M12 4l4 4-4 4" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M16 8H7a4.5 4.5 0 000 9h3" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
 };
 
@@ -279,7 +281,16 @@ function libSortBar() {
     h('select', { title: 'Filter by resolution', onchange: e => { LIB.dpi = e.target.value; store('libdpi', LIB.dpi); libLoad(); } },
       [['', 'Any dpi'], ['300', '≥ 300 dpi'], ['600', '≥ 600 dpi'], ['1200', '≥ 1200 dpi'], ['<300', '< 300 dpi']].map(([v, l]) => h('option', { value: v, selected: LIB.dpi === v }, l))));
 }
-function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
+// una serie o un posto della libreria, come una cartella: un clic la apre (da qualunque pagina), e la scheda e
+// "indietro" la ricordano. Un altro clic sulla stessa, mentre e' aperta, torna a tutte le fonti
+async function openLib(kind, uuid) {
+  const shown = S.view === 'library' && (kind === 'series' ? LIB.series : LIB.place) === uuid;
+  if (kind === 'series') { LIB.series = shown ? null : uuid; LIB.place = null; } else { LIB.place = shown ? null : uuid; LIB.series = null; }
+  if (['texts', 'trash'].includes(LIB.mode)) LIB.mode = 'cutouts';
+  store('libmode', LIB.mode);
+  await go('library', shown ? 'view:library' : kind + ':' + uuid); renderNav();
+}
+function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
   LIB.info = await api.get('library').catch(() => null);
@@ -315,8 +326,9 @@ async function libLoad() {
   const g = $('#libgrid'); if (!g) return;
   g.innerHTML = '';
   if (!LIB.items.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'Empty.'));
-  for (const it of LIB.items) g.append(h('div', { class: 'thumb' + (LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
-      onclick: () => libSelect(it.uuid), ondblclick: e => libOpen(it.uuid, e) },
+  LIB.picks = new Set([...LIB.picks].filter(u => LIB.items.some(x => x.uuid === u)));
+  for (const [i, it] of LIB.items.entries()) g.append(h('div', { class: 'thumb' + (LIB.picks.has(it.uuid) || LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
+      onclick: e => libPickItem(e, it, i), ondblclick: e => libOpen(it.uuid, e) },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
       it.cuts ? h('span', { class: 'badge edit', title: `${it.cuts} cut(s)` }, `${it.cuts} ✂`) : h('span', { class: 'badge uncut', title: 'Not cut yet' }, 'uncut')),
     it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
@@ -441,11 +453,46 @@ function fitPart(sh) {
   V.s = s; V.ox = V.cw / 2 - (x0 + x1) / 2 * s; V.oy = V.ch / 2 - (y0 + y1) / 2 * s; viewChanged();
 }
 async function libRefresh() { if (S.view === 'library' && LIB.sel) { LIB.detail = await api.get('library/item', { uuid: LIB.sel }).catch(() => LIB.detail); renderSide(); } }
-async function libSelect(uuid) {
+// fra le fonti: un clic sceglie una; ⇧ e ⌘ ne scelgono di piu' (per i lavori in blocco: passare intere, rilevare, un file a piu' pagine)
+function libPickItem(e, it, i) {
+  if (e.shiftKey && LIB.anchor != null) { const [a, b] = [Math.min(LIB.anchor, i), Math.max(LIB.anchor, i)]; if (!e.metaKey) LIB.picks.clear(); LIB.items.slice(a, b + 1).forEach(x => LIB.picks.add(x.uuid)); }
+  else if (e.metaKey || e.ctrlKey) { LIB.picks.has(it.uuid) ? LIB.picks.delete(it.uuid) : LIB.picks.add(it.uuid); LIB.anchor = i; }
+  else { LIB.picks = new Set([it.uuid]); LIB.anchor = i; }
+  $$('#libgrid .thumb').forEach((el, k) => el.classList.toggle('sel', LIB.picks.has(LIB.items[k]?.uuid)));
+  if (LIB.picks.size === 1) return libSelect([...LIB.picks][0], true);
+  LIB.sel = null; LIB.detail = null; renderSide();
+}
+async function libSelect(uuid, picked) {
+  if (!picked) { LIB.picks = new Set([uuid]); }
   LIB.sel = uuid; LIB.detail = await api.get('library/item', { uuid }).catch(() => null);
   if (!LIB.editors) LIB.editors = await api.get('library/editors').catch(() => []);
-  $$('#libgrid .thumb').forEach((el, i) => el.classList.toggle('sel', LIB.items[i]?.uuid === uuid));
+  $$('#libgrid .thumb').forEach((el, i) => el.classList.toggle('sel', LIB.items[i]?.uuid === uuid || LIB.picks.has(LIB.items[i]?.uuid)));
   renderSide();
+}
+// le fonti scelte, nell'ordine in cui si vedono
+const libPickedItems = () => (LIB.items || []).filter(x => LIB.picks.has(x.uuid));
+// un file a piu' pagine (PDF senza perdita, o TIFF) dalle fonti scelte: le scansioni, o i loro tagli, una pagina ciascuno
+function multipageDialog(items) {
+  const first = items[0], series = first?.batch || (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name;
+  const name = h('input', { type: 'text', class: 'f', value: series || first?.title || 'pages' });
+  const dir = h('input', { type: 'text', class: 'f', value: store('multidir') || '~/Desktop/Scan Studio files' });
+  let use = 'sources', fmt = 'pdf';
+  const radio = (nm, v, label, on, set) => h('label', { class: 'radio', style: { display: 'block' } }, h('input', { type: 'radio', name: nm, checked: on, onchange: () => set(v) }), ' ' + label);
+  dialog('Multipage file', `${items.length} source(s), in the order shown, one file`, h('div', { style: { width: '560px', lineHeight: 1.6 } },
+    h('div', { class: 'row' }, h('label', {}, 'Name'), name),
+    h('div', { class: 'row' }, h('label', {}, 'Into'), dir, h('button', { class: 'btn small', onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Write the file into' }); if (r.dir) dir.value = r.dir; } }, 'Choose…')),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Pages'),
+    radio('mp', 'sources', 'The scans, as they are', true, v => use = v),
+    radio('mp', 'cuts', 'Their cuts (one page per cut, transparent where cut away)', false, v => use = v),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Format'),
+    radio('mf', 'pdf', 'PDF, lossless (pages the size of the scan; opens anywhere)', true, v => fmt = v),
+    radio('mf', 'tiff', 'TIFF with several pages, lossless', false, v => fmt = v),
+    h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, 'Real pixels, 8 bits per channel, no JPEG. The file is a copy for reading or sending: the library keeps the sources and cuts. An existing file is never overwritten.')),
+    [['Make the file', async () => {
+      store('multidir', dir.value.trim());
+      const j = await api.post('jobs', { kind: 'multipage', items: items.map(x => x.uuid), use, format: fmt, name: name.value.trim(), dir: dir.value.trim() }).catch(e => ({ error: e.message }));
+      status(j.error || 'Making the file… (see Jobs; it opens in the Finder when done)'); pollJobs();
+    }, true], ['Cancel', () => true]]);
 }
 function libOpen(uuid, e) {
   const d = LIB.sel === uuid ? LIB.detail : null;
@@ -530,6 +577,19 @@ function sideLibrary(side) {
         h('button', { class: 'btn small', title: 'This cut goes to the Trash; its part is left out of the cut until it comes back', onclick: () => libTrash({ cuts: [c.uuid] }, `“${c.name}”`) }, 'Move to Trash'))));
     return;
   }
+  if (LIB.mode === 'objects' && LIB.picks.size > 1) {
+    // piu' fonti scelte: i lavori in blocco, come nella galleria, e il file a piu' pagine
+    const items = libPickedItems(), rels = items.map(x => x.thumb).filter(Boolean);
+    return side.append(group(`${items.length} sources selected`,
+      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all.'),
+      h('div', { class: 'btns' },
+        h('button', { class: 'btn default', title: 'One file with one page per source (or per cut): PDF or TIFF, lossless', onclick: () => multipageDialog(items) }, 'Multipage file…'),
+        h('button', { class: 'btn', title: 'Each source becomes one part and one cut, whole: nothing is cut away', onclick: () => keepWhole(rels) }, 'Pass whole'),
+        h('button', { class: 'btn', title: `Detect the sheets with ${engName(S.engine)} and cut them, in one job`, onclick: async () => { await api.post('jobs', { kind: 'batch', rels, engine: S.engine, params: engParams(), export: true }); status(`${rels.length} source(s) queued with ${engName(S.engine)}`); pollJobs(); } }, 'Detect + cut'),
+        h('button', { class: 'btn', title: 'Read the text of every cut of these sources', onclick: () => { api.post('jobs', { kind: 'ocr', rels }).then(pollJobs); status('Reading the cuts… (see Jobs)'); } }, 'Read text'),
+        h('button', { class: 'btn', title: 'The sources and their cuts go to the library’s Trash', onclick: () => libTrash({ items: items.map(x => x.uuid) }, `${items.length} sources and their cuts`) }, 'Move to Trash')),
+      group('Engine', engineChooser())));
+  }
   if (!d) return side.append(group('Library', h('div', { class: 'muted' }, LIB.mode === 'cutouts' ? 'Select a cut. Double-click opens it in the editor.'
     : LIB.mode === 'texts' ? 'Every text read, each beside the part it comes from.' : LIB.mode === 'trash' ? 'Each entry has its own Put back and Delete now.'
     : 'Select a source. Double-click opens it in the editor.')));
@@ -575,7 +635,7 @@ const placeLabel = p => `${p.address.replace(/ · \?$/, '')}  ${p.name}`;
 function placeTree(node) {
   const ps = LIB.places || [], kids = u => ps.filter(p => (p.parent || null) === u);
   const mk = p => node(p.name, p.kind === 'work' ? I.pics : I.folder, 'place:' + p.uuid, { count: p.things || null, sel: S.view === 'library' && LIB.place === p.uuid,
-    kids: kids(p.uuid).map(mk), onclick: () => { LIB.place = LIB.place === p.uuid ? null : p.uuid; if (LIB.mode === 'texts') LIB.mode = 'cutouts'; store('libmode', LIB.mode); if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); } });
+    kids: kids(p.uuid).map(mk), onclick: () => openLib('place', p.uuid) });
   return h('div', { class: 'tree' }, ...kids(null).map(mk), h('div', { class: 'node muted', onclick: () => placeDialog() }, h('span', { class: 'tw' }), '+ New place…'));
 }
 function placeSelect(value, onchange, empty) {
@@ -726,7 +786,7 @@ function renderNavTree() {
   const nav = $('#nav'); nav.innerHTML = '';
   const node = (label, icon, key, { count, kids, onclick, sel } = {}) => {
     const wrap = h('div', { class: S.open.has(key) ? 'open' : '' });
-    const loc = key.startsWith('v:') ? 'view:' + key.slice(2) : 'dir:' + key;
+    const loc = key.startsWith('v:') ? 'view:' + key.slice(2) : /^(series|place):/.test(key) ? key : 'dir:' + key;
     const row = h('div', { class: 'node' + (sel ? ' sel' : ''), 'data-key': key, onclick: e => (wantsTab(e) && key !== 'v:settings' ? newTab(loc) : onclick?.(e)), ondblclick: () => kids && toggle(),
       onauxclick: e => { if (e.button === 1 && key !== 'v:settings') { e.preventDefault(); newTab(loc); } },
       oncontextmenu: key === 'v:settings' ? null : e => { e.preventDefault(); tabMenu(row, loc, onclick); } },
@@ -755,7 +815,7 @@ function renderNavTree() {
     ...((LIB.seriesList || []).length ? [h('h4', {}, 'Series')] : []),
     ...((LIB.seriesList || []).length ? [h('div', { class: 'tree' }, ...LIB.seriesList.filter(x => x.items).map(x =>
       node(x.name || 'No series', I.folder, 'series:' + (x.uuid || 'none'), { count: x.items, sel: S.view === 'library' && LIB.series === (x.uuid || 'none'),
-        onclick: () => { LIB.series = (LIB.series === (x.uuid || 'none')) ? null : (x.uuid || 'none'); if (LIB.mode === 'texts') LIB.mode = 'cutouts'; store('libmode', LIB.mode); if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); } })))] : []),
+        onclick: () => openLib('series', x.uuid || 'none') })))] : []),
     h('h4', {}, 'Places'), placeTree(node),
     h('h4', {}, 'Scans'), tree, h('h4', {}, 'Studio'), h('div', { class: 'tree' },
     node('Jobs', I.jobs, 'v:jobs', { sel: S.view === 'jobs', onclick: () => go('jobs'), count: '' }),
@@ -768,13 +828,13 @@ function renderNavTree() {
 }
 
 // ------------------------------------------------------------ viste
-async function go(view) {
-  if (['jobs', 'scanners', 'scripts', 'addons', 'library', 'help'].includes(view)) remember('view:' + view);
+async function go(view, loc) {
+  if (['jobs', 'scanners', 'scripts', 'addons', 'library', 'help'].includes(view)) remember(loc || 'view:' + view);
   if (S.view === 'editor' && view !== 'editor') leaveEditor();
   S.view = view;
   renderCmdbar(); renderNav(); renderNavbar();
   if (view === 'gallery') renderGallery();
-  if (view === 'jobs') { renderJobs(); updateJobBadge(); }
+  if (view === 'jobs') { renderJobs(); pollJobs(); }                 // la lista fresca: anche le scansioni in corso
   if (view === 'scanners') renderScanners();
   if (view === 'scripts') renderScripts();
   if (view === 'addons') renderAddons();
@@ -807,14 +867,14 @@ const TOP_NAMES = { originals: 'Sources', cut: 'Cuts', failed: 'To check', inbox
 S.navBack = []; S.navFwd = []; S._here = null; S._navigating = false;
 function remember(target) {
   if (!S._navigating && S._here && S._here !== target) { S.navBack.push(S._here); if (S.navBack.length > 100) S.navBack.shift(); S.navFwd = []; }
-  S._here = target;
+  S._here = target; updateNavbar();
   const t = TABS.list[TABS.i];
   if (t && t.loc !== target) { t.loc = target; tabsSave(); renderTabs(); }
 }
 async function goLoc(loc) {
   const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
   S._navigating = true;
-  try { if (kind === 'dir') await openDir(arg); else if (kind === 'scan') await openScan(arg); else if (arg === 'gallery') await openDir(S.dir || 'originals'); else await go(arg); }
+  try { if (kind === 'dir') await openDir(arg); else if (kind === 'scan') await openScan(arg); else if (kind === 'series' || kind === 'place') await openLib(kind, arg); else if (arg === 'gallery') await openDir(S.dir || 'originals'); else await go(arg); }
   finally { S._navigating = false; }
 }
 // ------------------------------------------------------------ schede (come IE7)
@@ -826,6 +886,8 @@ function tabLabel(loc) {
   const [kind, ...rest] = (loc || '').split(':'), arg = rest.join(':');
   if (kind === 'scan') return arg.split('/').pop();
   if (kind === 'dir') return TOP_NAMES[arg] || arg.split('/').pop();
+  if (kind === 'series') return (LIB.seriesList || []).find(x => (x.uuid || 'none') === arg)?.name || 'No series';
+  if (kind === 'place') return (LIB.places || []).find(p => p.uuid === arg)?.name || 'Place';
   return { jobs: 'Jobs', scanners: 'Scanners', scripts: 'Scripts', addons: 'Add-ons', gallery: 'Scans', library: 'Library', help: 'Help' }[arg] || arg || 'New tab';
 }
 function tabsSave() { store('tabs', JSON.stringify({ list: TABS.list.map(t => t.loc), i: TABS.i })); }
@@ -904,6 +966,7 @@ async function openLoc(loc, e) {
   const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
   if (kind === 'scan') return openScan(arg);
   if (kind === 'dir') return openDir(arg);
+  if (kind === 'series' || kind === 'place') return openLib(kind, arg);
   return go(arg);
 }
 function tabMenu(el, loc, here) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }]); }
@@ -1408,6 +1471,7 @@ async function saveTextFile() {
   catch (e) { alertDialog('Save .md', e.message); }
 }
 function renderSide() {
+  updateNavbar();
   const side = $('#side'); side.innerHTML = '';
   side.style.display = $('#split2').style.display = ['gallery', 'editor', 'library'].includes(S.view) ? '' : 'none';
   if (S.view === 'library') return sideLibrary(side);
@@ -1528,7 +1592,8 @@ function sideGallery(side) {
       h('div', { class: 'btns' },
         h('button', { class: 'btn', disabled: !sel.length, onclick: () => batch(false) }, 'Detect'),
         h('button', { class: 'btn default', disabled: !sel.length, onclick: () => batch(true) }, 'Detect + cut'),
-        h('button', { class: 'btn', disabled: !sel.some(i => i.sheets), onclick: () => exportMany(sel.filter(i => i.sheets).map(i => i.rel)) }, 'Export edited')),
+        h('button', { class: 'btn', disabled: !sel.some(i => i.sheets), onclick: () => exportMany(sel.filter(i => i.sheets).map(i => i.rel)) }, 'Export edited'),
+        h('button', { class: 'btn', disabled: !sel.length, onclick: () => keepWhole(sel.map(i => i.rel)), title: 'Each selected scan becomes one part and one cut, whole: nothing is cut away (paper scanned at its own size)' }, 'Pass whole')),
       h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Batches run in the background; see Jobs. Existing cuts are never overwritten: changed ones are moved to studio-data/replaced.')));
 }
 
@@ -1628,7 +1693,8 @@ function sideEditor(side) {
   const wg = whereGroup(); if (wg) side.append(wg);
   side.append(group('Engine', engineChooser(), h('div', { class: 'btns' },
     h('button', { class: 'btn default', onclick: detect }, 'Detect'),
-    h('button', { class: 'btn', onclick: toggleCompare }, S.compare ? 'Hide compare' : 'Compare'))));
+    h('button', { class: 'btn', onclick: toggleCompare }, S.compare ? 'Hide compare' : 'Compare'),
+    h('button', { class: 'btn', onclick: wholeSheet, title: 'The whole scan as one part: nothing is cut away (for paper already scanned at its own size, A4 on A4). Cut with no parts does the same' }, 'Whole scan'))));
   if (S.compare) {
     side.append(group('Compare', ...Object.entries(S.compare).map(([e, r]) => h('div', { class: 'row' },
       h('span', { class: 'dot', style: { width: '12px', height: '3px', background: CMP_COLORS[e] || '#888' } }),
@@ -1706,15 +1772,30 @@ function sideEditor(side) {
 }
 
 // ------------------------------------------------------------ barra in basso
+// quali bottoni della barra in basso possono fare qualcosa adesso; updateNavbar li accende e spegne senza
+// ridisegnare la barra (la riga di stato resta)
+function navOff() {
+  const ed = S.view === 'editor', items = (S.view === 'gallery' || ed) ? visibleItems() : [], cur = ed ? S.rel : S.anchor;
+  const i = cur ? items.findIndex(x => x.rel === cur) : -1;
+  return { prev: !items.length || i === 0, next: !items.length || i >= items.length - 1, undo: !S.hist.length, redo: !S.fut.length,
+           back: !S.navBack.length && !tabOpener(), fwd: !S.navFwd.length };
+}
+function updateNavbar() {
+  const off = navOff(); for (const k in off) $('#nb-' + k)?.classList.toggle('off', off[k]);
+  const o = $('#navbar .orb'); if (o && S.view === 'editor') o.title = S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut';
+}
 function renderNavbar() {
   const nb = $('#navbar'); nb.innerHTML = '';
   const ed = S.view === 'editor';
-  const btn = (icon, title, fn) => h('div', { class: 'nb', title, onclick: fn }, svg(icon));
+  // i bottoni che non possono fare niente si vedono spenti: nell'editor annulla e ripeti, altrove indietro e avanti
+  // (come ⌘[ e ⌘]); le frecce scorrono le scansioni della galleria, o quella aperta
+  const btn = (icon, title, fn, id) => h('div', { class: 'nb' + (navOff()[id] ? ' off' : ''), id: 'nb-' + id, title, onclick: e => { if (!e.currentTarget.classList.contains('off')) fn(); } }, svg(icon));
   nb.append(
     h('div', { class: 'left' }, h('span', { class: 'status', id: 'status' }, ''), h('div', { class: 'progress', id: 'jobbar', style: { width: '90px', display: 'none' } }, h('i', { style: { width: '0%' } }))),
-    h('div', { class: 'pair' }, btn(I.prev, 'Previous scan (←)', () => step(-1)), btn(I.next, 'Next scan (→)', () => step(1))),
-    h('div', { class: 'orb', title: ed ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Open the selected scan', onclick: () => ed ? doExport() : S.sel.size && openScan([...S.sel][0]) }, svg(ed ? I.orb_cut : I.orb_open)),
-    h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo), btn(I.redo, 'Redo (⇧⌘Z)', redo)),
+    h('div', { class: 'pair' }, btn(I.prev, 'Previous scan (←)', () => step(-1), 'prev'), btn(I.next, 'Next scan (→)', () => step(1), 'next')),
+    h('div', { class: 'orb', title: ed ? (S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut') : 'Scan the next page with the scanner, areas and settings of the Scanners page (Space, when “Space bar scans” is on)', onclick: () => ed ? doExport() : scanNextPage() }, svg(ed ? I.orb_cut : I.orb_open)),
+    ed ? h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo, 'undo'), btn(I.redo, 'Redo (⇧⌘Z)', redo, 'redo'))
+       : h('div', { class: 'pair' }, btn(I.back, 'Back (⌘[)', navBack, 'back'), btn(I.fwd, 'Forward (⌘])', navFwd, 'fwd')),
     ed ? h('div', { class: 'right' }, btn(I.zout, 'Zoom out (−)', () => zoomBy(1 / 1.4)),
       h('span', { class: 'zpct', id: 'zpct' }),
       h('input', { type: 'range', class: 'zoom', id: 'zoom', min: -60, max: 60, value: 0, oninput: e => zoomTo(e.target.value) }),
@@ -2445,6 +2526,16 @@ function invertSelected() {
   V.mtile = null; requestTile();
   status(isInverted(sh) ? 'Selection inverted: everything except that sheet (⇧⌘I again goes back)' : 'Selection back to the sheet');
 }
+// tutta la scansione come una parte (carta gia' del formato giusto, o si vuole il foglio intero): un contorno
+// a mano sui quattro angoli; il taglio e' l'immagine intera, nessun pixel tolto
+function wholeSheet() {
+  if (!S.st || !S.info) return;
+  const w = S.info.w, hh = S.info.h, poly = [[0, 0], [w, 0], [w, hh], [0, hh]];
+  const have = S.st.sheets.find(s => !s.src && !s.ops?.length && JSON.stringify(s.poly) === JSON.stringify(poly));
+  if (have) { S.selSheet = have.id; draw(); renderSide(); return status('The whole scan is already a part'); }
+  commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
+  status('The whole scan is now a part: Cut (⌘S) writes it as one cut, no pixel removed');
+}
 function closePoly() {
   const p = S.poly; S.poly = null;
   if (p && p.length >= 3) commit(() => { const s = { id: newId(), src: null, engine: 'manual', poly0: null, poly: p, ops: [], on: true, label: '', holes: [] }; S.st.sheets.push(s); S.selSheet = s.id; });
@@ -2454,16 +2545,18 @@ document.addEventListener('keydown', e => {
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); return newTab(); }
   if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'w') { e.preventDefault(); return closeTab(TABS.i); }
   if (e.ctrlKey && e.key === 'Tab') { e.preventDefault(); const n = TABS.list.length; return switchTab((TABS.i + (e.shiftKey ? n - 1 : 1)) % n); }
-  if (S.view === 'scanners' && e.key === ' ' && (SC.spaceMode || SC.timed) && !e.target.closest?.('input[type=text], input[type=number], textarea, select, [contenteditable]')) {
+  // Spazio scandisce da qualunque pagina quando la modalita' e' accesa (nell'editor non trascina piu': c'e' la mano)
+  if (e.key === ' ' && (SC.spaceMode || SC.timed) && !e.target.closest?.('input[type=text], input[type=number], textarea, select, [contenteditable]')) {
     e.preventDefault(); if (!e.repeat) scanNextPage(); return;
   }
-  if (S.view === 'scanners' && e.key === 'Escape' && SC.timed) return stopTimed();
+  if (e.key === 'Escape' && SC.timed) return stopTimed();
   if (e.target.closest?.('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
   if ((mod && k === '[') || (e.altKey && k === 'ArrowLeft')) { e.preventDefault(); return navBack(); }
   if ((mod && k === ']') || (e.altKey && k === 'ArrowRight')) { e.preventDefault(); return navFwd(); }
   if (S.view === 'library' && LIB.mode === 'cutouts' && mod && k === 'a') { e.preventDefault(); (LIB.cuts || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); return libReadLabel(); }
+  if (S.view === 'library' && LIB.mode === 'objects' && mod && k === 'a') { e.preventDefault(); (LIB.items || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); LIB.sel = null; LIB.detail = null; return renderSide(); }
   if (S.view === 'gallery') {
     if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
     if (k === 'Enter' && S.selDir) { const d = S.selDir; S.selDir = null; return openDir(d); }
@@ -2539,7 +2632,7 @@ function rehomeAreas(st) {
   st.loose = keep;
 }
 function commit(fn) { pushHist(); fn(); afterEdit(); }
-function afterEdit() { S.st.sheets.forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); rehomeAreas(S.st); S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
+function afterEdit() { updateNavbar(); S.st.sheets.forEach((x, i) => { if (!x.color) x.color = COLORS[i % COLORS.length]; }); rehomeAreas(S.st); S.st.exported = false; scheduleSave(); renderSide(); renderTextPane(); renderMirror(); draw(); }
 function undo() { if (!S.hist.length || S.view !== 'editor') return; S.fut.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.hist.pop()); afterEdit(); }
 function redo() { if (!S.fut.length || S.view !== 'editor') return; S.hist.push(JSON.stringify(S.st.sheets)); S.st.sheets = JSON.parse(S.fut.pop()); afterEdit(); }
 let saveTimer = null, saving = Promise.resolve();
@@ -2642,7 +2735,12 @@ function restoreVersion(i) {
   status('Earlier version restored (the current one is kept in the list)');
 }
 async function doExport(sub) {
-  if (S.view !== 'editor' || !S.st?.sheets.length) return;
+  if (S.view !== 'editor' || !S.st) return;
+  if (!S.st.sheets.length) {
+    // nessuna parte: Cut passa la scansione intera come un taglio (si chiede, e' una scelta)
+    if (await choose('Pass whole', 'No parts: pass the whole scan as one cut?', 'The whole scan becomes one part and one cut, nothing cut away (paper scanned at its own size). Detect finds the sheets instead.', [['yes', 'Pass whole', true], [null, 'Cancel']]) !== 'yes') return;
+    wholeSheet();
+  }
   await flushSave();
   const rel = S.rel;
   busy(true, 'Saving the cuts…');
@@ -2657,6 +2755,19 @@ async function doExport(sub) {
     alertDialog('Cut', h('pre', { class: 'log' }, list || 'Nothing to cut.'));
   } catch (e) { busy(false, null, rel); if (S.rel !== rel) return status(`${baseName(rel)}: cut failed: ${e.message}`); alertDialog('Cut failed', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return; renderSide(); refreshItems();
+}
+// in blocco: ogni fonte scelta diventa una parte intera e un taglio, girata come si sceglie (a passi di 90°, senza perdita)
+async function keepWhole(rels) {
+  if (!rels.length) return;
+  let rot = 0;
+  const radio = d => h('label', { class: 'radio', style: { marginRight: '12px' } }, h('input', { type: 'radio', name: 'wrot', checked: d === 0, onchange: () => rot = d }), ` ${d}°`);
+  dialog('Whole scan as cut', `${rels.length} scan(s): one part and one cut each, whole`,
+    h('div', { style: { width: '420px', lineHeight: 1.45 } }, h('div', {}, 'Nothing is cut away: for paper scanned at its own size. The part is a normal part: open the scan to rotate, label or trim it later.'),
+      h('div', { style: { marginTop: '10px' } }, 'Turn clockwise ', ...[0, 90, 180, 270].map(radio))),
+    [['Pass whole', async () => {
+      await api.post('whole', { rels, rot }).catch(e => status(e.message));
+      status(`${rels.length} scan(s) passed whole: one part each, cutting… (see Jobs)`); pollJobs(); refreshItems();
+    }, true], ['Cancel', () => true]]);
 }
 async function exportMany(rels) { if (!rels.length) return; await api.post('jobs', { kind: 'export', rels }); status(`Cutting ${rels.length} scan(s)… (see Jobs)`); pollJobs(); }
 async function batch(exp) {
@@ -2774,7 +2885,7 @@ async function pollJobs() {
 }
 // avanzamento vero di un lavoro: passi fatti / passi totali, e il tempo che resta dal ritmo misurato
 const JOB_NAMES = { recut: 'Re-cut', readcuts: 'Read text of cuts', libimport: 'Library import', edit_in: 'Edit in', read: 'Read text', batch: 'Batch', export: 'Cut', ocr: 'Text of cuts', ocr_sheets: 'Text of sheets', ocr_box: 'Read text (box)', detect: 'Detect', sam: 'SAM 3',
-  compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install', file: 'File scans' };
+  compare: 'Compare', help: 'Ask (local)', claude: 'Ask Claude', scan: 'Scan', preview: 'Preview', install: 'Install', file: 'File scans', multipage: 'Multipage file' };
 // lavori senza avanzamento misurabile (un Detect, una domanda): la barra scorre, si vede il tempo
 const jobVague = j => j.status === 'running' && j.total === 1 && j.pct == null;
 function jobPct(j) { return j.status === 'done' ? 100 : j.pct != null ? Math.round(j.pct) : Math.round(100 * j.done / Math.max(1, j.total)); }
@@ -2800,7 +2911,7 @@ function updateJobBadge() {
 function updateJobBar() {
   updateJobBadge();
   const bar = $('#jobbar'); if (!bar) return;
-  const j = S.jobs.find(x => x.status === 'running' && x.kind !== 'claude');
+  const j = S.jobs.find(x => x.status === 'running' && x.kind !== 'claude' && !(S.view === 'scanners' && ['scan', 'preview'].includes(x.kind)));
   if (!j && bar.style.display !== 'none' && $('#status')?.textContent === bar.title) status('');      // finito: via la riga ferma
   bar.style.display = j ? '' : 'none';
   if (j) { bar.classList.toggle('marquee', jobVague(j)); bar.firstChild.style.width = jobVague(j) ? '' : jobPct(j) + '%'; bar.title = jobLine(j); status(jobLine(j), true); }
@@ -2876,9 +2987,9 @@ async function renderScanners() {
     SC.devs = r.devices || [];
     SC.dev = SC.devs.find(d => d.id === S.settings.scan_device) || SC.devs[0] || null;
     SC.res = S.settings.scan_res || 600; SC.mode = S.settings.scan_mode || 'Color'; SC.batch = S.settings.scan_batch || 'scan';
-    loadPreview();
   }
   if (!bed.isConnected) return;
+  if (!SC.img) loadPreview();
   bedCanvas(bed);
   renderScanSide(side);
 }
@@ -2957,7 +3068,7 @@ function renderScanSide(side) {
   SC.every = SC.every || 15;
   side.append(group('Session',
     h('div', { class: 'small muted' }, 'For many pages by hand: put a page on the bed, scan, swap, repeat. Every scan gets the next number in the batch.'),
-    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; e.target.blur(); renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (anywhere on this page, except while typing) to scan the next page with the current areas and settings. During a timed session Space skips the countdown.')),
+    h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; e.target.blur(); renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (on any page, except while typing) or the round button at the bottom to scan the next page with the current areas and settings. During a timed session Space skips the countdown. In the editor, Space then no longer drags the view: use the hand tool.')),
     SC.spaceMode ? h('div', { style: { textAlign: 'center', margin: '8px 0' } },
       h('div', { class: 'orb big', title: 'Scan the next page (Space)', onclick: scanNextPage }, svg(I.orb_cut)), h('div', { class: 'small muted' }, 'Space · next page')) : null,
     h('div', { class: 'row' }, h('label', {}, 'Every'), h('input', { type: 'number', min: 3, max: 600, step: 1, value: SC.every, class: 'f', onchange: e => { SC.every = Math.max(3, +e.target.value || 15); } }), h('span', { class: 'muted' }, 's'),
@@ -3031,13 +3142,15 @@ async function startScanJob(kind, area, onScanned) {
   const body = kind === 'preview' ? { kind, dev: SC.dev.id, area: area ? area.slice(0, 4) : null } : { kind, dev: SC.dev.id, res: SC.res, mode: SC.mode, batch: SC.batch, areas: SC.areas, rels: SC.areas.length ? SC.areas : [0] };
   SC.job = await api.post('jobs', body).catch(e => (alertDialog('Scanner', e.message), null));
   if (!SC.job) return null;
+  pollJobs();
+  if (S.view !== 'scanners' && kind === 'scan') status('Scanning… (Jobs shows it; the result goes to the series and the library)', true);
   const mine = SC.job.id; let counted = false;
   renderScanSide();
   return new Promise(resolve => {
     const tick = async () => {
       const j = await api.get('job', { id: mine }).catch(() => null); if (!j) return resolve(null);
       const shown = SC.job?.id === mine, was = shown ? SC.job : j; if (shown) SC.job = j;
-      if (!counted && j.kind === 'scan' && (j.phase === 'filing' || !scanLive(j))) { counted = true; SC.pages = (SC.pages || 0) + j.done; if (S.view === 'scanners') renderScanSide(); }   // letta = contata
+      if (!counted && j.kind === 'scan' && (j.phase === 'filing' || !scanLive(j))) { counted = true; SC.pages = (SC.pages || 0) + j.done; if (S.view === 'scanners') { renderScanSide(); loadPreview(); } else SC.img = null; }   // letta = contata; il letto mostra la scansione nuova
       if (onScanned && (j.phase === 'filing' || j.phase === 'stopping' || !['queued', 'running'].includes(j.status))) { onScanned(j); onScanned = null; }   // la testina e' libera: si puo' cambiare foglio
       if (shown && S.view === 'scanners') { if (was.status !== j.status || scanBusy() !== busyBefore(was)) renderScanSide(); else scanStatus(); }
       if (['queued', 'running'].includes(j.status) || j.phase) return setTimeout(tick, 400);
@@ -3064,9 +3177,24 @@ function scanBusy() { const j = SC.job; return !!j && (j.status === 'queued' || 
 const scanLive = j => j && (['queued', 'running'].includes(j.status) || j.phase);
 async function scanNextPage() {
   if (SC.timed) { SC.skip = true; return; }                  // durante il conto alla rovescia: subito
-  if (!SC.dev) return;
+  if (!await scanReady()) return;
   if (scanBusy()) { flashScan(); return; }
   await startScanJob('scan');
+}
+// pronti a scandire da qualunque pagina: lo scanner (cercato una volta, come fa la pagina Scanners) e le aree.
+// Se manca qualcosa: un avviso e la pagina Scanners, dove si sistema
+async function scanReady() {
+  if (!SC.devs) {
+    status('Looking for the scanner…', true);
+    const r = await api.get('scanners').catch(() => ({ devices: [] }));
+    if (r.available === false) { status('Scanning needs the scanner driver: see the Scanners page'); if (S.view !== 'scanners') go('scanners'); return false; }
+    SC.devs = r.devices || []; SC.retry = true;
+    SC.dev = SC.devs.find(d => d.id === S.settings.scan_device) || SC.devs[0] || null;
+    SC.res = SC.res || S.settings.scan_res || 600; SC.mode = SC.mode || S.settings.scan_mode || 'Color'; SC.batch = SC.batch || S.settings.scan_batch || 'scan';
+  }
+  if (!SC.dev || SC.dev.options?.error) { status('No scanner connected: plug it in, switch it on, then “Look again” on the Scanners page'); if (S.view !== 'scanners') go('scanners'); return false; }
+  if (!SC.areas.length && S.view !== 'scanners') { status('No scan area yet: draw one on the bed, or pick a paper size, on the Scanners page'); go('scanners'); return false; }
+  return true;
 }
 function flashScan() { const el = $('#scanstatus'); if (el) { el.animate([{ background: '#fff3b0' }, { background: 'transparent' }], 600); } status('Still scanning: the next page starts when this one is done'); }
 // a tempo: la prima pagina subito (e' gia' sul letto); finita la lettura, il conto alla rovescia per cambiare
@@ -3074,7 +3202,7 @@ function flashScan() { const el = $('#scanstatus'); if (el) { el.animate([{ back
 async function startTimed() {
   if (!SC.dev || scanBusy()) return;
   SC.timed = true; SC.skip = false; renderScanSide();
-  while (SC.timed && S.view === 'scanners') {
+  while (SC.timed) {
     let scanned; const freed = new Promise(r => (scanned = r));
     const job = startScanJob('scan', null, scanned);
     await freed;                                              // la testina e' tornata: si cambia foglio mentre questa si archivia
@@ -3351,19 +3479,30 @@ $$('.caption [data-win]').forEach(el => el.addEventListener('click', () => {
 // ------------------------------------------------------------ trascinare file nella finestra
 // Su Tagli (la vista dei tagli, la cartella cut/ o la voce Tagli a sinistra): tagli portati da fuori.
 // Ovunque altro: nuove fonti (nell'inbox, poi fra le fonti e nella libreria, come una scansione).
+// dove si lascia cadere decide anche il contesto: su una serie (o la sua cartella, o dentro di essa) il file entra in
+// quella serie con il suo nome e il numero dopo; su un posto, va in quel posto. Il nome originale resta nel suo arrivo
 function dropTarget(e) {
   const node = e.target.closest?.('.node');
   const key = node?.dataset?.key || '';
-  if (key === 'v:library-cutouts' || key === 'cut' || key.startsWith('cut/')) return 'cuts';
-  if (node) return 'sources';
-  if (S.view === 'library' && LIB.mode === 'cutouts') return 'cuts';
-  if (S.view === 'gallery' && (S.dir || '').startsWith('cut')) return 'cuts';
-  return 'sources';
+  const seriesName = u => (LIB.seriesList || []).find(x => (x.uuid || 'none') === u)?.name || null;
+  const placeName = u => (LIB.places || []).find(p => p.uuid === u)?.name || null;
+  if (key === 'v:library-cutouts' || key === 'cut' || key.startsWith('cut/')) return { to: 'cuts' };
+  if (key.startsWith('series:')) return { to: 'sources', series: seriesName(key.slice(7)) };
+  if (key.startsWith('place:')) return { to: 'sources', place: key.slice(6), placeName: placeName(key.slice(6)) };
+  if (/^originals\/[^/]+$/.test(key)) return { to: 'sources', series: key.split('/')[1] };
+  if (node) return { to: 'sources' };
+  if (S.view === 'library' && LIB.mode === 'cutouts') return { to: 'cuts' };
+  if (S.view === 'gallery' && (S.dir || '').startsWith('cut')) return { to: 'cuts' };
+  if (S.view === 'gallery' && /^originals\/[^/]+/.test(S.dir || '')) return { to: 'sources', series: S.dir.split('/')[1] };
+  if (S.view === 'editor' && /^originals\/[^/]+/.test(S.rel || '')) return { to: 'sources', series: S.rel.split('/')[1] };
+  if (S.view === 'library' && LIB.series) return { to: 'sources', series: seriesName(LIB.series) };
+  if (S.view === 'library' && LIB.place) return { to: 'sources', place: LIB.place, placeName: placeName(LIB.place) };
+  return { to: 'sources' };
 }
 let dropEl = null;
 function dropHint(on, to) {
   if (!dropEl) { dropEl = h('div', { class: 'drophint' }); document.body.append(dropEl); }
-  dropEl.textContent = to === 'cuts' ? 'Drop to add as cuts' : 'Drop to add as sources';
+  dropEl.textContent = to?.to === 'cuts' ? 'Drop to add as cuts' : to?.series ? `Drop to add to the series “${to.series}”` : to?.place ? `Drop to add as sources, kept in “${to.placeName || 'this place'}”` : 'Drop to add as sources';
   dropEl.classList.toggle('on', on);
 }
 document.addEventListener('dragover', e => {
@@ -3381,16 +3520,17 @@ async function addFiles(files, to) {
   let ok = 0; const bad = [];
   for (const [i, f] of files.entries()) {
     status(`Adding ${i + 1} of ${files.length}: ${f.name}…`, true);
-    const r = await fetch(`/api/add_file?${qs({ to, name: f.name })}`, { method: 'POST', headers: { 'X-Studio': '1', 'Content-Type': 'application/octet-stream' }, body: f })
+    const r = await fetch(`/api/add_file?${qs({ to: to.to, name: f.name, ...(to.series ? { series: to.series } : {}) })}`, { method: 'POST', headers: { 'X-Studio': '1', 'Content-Type': 'application/octet-stream' }, body: f })
       .then(r => r.json()).catch(e => ({ error: e.message }));
     if (r.error) bad.push(r.error); else ok++;
   }
   let rels = [];
-  if (to === 'sources' && ok) { status('Filing them among the sources…', true); rels = (await api.post('add_done').catch(() => ({ rels: [] }))).rels || []; }
+  if (to.to === 'sources' && ok) { status('Filing them among the sources…', true); rels = (await api.post('add_done', to.place ? { place: to.place } : {}).catch(() => ({ rels: [] }))).rels || []; }
   const t = await api.get('tree').catch(() => null); if (t) { S.tree = t.tree; renderNav(); }
   if (S.view === 'library') renderLibrary(); else if (S.view === 'gallery') refreshItems();
-  status(`${ok} file${ok === 1 ? '' : 's'} added as ${to}${bad.length ? ` · ${bad.length} skipped: ${bad[0]}` : ''}`);
-  if (to === 'sources' && rels.length === 1 && S.view !== 'editor') openScan(rels[0]);
+  status(`${ok} file${ok === 1 ? '' : 's'} added as ${to.to}${to.series ? ` in “${to.series}”` : ''}${to.place ? ` in “${to.placeName || 'the place'}”` : ''}${bad.length ? ` · ${bad.length} skipped: ${bad[0]}` : ''}`);
+  if (to.to === 'sources' && rels.length === 1 && S.view !== 'editor') openScan(rels[0]);
+  if (S.view === 'library') { await libPlaces(); renderNav(); }
 }
 
 // ------------------------------------------------------------ pannelli ridimensionabili

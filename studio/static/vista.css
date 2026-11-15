@@ -220,6 +220,8 @@ input[type=checkbox], input[type=radio] { accent-color: #2a8ae0; }
 .navbar .right { position: absolute; right: 10px; display: flex; align-items: center; gap: 4px; }
 .nb { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; color: #fff; border: 1px solid transparent; }
 .nb svg { width: 18px; height: 18px; }
+.nb.off { opacity: .35; cursor: default; }
+.nb.off:hover { border-color: transparent; background: none; }
 .nb:hover { border-color: rgba(0,0,0,.6); background: radial-gradient(circle at 50% 30%, rgba(255,255,255,.45), rgba(120,200,255,.2) 60%, transparent); }
 .orb { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: #fff; border: 1px solid #0b2236;
   background: radial-gradient(circle at 50% 100%, #6fe3ff 0%, transparent 55%),

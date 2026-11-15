@@ -34,3 +34,9 @@ use and unload by themselves after a few idle minutes. Detect › Free memory un
 
 The box tool (R) runs the chosen engine only inside the box you drag: useful for one sheet among
 many, or a crowded bed.
+
+**Whole scan** (beside Detect) makes the whole scan one part: nothing is cut away. For paper
+already scanned at its own size (A4 paper, A4 area). Cut (⌘S) with no parts offers the same:
+**Pass whole**. In a gallery, **Pass whole** (under Batch) does it for every selected source, turned
+as you choose in steps of 90°, and cuts them in one job. The part is a normal part: open the scan to
+rotate, label or trim it later, and the cut follows.

@@ -31,6 +31,16 @@ the note you are writing, followed by a comment saying where it comes from):
 
     require('scanstudio').setup({ dir = '~/wiki/scans' })
 
+## A file with several pages
+
+In Library › Sources (or a series), select several sources (⌘-click, ⇧-click, ⌘A) and press
+**Multipage file…**: one PDF or one TIFF with one page per source, in the order shown, or one page
+per cut. Lossless (Flate, no JPEG), real pixels at 8 bits per channel, each page the size of its
+scan; transparent cuts stay transparent. The file goes into a folder you choose and opens in the
+Finder when done; an existing file is never overwritten. It is a copy for reading or sending: the
+library keeps the sources and cuts. The same selection also offers **Pass whole**, **Detect + cut**,
+**Read text** and **Move to Trash**.
+
 ## Cuts in folders, and what travels with them
 
 Outputs › **Export cuts in folders** copies the cuts into a folder of your choice, like Eagle's export:

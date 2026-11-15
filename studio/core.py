@@ -994,6 +994,32 @@ def _raster(pts, shape, off, kind='poly', r=0):
     return M.astype(bool)
 
 
+def whole_sheet(st, w, h):
+    # il foglio intero: la carta era gia' del formato della scansione (A4 su A4) e si vuole tenerla tutta.
+    # Un contorno a mano sui quattro angoli: il taglio e' l'immagine intera, nessun pixel tolto.
+    # Ritorna il foglio (quello che c'era gia', se c'e')
+    poly = [[0, 0], [w, 0], [w, h], [0, h]]
+    for s in st['sheets']:
+        if s['poly'] == poly and not s.get('src') and not s.get('ops'):
+            return s
+    n0 = max([int(s['id'][1:]) for s in st['sheets'] if s['id'][1:].isdigit()] + [0])
+    s = {'id': f's{n0 + 1}', 'src': None, 'engine': 'manual', 'poly0': None, 'poly': poly, 'ops': [], 'on': True,
+         'label': '', 'holes': [], 'color': SHEET_COLORS[len(st['sheets']) % len(SHEET_COLORS)]}
+    st['sheets'].append(s)
+    st['exported'] = False
+    return s
+
+
+def keep_whole(rel, rot=0):
+    # tutta la scansione come parte, salvata nella libreria: il taglio segue (chi chiama lo mette in coda)
+    st = load_state(rel)
+    i = info(rel)
+    s = whole_sheet(st, i['w'], i['h'])
+    if rot:
+        s['rot'] = (int(rot) // 90 * 90) % 360
+    return save_state(st)
+
+
 def sheet_mask(rel, sheet):
     # (y0, x0, maschera, buchi, exact) del foglio con i ritocchi applicati
     rgb, _, _, ppm = image(rel)

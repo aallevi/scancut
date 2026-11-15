@@ -571,6 +571,25 @@ def empty_trash(lib, older_than_days=None, only=None):
 # Una copia dei tagli in una cartella scelta, ordinata come si vuole: per posto (Cassettiera / Box 24 /
 # Folder 5), per serie, o tutti insieme. I file sono gli stessi byte; mai sopra un altro (identico: resta).
 
+def pages_for(lib, uuids, use='sources'):
+    # le pagine di un file a piu' pagine: per ogni fonte scelta, nell'ordine dato, i suoi file (la scansione)
+    # o i suoi tagli (uno per parte, nell'ordine dei nomi). Ritorna [(rel, titolo, nome del file)]
+    out = []
+    for u in uuids:
+        it = lib.db.execute('SELECT id, title FROM item WHERE uuid = ?', (u,)).fetchone()
+        if not it:
+            continue
+        if use == 'cuts':
+            rows = lib.db.execute(f"SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role = 'cutout' AND {LIVE} ORDER BY a.original_name", (it['id'],)).fetchall()
+        else:
+            rows = lib.db.execute("SELECT a.* FROM asset a JOIN item_asset ia ON ia.asset_id = a.id WHERE ia.item_id = ? AND ia.role NOT IN ('cutout', 'edit') ORDER BY ia.position, a.id", (it['id'],)).fetchall()
+        for a in rows:
+            rel = rel_of(lib, a)
+            if rel and os.path.exists(core.abspath(rel)):
+                out.append((rel, it['title'], a['original_name']))
+    return out
+
+
 def _safe_dir(name):
     return re.sub(r'[/:\\]+', '-', (name or '').strip()) or 'untitled'
 
