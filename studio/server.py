@@ -768,12 +768,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'root': core.ROOT, 'tree': core.tree()})
         if path == 'list':
             return self.send(core.listing(q.get('dir', 'originals')))
-        if path == 'thumb':
-            p = core.preview_path(rel, int(q.get('size', 256)))
-            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', cache=True)
-        if path == 'preview':
-            p = core.preview_path(rel, 2400)
-            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', cache=True)
+        if path in ('thumb', 'preview'):
+            # la stessa via con un altro file (una scansione cestinata, la prossima prende il suo numero): l'anteprima
+            # e' del file com'e' ora. Il browser richiede sempre, e riceve "non cambiato" se il file e' lo stesso
+            tag = '"' + core.file_key(rel) + '"'
+            if self.headers.get('If-None-Match') == tag:
+                self.send_response(304); self.send_header('ETag', tag); self.send_header('Cache-Control', 'no-cache'); self.end_headers()
+                return
+            p = core.preview_path(rel, int(q.get('size', 256)) if path == 'thumb' else 2400)
+            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', etag=tag)
         if path == 'info':
             return self.send(core.info(rel))
         if path == 'tile':
