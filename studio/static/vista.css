@@ -623,3 +623,4 @@ html.native .window { overflow: hidden; }
 .keptpart .row { display: flex; gap: 6px; margin-top: 3px; }
 .keptpart .row select { flex: 1; min-width: 0; }
 .thumb .cap small.addr { color: #6a7a96; font-variant-numeric: tabular-nums; }
+.libflt { margin-left: 10px; padding: 1px 8px; border-radius: 10px; background: #fff3b0; border: 1px solid #d8c060; cursor: pointer; white-space: nowrap; }

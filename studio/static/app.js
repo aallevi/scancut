@@ -290,7 +290,8 @@ async function openLib(kind, uuid) {
   store('libmode', LIB.mode);
   await go('library', shown ? 'view:library' : kind + ':' + uuid); renderNav();
 }
-function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
+// Sources, Cuts, Texts, Trash nella barra laterale: tutta la libreria (via il filtro di serie o posto)
+function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; LIB.series = null; LIB.place = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
   LIB.info = await api.get('library').catch(() => null);
@@ -308,8 +309,11 @@ async function renderLibrary() {
   }
   const search = h('input', { class: 'search', placeholder: LIB.mode === 'texts' ? 'Search the texts…' : 'Search the library (text, titles, labels)…', value: LIB.q,
     oninput: e => { LIB.q = e.target.value; clearTimeout(LIB.t); LIB.t = setTimeout(libLoad, 200); } });
+  // il filtro in vigore (una serie, un posto) si vede qui, con la via per toglierlo
+  const flt = LIB.place ? ['place', (LIB.places || []).find(p => p.uuid === LIB.place)?.name] : LIB.series ? ['series', (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name || 'No series'] : null;
   head.append(h('div', { class: 'libbar' }, h('b', {}, LIB.info.name),
     h('span', { class: 'muted' }, ` · ${LIB.info.items} sources · ${LIB.info.cutouts} cuts · ${LIB.info.texts} texts · ${LIB.info.edits} edited copies`),
+    flt ? h('span', { class: 'libflt', title: 'Only this ' + flt[0] + ' is shown. Click to show the whole library' , onclick: () => { LIB.series = null; LIB.place = null; renderLibrary(); } }, `${flt[0]}: ${flt[1]} ×`) : null,
     h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
     LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cuts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
     h('button', { class: 'btn small', title: 'Add new scans from the scans folder (nothing is copied, nothing duplicated)', onclick: libImport }, 'Update from folder'),
