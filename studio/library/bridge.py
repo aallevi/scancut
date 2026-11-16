@@ -1432,16 +1432,24 @@ def _refresh_cutout_text(lib, region_id):
 
 # ---------------------------------------------------------------- tre cose: oggetti, ritagli, testi
 
-def text_list(lib, q=None, limit=500):
+def text_list(lib, q=None, limit=500, series=None, place=None):
     # ogni testo come cosa a se': dove sta (oggetto › zona) e quali ritagli lo mostrano
     # l'ultimo testo di ogni zona (o di ogni lettura intera); le letture prima restano nella storia
     latest = ("SELECT t.* FROM current_text t WHERE (t.region_id IS NULL OR (t.created_at = "
               "(SELECT MAX(created_at) FROM reading WHERE region_id = t.region_id) AND "
               "(SELECT removed_at FROM region WHERE id = t.region_id) IS NULL))")
+    # solo una serie (le zone delle sue fonti, e le letture intere delle sue scansioni) o un posto (le zone che ci stanno)
+    flt, args = '', []
+    if series:
+        items = 'SELECT id FROM item WHERE series_id IS NULL' if series == 'none' else 'SELECT id FROM item WHERE series_id = (SELECT id FROM series WHERE uuid = ?)'
+        flt += (f" AND (region_id IN (SELECT id FROM region WHERE item_id IN ({items})) OR "
+                f"(region_id IS NULL AND asset_id IN (SELECT asset_id FROM item_asset WHERE item_id IN ({items}))))")
+        if series != 'none': args += [series, series]
+    if place:
+        flt += f" AND region_id IN ({','.join(str(x) for x in regions_in(lib, place_subtree(lib, place))) or '-1'})"
     if q:
-        rows = lib.db.execute(f"SELECT * FROM ({latest}) WHERE plain LIKE ? ORDER BY created_at DESC LIMIT ?", (f'%{q}%', limit)).fetchall()
-    else:
-        rows = lib.db.execute(f'SELECT * FROM ({latest}) ORDER BY created_at DESC LIMIT ?', (limit,)).fetchall()
+        flt += ' AND plain LIKE ?'; args.append(f'%{q}%')
+    rows = lib.db.execute(f"SELECT * FROM ({latest}) WHERE 1=1{flt} ORDER BY created_at DESC LIMIT ?", (*args, limit)).fetchall()
     out = []
     for t in rows:
         reg = lib.db.execute("SELECT r.uuid, r.label, r.kind, r.color, r.position, i.uuid AS item, i.title, json_extract(r.source, '$.studio_rel') AS srel, "

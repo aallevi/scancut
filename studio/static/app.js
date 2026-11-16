@@ -79,6 +79,9 @@ const I = {
   orb_open: '<svg viewBox="0 0 20 20"><path d="M6 3l10 7-10 7z" fill="#fff"/></svg>',
   orb_scan: '<svg viewBox="0 0 20 20"><rect x="2" y="12.5" width="16" height="4.5" rx="1.2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M5 12.5V5.5a1 1 0 011-1h5.5L14.5 7v5.5" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 9.5h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
   zin: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5M7.5 5v5" stroke="#fff" stroke-width="1.6"/></svg>',
+  shuffle: '<svg viewBox="0 0 18 18"><path d="M2 5h3l6 8h4M2 13h3l6-8h4" fill="none" stroke="#fff" stroke-width="1.5"/><path d="M13 3l3 2-3 2zM13 11l3 2-3 2z" fill="#fff"/></svg>',
+  tzin: '<svg class="ico" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5" fill="#fff" stroke="#3a6ea5" stroke-width="1.4"/><path d="M10 10l4.5 4.5" stroke="#3a6ea5" stroke-width="1.8"/><path d="M4 6.5h5M6.5 4v5" stroke="#3a6ea5" stroke-width="1.3"/></svg>',
+  tzout: '<svg class="ico" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5" fill="#fff" stroke="#3a6ea5" stroke-width="1.4"/><path d="M10 10l4.5 4.5" stroke="#3a6ea5" stroke-width="1.8"/><path d="M4 6.5h5" stroke="#3a6ea5" stroke-width="1.3"/></svg>',
   zout: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5" stroke="#fff" stroke-width="1.6"/></svg>',
   fit: '<svg viewBox="0 0 18 18"><path d="M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
   undo: '<svg viewBox="0 0 18 18"><path d="M6 4L2 8l4 4" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M2 8h9a4.5 4.5 0 010 9H8" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
@@ -321,12 +324,13 @@ async function renderLibrary() {
     h('div', { class: 'segs libsegs', title: 'What this view shows; a series or a place stays open' }, [['objects', 'Sources'], ['cutouts', 'Cuts'], ['texts', 'Texts']].map(([m, l]) =>
       h('div', { class: 'seg' + (LIB.mode === m ? ' on' : ''), onclick: () => libSwitchMode(m) }, l))),
     flt ? h('span', { class: 'libflt', title: 'Only this ' + flt[0] + ' is shown. Click to show the whole library' , onclick: () => { LIB.series = null; LIB.place = null; renderLibrary(); } }, `${flt[0]}: ${flt[1]} ×`) : null,
-    h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
+    h('div', { class: 'grow' }), LIB.mode !== 'texts' ? zoomBtns() : null, LIB.mode !== 'texts' ? libSortBar() : null, search,
     LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cuts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
     h('button', { class: 'btn small', title: 'Add new scans from the scans folder (nothing is copied, nothing duplicated)', onclick: libImport }, 'Update from folder'),
     LIB.info.packed ? null : h('button', { class: 'btn small', title: 'Move the sources and cuts inside the library (lossless JPEG XL, half the space): only the inbox stays as a folder', onclick: libSwitch }, 'Move files in…'),
     h('button', { class: 'btn small', title: 'Is everything consistent with the library? Files, cuts, their text, the journal. ⌥-click: also re-renders every cut and compares pixels', onclick: e => libCheck(e.altKey) }, 'Check')));
-  main.append(h('div', { class: 'gallery libgrid', id: 'libgrid' }));
+  const grid = h('div', { class: 'gallery libgrid', id: 'libgrid' }); grid.style.setProperty('--th', S.tz + 'px');
+  main.append(grid);
   libLoad();
 }
 async function libLoad() {
@@ -343,8 +347,8 @@ async function libLoad() {
       oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [{ label: 'Open', do: () => { libSelect(it.uuid).then(() => libOpen(it.uuid)); } }, refreshItem(el)]); } },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
       it.cuts ? h('span', { class: 'badge edit', title: `${it.cuts} cut(s)` }, `${it.cuts} ✂`) : h('span', { class: 'badge uncut', title: 'Not cut yet' }, 'uncut')),
-    it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
-      : h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
+    it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: thumbPx() })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
+      : h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: thumbPx() })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
     h('div', { class: 'cap' }, it.title || '(untitled)', h('small', {}, [it.date, it.regions ? `${it.regions} sel.` : ''].filter(Boolean).join(' · ')))));
 }
 // il cestino della libreria: fonti e tagli tolti, da rimettere a posto o da cancellare davvero
@@ -387,7 +391,7 @@ async function libLoadCutouts() {
   for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e),
       oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [...(c.rel ? [{ label: 'Open', do: () => openLoc('scan:' + c.rel) }, { label: 'Open in new tab', do: () => newTab('scan:' + c.rel) }] : []), refreshItem(el)]); } },
     h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
-    h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
+    h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: thumbPx() })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
     h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')), c.kept?.address ? h('small', { class: 'addr', title: c.kept.path }, c.kept.address) : null)));
 }
 // scegliere piu' ritagli: ⌘-clic aggiunge o toglie, ⇧-clic un tratto, clic solo uno
@@ -421,7 +425,7 @@ async function libSelectCut(c, keepPicks) {
 // testi: ognuno una cosa a se', con la sua zona sulla scansione e i ritagli che lo mostrano
 LIB.hideEmpty = store('libhideempty') !== '0';          // "no text found": nascosti, finche' non si vuole vederli
 async function libLoadTexts() {
-  const all = await api.get('library/texts', LIB.q ? { q: LIB.q } : {}).catch(() => []);
+  const all = await api.get('library/texts', Object.assign(LIB.q ? { q: LIB.q } : {}, LIB.series ? { series: LIB.series } : {}, LIB.place ? { place: LIB.place } : {})).catch(() => []);
   const list = LIB.hideEmpty ? all.filter(t => (t.plain || '').trim()) : all;
   const g = $('#libgrid'); if (!g) return;
   g.className = 'libtexts'; g.innerHTML = '';
@@ -496,7 +500,8 @@ function multipageDialog(items) {
     h('div', { class: 'row' }, h('label', {}, 'Into'), dir, h('button', { class: 'btn small', onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Write the file into' }); if (r.dir) dir.value = r.dir; } }, 'Choose…')),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Pages'),
     radio('mp', 'sources', 'The scans, as they are', true, v => use = v),
-    radio('mp', 'cuts', 'Their cuts (one page per cut, transparent where cut away)', false, v => use = v),
+    // senza tagli non c'e' niente da mettere: la scelta si vede spenta e dice perche'
+    (ncuts => h('label', { class: 'radio' + (ncuts ? '' : ' off'), style: { display: 'block', opacity: ncuts ? 1 : .5 } }, h('input', { type: 'radio', name: 'mp', disabled: !ncuts, onchange: () => use = 'cuts' }), ' Their cuts (one page per cut, transparent where cut away)' + (ncuts ? ` · ${ncuts}` : ' · none yet: cut them first')))(items.reduce((n, x) => n + (x.cuts || 0), 0)),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Format'),
     radio('mf', 'pdf', 'PDF, lossless (pages the size of the scan; opens anywhere)', true, v => fmt = v),
     radio('mf', 'tiff', 'TIFF with several pages, lossless', false, v => fmt = v),
@@ -997,7 +1002,7 @@ async function navBack() {
   S.navFwd.push(S._here); await goLoc(S.navBack.pop());
 }
 async function navFwd() { if (!S.navFwd.length) return; S.navBack.push(S._here); await goLoc(S.navFwd.pop()); }
-function addressBar(dir, file, right) {
+function addressBar(dir, file, right, extra) {
   // dir: 'originals/sketchbook' (o null per le pagine dello studio), file: nome della scansione aperta
   const box = h('div', { class: 'addr-field' });
   const chev = (prefix) => {
@@ -1028,8 +1033,20 @@ function addressBar(dir, file, right) {
   const nb = (dirn, en, fn, tip) => h('div', { class: 'addr-nav' + (en ? '' : ' off'), title: tip, onclick: fn }, svg(dirn < 0 ? I.prev : I.next));
   return h('div', { class: 'addr' },
     h('div', { class: 'addr-navs' }, nb(-1, S.navBack.length || tabOpener(), navBack, S.navBack.length || !tabOpener() ? 'Back (⌘[)' : `Back to “${tabLabel(tabOpener().loc)}” (closes this tab) (⌘[)`), nb(1, S.navFwd.length, navFwd, 'Forward (⌘])')),
-    box, right && dir != null ? h('span', { class: 'sub' }, right) : null);
+    box, right && dir != null ? h('span', { class: 'sub' }, right) : null, extra || null);
 }
+// la misura delle miniature (galleria e libreria): livelli fissi, le lenti in alto o ⌘+ e ⌘−; oltre 200 px si chiede la miniatura grande
+const TZ = [90, 120, 150, 200, 260, 340];
+S.tz = TZ.includes(+store('thumbzoom')) ? +store('thumbzoom') : 150;
+const thumbPx = () => S.tz > 200 ? 512 : 256;
+function thumbZoom(d) {
+  const i = Math.max(0, Math.min(TZ.length - 1, TZ.indexOf(S.tz) + d)); if (TZ[i] === S.tz) return;
+  S.tz = TZ[i]; store('thumbzoom', S.tz);
+  if (S.view === 'gallery') renderGallery(); else if (S.view === 'library') { $('#libgrid')?.style.setProperty('--th', S.tz + 'px'); libLoad(); }
+}
+const zoomBtns = () => h('span', { class: 'tzoom' },
+  h('span', { class: 'tzb' + (S.tz === TZ[0] ? ' off' : ''), title: 'Smaller thumbnails (⌘−)', onclick: () => thumbZoom(-1), html: I.tzout }),
+  h('span', { class: 'tzb' + (S.tz === TZ[TZ.length - 1] ? ' off' : ''), title: 'Larger thumbnails (⌘+)', onclick: () => thumbZoom(1), html: I.tzin }));
 const visibleItems = () => S.items.filter(i => !i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
 function selectAll() { visibleItems().forEach(i => S.sel.add(i.rel)); }
 
@@ -1047,7 +1064,7 @@ function folderTile(peek = []) {
 function renderGallery() {
   const main = $('#main'); main.innerHTML = '';
   const items = visibleItems();
-  const grid = h('div', { class: 'gallery', tabindex: 0 });
+  const grid = h('div', { class: 'gallery', tabindex: 0 }); grid.style.setProperty('--th', S.tz + 'px');
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
   sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: e => { S.selDir = null; e.metaKey ? newTab('dir:' + c.rel) : openDir(c.rel); },
@@ -1067,12 +1084,12 @@ function renderGallery() {
       onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
       oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel), [refreshItem(e.currentTarget)]); } },
       h('div', { class: 'badges' }, badges),
-      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
+      h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: thumbPx() })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
       h('div', { class: 'cap' }, it.name));
     grid.append(el);
   });
   const t = S.tree.flatMap(n => [n, ...n.children]).find(n => n.rel === S.dir);
-  main.append(addressBar(S.dir, null, `${items.length} item${items.length !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`), grid);
+  main.append(addressBar(S.dir, null, `${items.length} item${items.length !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`, zoomBtns()), grid);
 }
 function clickItem(e, it, idx, items) {
   if (e.shiftKey && S.anchor != null) {
@@ -1241,6 +1258,7 @@ function mergeAreaText(sh, a, drop, name) {
 // sta in un rettangolo dove sta il foglio, del suo colore. Markdown (titoli, elenchi, tabelle) reso;
 // le figure segnate da un modello ("![image](image_1.png)x1,y1,x2,y2", su 0-1000) sono pixel veri.
 S.textView = store('textview') === '1';
+S.shuffle = store('shuffle') === '1';
 function toggleTextView(on) { S.textView = on ?? !S.textView; store('textview', S.textView ? '1' : ''); if (S.textView && !S.textPane) toggleTextPane(true); renderMirror(); renderTextPane(); renderCmdbar(); }
 function mirrorEl() {
   const m = h('div', { class: 'mirror', id: 'mirror' }, h('div', { class: 'mpage', id: 'mpage' }));
@@ -1790,10 +1808,19 @@ function sideEditor(side) {
 // ------------------------------------------------------------ barra in basso
 // quali bottoni della barra in basso possono fare qualcosa adesso; updateNavbar li accende e spegne senza
 // ridisegnare la barra (la riga di stato resta)
-function navOff() {
+// la lista che le frecce in basso scorrono, e dove si e': la galleria o la scansione aperta, oppure le fonti o i tagli della libreria
+function stepList() {
+  if (S.view === 'library') {
+    if (LIB.mode === 'objects') return [LIB.items || [], (LIB.items || []).findIndex(x => x.uuid === LIB.sel)];
+    if (LIB.mode === 'cutouts') return [LIB.cuts || [], (LIB.cuts || []).findIndex(x => x.uuid === LIB.cut)];
+    return [[], -1];
+  }
   const ed = S.view === 'editor', items = (S.view === 'gallery' || ed) ? visibleItems() : [], cur = ed ? S.rel : S.anchor;
-  const i = cur ? items.findIndex(x => x.rel === cur) : -1;
-  return { prev: !items.length || i === 0, next: !items.length || i >= items.length - 1, undo: !S.hist.length, redo: !S.fut.length,
+  return [items, cur ? items.findIndex(x => x.rel === cur) : -1];
+}
+function navOff() {
+  const [items, i] = stepList(), rnd = S.shuffle && items.length > 1;
+  return { prev: !items.length || (i === 0 && !rnd), next: !items.length || (i >= items.length - 1 && !rnd), undo: !S.hist.length, redo: !S.fut.length,
            back: !S.navBack.length && !tabOpener(), fwd: !S.navFwd.length };
 }
 function updateNavbar() {
@@ -1805,10 +1832,11 @@ function renderNavbar() {
   const ed = S.view === 'editor';
   // i bottoni che non possono fare niente si vedono spenti: nell'editor annulla e ripeti, altrove indietro e avanti
   // (come ⌘[ e ⌘]); le frecce scorrono le scansioni della galleria, o quella aperta
-  const btn = (icon, title, fn, id) => h('div', { class: 'nb' + (navOff()[id] ? ' off' : ''), id: 'nb-' + id, title, onclick: e => { if (!e.currentTarget.classList.contains('off')) fn(); } }, svg(icon));
+  const btn = (icon, title, fn, id) => h('div', { class: 'nb' + (navOff()[id] ? ' off' : ''), id: 'nb-' + id, title, onclick: e => { if (!e.currentTarget.classList.contains('off')) fn(e); } }, svg(icon));
   nb.append(
     h('div', { class: 'left' }, h('span', { class: 'status', id: 'status' }, ''), h('div', { class: 'progress', id: 'jobbar', style: { width: '90px', display: 'none' } }, h('i', { style: { width: '0%' } }))),
-    h('div', { class: 'pair' }, btn(I.prev, 'Previous scan (←)', () => step(-1), 'prev'), btn(I.next, 'Next scan (→)', () => step(1), 'next')),
+    h('div', { class: 'pair' }, btn(I.prev, 'Previous (←) · ⌥: the first', e => step(-1, e.altKey), 'prev'), btn(I.next, 'Next (→) · ⌥: the last', e => step(1, e.altKey), 'next')),
+    h('div', { class: 'nb' + (S.shuffle ? ' on' : ''), title: 'Shuffle: the arrows (and ← →) go to a random scan instead of the next one', onclick: e => { S.shuffle = !S.shuffle; store('shuffle', S.shuffle ? '1' : ''); e.currentTarget.classList.toggle('on', S.shuffle); updateNavbar(); } }, svg(I.shuffle)),
     h('div', { class: 'orb', title: ed ? (S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut') : 'Scan the next page with the scanner, areas and settings of the Scanners page (Space, when “Space bar scans” is on)', onclick: () => ed ? doExport() : scanNextPage() }, svg(ed ? I.orb_cut : I.orb_scan)),
     ed ? h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo, 'undo'), btn(I.redo, 'Redo (⇧⌘Z)', redo, 'redo'))
        : h('div', { class: 'pair' }, btn(I.back, 'Back (⌘[)', navBack, 'back'), btn(I.fwd, 'Forward (⌘])', navFwd, 'fwd')),
@@ -1821,10 +1849,19 @@ function renderNavbar() {
 }
 let statusTimer;
 function status(msg, sticky) { const el = $('#status'); if (!el) return; el.textContent = msg; clearTimeout(statusTimer); if (!sticky) statusTimer = setTimeout(() => el.textContent = '', 6000); }
-function step(d) {
-  const items = visibleItems(); if (!items.length) return;
-  const cur = S.view === 'editor' ? S.rel : (S.anchor || null);
-  let i = items.findIndex(x => x.rel === cur); i = Math.max(0, Math.min(items.length - 1, (i < 0 ? 0 : i + d)));
+// d: -1 o 1; edge: fino in fondo (⌥); con "a caso" acceso, uno qualunque che non sia questo
+function step(d, edge) {
+  const [items, cur] = stepList(), n = items.length; if (!n) return;
+  let i;
+  if (S.shuffle && n > 1) { do i = Math.floor(Math.random() * n); while (i === cur); }
+  else if (edge) i = d < 0 ? 0 : n - 1;
+  else i = Math.max(0, Math.min(n - 1, cur < 0 ? 0 : cur + d));
+  if (S.view === 'library') {
+    const it = items[i];
+    if (LIB.mode === 'objects') { LIB.anchor = i; libSelect(it.uuid); }
+    else { LIB.picks = new Set([it.uuid]); LIB.anchor = i; libReadLabel(); libSelectCut(it); }
+    $$('#libgrid .thumb')[i]?.scrollIntoView({ block: 'nearest' }); updateNavbar(); return;
+  }
   if (S.view === 'editor') openScan(items[i].rel); else { S.sel = new Set([items[i].rel]); S.anchor = items[i].rel; renderGallery(); renderSide(); }
 }
 
@@ -2569,10 +2606,12 @@ document.addEventListener('keydown', e => {
   if (e.target.closest?.('input, textarea, select')) return;
   const k = e.key, mod = e.metaKey || e.ctrlKey;
   if (mod && k === ',') { e.preventDefault(); return settingsDialog(); }
+  if (mod && ['gallery', 'library'].includes(S.view) && (k === '+' || k === '=' || k === '-')) { e.preventDefault(); return thumbZoom(k === '-' ? -1 : 1); }
   if ((mod && k === '[') || (e.altKey && k === 'ArrowLeft')) { e.preventDefault(); return navBack(); }
   if ((mod && k === ']') || (e.altKey && k === 'ArrowRight')) { e.preventDefault(); return navFwd(); }
   if (S.view === 'library' && LIB.mode === 'cutouts' && mod && k === 'a') { e.preventDefault(); (LIB.cuts || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); return libReadLabel(); }
   if (S.view === 'library' && LIB.mode === 'objects' && mod && k === 'a') { e.preventDefault(); (LIB.items || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); LIB.sel = null; LIB.detail = null; return renderSide(); }
+  if (S.view === 'library' && !mod) { if (k === 'ArrowRight') return step(1, e.altKey); if (k === 'ArrowLeft') return step(-1, e.altKey); }
   if (S.view === 'gallery') {
     if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
     if (k === 'Enter' && S.selDir) { const d = S.selDir; S.selDir = null; return openDir(d); }

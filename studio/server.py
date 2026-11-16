@@ -853,7 +853,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(r) if r else self.send({'error': 'no such item'}, code=404)
         if path == 'library/texts':
             lib = bridge.library(create=False)
-            return self.send(bridge.text_list(lib, q.get('q') or None) if lib else [])
+            return self.send(bridge.text_list(lib, q.get('q') or None, series=q.get('series') or None, place=q.get('place') or None) if lib else [])
         if path == 'library/cutouts':
             lib = bridge.library(create=False)
             return self.send(bridge.cutout_list(lib, series=q.get('series') or None, place=q.get('place') or None) if lib else [])

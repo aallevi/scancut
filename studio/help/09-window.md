@@ -9,10 +9,16 @@ another goes back to it and closes the tab.
 
 ## The bar at the bottom
 
-Left to right: the status line, previous and next scan (in a gallery they move the selection; in
-the editor they open the scan before or after), the round button (in the editor: scissors, Cut; elsewhere:
-a scanner, scan the next page), then undo and redo in the editor, or Back and Forward (⌘[ and ⌘]) elsewhere.
-A button that can do nothing right now is dimmed.
+Left to right: the status line, previous and next (← and →: in a gallery and in the library's Sources
+and Cuts they move the selection; in the editor they open the scan before or after; ⌥ jumps to the first
+or the last), shuffle (the arrows go to a random one instead, like a player), the round button (in the
+editor: scissors, Cut; elsewhere: a scanner, scan the next page), then undo and redo in the editor, or
+Back and Forward (⌘[ and ⌘]) elsewhere. A button that can do nothing right now is dimmed.
+
+## Thumbnail size
+
+The two lenses at the top of a gallery and of the library (or ⌘+ and ⌘−) make the thumbnails bigger or
+smaller, in steps. The size is remembered.
 
 ## Panes
 
