@@ -6,7 +6,9 @@ The library holds everything about sources, parts, cuts and texts. Its views are
 - **Cuts**: every cut file. Click opens it; ⌘-click in a new tab.
 - **Texts**: every text. Click opens its source with the part selected and the Text pane open.
   "Hide no text found" is on by default.
-- **Series**: the sources of one series.
+- **Series** (and **Places**): one series or place, like a folder. The Sources | Cuts | Texts switch in the
+  bar changes what it shows of that series; the title says both. Sources, Cuts and Texts on the left show
+  the whole library again, as does the × on the yellow chip.
 
 The panel on the right shows where a file belongs: its source, its parts, their cuts and texts.
 

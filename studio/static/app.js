@@ -77,6 +77,7 @@ const I = {
   next: '<svg viewBox="0 0 18 18"><path d="M6.5 4L12 9l-5.5 5z" fill="#fff"/></svg>',
   orb_cut: '<svg viewBox="0 0 20 20"><path d="M4 15l3-3M16 15l-3-3" stroke="#fff" stroke-width="1.6"/><circle cx="4.5" cy="15.5" r="2.5" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="15.5" cy="15.5" r="2.5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M7 12L14 2M13 12L6 2" stroke="#fff" stroke-width="1.6"/></svg>',
   orb_open: '<svg viewBox="0 0 20 20"><path d="M6 3l10 7-10 7z" fill="#fff"/></svg>',
+  orb_scan: '<svg viewBox="0 0 20 20"><rect x="2" y="12.5" width="16" height="4.5" rx="1.2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M5 12.5V5.5a1 1 0 011-1h5.5L14.5 7v5.5" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 9.5h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
   zin: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5M7.5 5v5" stroke="#fff" stroke-width="1.6"/></svg>',
   zout: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5" stroke="#fff" stroke-width="1.6"/></svg>',
   fit: '<svg viewBox="0 0 18 18"><path d="M2 6V2h4M12 2h4v4M16 12v4h-4M6 16H2v-4" fill="none" stroke="#fff" stroke-width="1.6"/></svg>',
@@ -291,15 +292,19 @@ async function openLib(kind, uuid) {
   await go('library', shown ? 'view:library' : kind + ':' + uuid); renderNav();
 }
 // Sources, Cuts, Texts, Trash nella barra laterale: tutta la libreria (via il filtro di serie o posto)
+// la stessa vista, senza perdere la serie o il posto aperto (il selettore nella barra della libreria)
+function libSwitchMode(m) { if (m === LIB.mode) return; LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; LIB.sel = null; LIB.detail = null; renderLibrary(); renderNav(); renderSide(); }
+const LIB_MODE_NAMES = { objects: 'Sources', cutouts: 'Cuts', texts: 'Texts', trash: 'Trash' };
 function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; LIB.series = null; LIB.place = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
   LIB.info = await api.get('library').catch(() => null);
   LIB.seriesList = await api.get('library/series').catch(() => []);
-  await libPlaces(); renderNav();
+  await libPlaces(); renderNav(); renderTabs();
   if (S.view !== 'library') return;
   const head = h('div', { class: 'libhead' });
-  main.append(addressBar(null, null, 'Library'), head);
+  const where = LIB.place ? (LIB.places || []).find(p => p.uuid === LIB.place)?.name : LIB.series ? (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name || 'No series' : null;
+  main.append(addressBar(null, null, 'Library · ' + (where ? where + ' · ' : '') + (LIB_MODE_NAMES[LIB.mode] || LIB.mode)), head);
   if (!LIB.info?.exists) {
     head.append(h('div', { class: 'libempty' },
       h('div', { class: 'big' }, 'No library yet'),
@@ -313,6 +318,8 @@ async function renderLibrary() {
   const flt = LIB.place ? ['place', (LIB.places || []).find(p => p.uuid === LIB.place)?.name] : LIB.series ? ['series', (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name || 'No series'] : null;
   head.append(h('div', { class: 'libbar' }, h('b', {}, LIB.info.name),
     h('span', { class: 'muted' }, ` · ${LIB.info.items} sources · ${LIB.info.cutouts} cuts · ${LIB.info.texts} texts · ${LIB.info.edits} edited copies`),
+    h('div', { class: 'segs libsegs', title: 'What this view shows; a series or a place stays open' }, [['objects', 'Sources'], ['cutouts', 'Cuts'], ['texts', 'Texts']].map(([m, l]) =>
+      h('div', { class: 'seg' + (LIB.mode === m ? ' on' : ''), onclick: () => libSwitchMode(m) }, l))),
     flt ? h('span', { class: 'libflt', title: 'Only this ' + flt[0] + ' is shown. Click to show the whole library' , onclick: () => { LIB.series = null; LIB.place = null; renderLibrary(); } }, `${flt[0]}: ${flt[1]} ×`) : null,
     h('div', { class: 'grow' }), LIB.mode !== 'texts' ? libSortBar() : null, search,
     LIB.mode === 'cutouts' ? h('button', { class: 'btn small default', id: 'libread', title: 'Read the text of the selected cuts (or all shown), one job', onclick: libReadCuts }, 'Read text') : null,
@@ -1802,7 +1809,7 @@ function renderNavbar() {
   nb.append(
     h('div', { class: 'left' }, h('span', { class: 'status', id: 'status' }, ''), h('div', { class: 'progress', id: 'jobbar', style: { width: '90px', display: 'none' } }, h('i', { style: { width: '0%' } }))),
     h('div', { class: 'pair' }, btn(I.prev, 'Previous scan (←)', () => step(-1), 'prev'), btn(I.next, 'Next scan (→)', () => step(1), 'next')),
-    h('div', { class: 'orb', title: ed ? (S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut') : 'Scan the next page with the scanner, areas and settings of the Scanners page (Space, when “Space bar scans” is on)', onclick: () => ed ? doExport() : scanNextPage() }, svg(ed ? I.orb_cut : I.orb_open)),
+    h('div', { class: 'orb', title: ed ? (S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut') : 'Scan the next page with the scanner, areas and settings of the Scanners page (Space, when “Space bar scans” is on)', onclick: () => ed ? doExport() : scanNextPage() }, svg(ed ? I.orb_cut : I.orb_scan)),
     ed ? h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo, 'undo'), btn(I.redo, 'Redo (⇧⌘Z)', redo, 'redo'))
        : h('div', { class: 'pair' }, btn(I.back, 'Back (⌘[)', navBack, 'back'), btn(I.fwd, 'Forward (⌘])', navFwd, 'fwd')),
     ed ? h('div', { class: 'right' }, btn(I.zout, 'Zoom out (−)', () => zoomBy(1 / 1.4)),
@@ -3082,7 +3089,7 @@ function renderScanSide(side) {
     h('div', { class: 'small muted' }, 'For many pages by hand: put a page on the bed, scan, swap, repeat. Every scan gets the next number in the batch.'),
     h('label', { class: 'row' }, h('input', { type: 'checkbox', checked: !!SC.spaceMode, onchange: e => { SC.spaceMode = e.target.checked; e.target.blur(); renderScanSide(); } }), ' Space bar scans the next page', info('Big-button mode: press Space (on any page, except while typing) or the round button at the bottom to scan the next page with the current areas and settings. During a timed session Space skips the countdown. In the editor, Space then no longer drags the view: use the hand tool.')),
     SC.spaceMode ? h('div', { style: { textAlign: 'center', margin: '8px 0' } },
-      h('div', { class: 'orb big', title: 'Scan the next page (Space)', onclick: scanNextPage }, svg(I.orb_cut)), h('div', { class: 'small muted' }, 'Space · next page')) : null,
+      h('div', { class: 'orb big', title: 'Scan the next page (Space)', onclick: scanNextPage }, svg(I.orb_scan)), h('div', { class: 'small muted' }, 'Space · next page')) : null,
     h('div', { class: 'row' }, h('label', {}, 'Every'), h('input', { type: 'number', min: 3, max: 600, step: 1, value: SC.every, class: 'f', onchange: e => { SC.every = Math.max(3, +e.target.value || 15); } }), h('span', { class: 'muted' }, 's'),
       SC.timed ? h('button', { class: 'btn', onclick: stopTimed }, 'Stop') : h('button', { class: 'btn', disabled: running, onclick: e => { e.currentTarget.blur(); startTimed(); } }, 'Start timed'),
       info('Timed scanning: the first page is scanned at once; when the scanner has read it, a countdown of this many seconds gives you time to swap the page (three beeps at the end), then the next scan. Space skips the wait; Stop, Esc or Cancel end it.')),
