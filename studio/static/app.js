@@ -332,7 +332,8 @@ async function libLoad() {
   if (!LIB.items.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'Empty.'));
   LIB.picks = new Set([...LIB.picks].filter(u => LIB.items.some(x => x.uuid === u)));
   for (const [i, it] of LIB.items.entries()) g.append(h('div', { class: 'thumb' + (LIB.picks.has(it.uuid) || LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
-      onclick: e => libPickItem(e, it, i), ondblclick: e => libOpen(it.uuid, e) },
+      onclick: e => libPickItem(e, it, i), ondblclick: e => libOpen(it.uuid, e),
+      oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [{ label: 'Open', do: () => { libSelect(it.uuid).then(() => libOpen(it.uuid)); } }, refreshItem(el)]); } },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
       it.cuts ? h('span', { class: 'badge edit', title: `${it.cuts} cut(s)` }, `${it.cuts} ✂`) : h('span', { class: 'badge uncut', title: 'Not cut yet' }, 'uncut')),
     it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: 256 })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
@@ -376,7 +377,8 @@ async function libLoadCutouts() {
   const g = $('#libgrid'); if (!g) return;
   g.innerHTML = '';
   if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'No cuts yet: open a source, find its parts, Cut.'));
-  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e) },
+  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e),
+      oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [...(c.rel ? [{ label: 'Open', do: () => openLoc('scan:' + c.rel) }, { label: 'Open in new tab', do: () => newTab('scan:' + c.rel) }] : []), refreshItem(el)]); } },
     h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
     h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 256 })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
     h('div', { class: 'cap' }, c.name, h('small', {}, [c.title, c.region?.label].filter(Boolean).join(' › ')), c.kept?.address ? h('small', { class: 'addr', title: c.kept.path }, c.kept.address) : null)));
@@ -973,7 +975,10 @@ async function openLoc(loc, e) {
   if (kind === 'series' || kind === 'place') return openLib(kind, arg);
   return go(arg);
 }
-function tabMenu(el, loc, here) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }]); }
+function tabMenu(el, loc, here, more = []) { menu(el, [{ label: 'Open', do: here }, { label: 'Open in new tab', do: () => newTab(loc) }, ...more]); }
+// la miniatura riletta adesso (il browser ne teneva una di prima per lo stesso nome: una scansione cestinata, la prossima con il suo numero)
+function refreshThumb(el) { $$('img', el).forEach(im => { im.src = im.src.replace(/&r=\d+/, '') + '&r=' + Date.now(); }); status('Thumbnail reloaded'); }
+const refreshItem = el => ({ label: 'Refresh thumbnail', do: () => refreshThumb(el) });
 const tabOpener = () => { const o = TABS.list[TABS.i]?.opener; return o && TABS.list.includes(o) ? o : null; };
 async function navBack() {
   if (!S.navBack.length) {
@@ -1053,7 +1058,7 @@ function renderGallery() {
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
       onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel) : openScan(it.rel)),
       onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
-      oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel)); } },
+      oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel), [refreshItem(e.currentTarget)]); } },
       h('div', { class: 'badges' }, badges),
       h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: 256 })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
       h('div', { class: 'cap' }, it.name));
