@@ -1049,7 +1049,9 @@ def item_list(lib, q=None, limit=500, offset=0, series=None, place=None):
         a = thumbs.get(f['thumb_id'])
         out.append({'uuid': it['uuid'], 'title': it['title'], 'kind': it['kind'], 'date': it['date'], 'batch': f['series_name'],
                     'files': f['files'], 'regions': f['regions'], 'texts': f['texts'], 'thumb': rel_of(lib, a) if a else None,
+                    'thumb_v': a['sha256'][:12] if a else None,
                     'cut_thumbs': [c for c in (rel_of(lib, x) for x in cut_thumbs.get(it['id'], [])) if c],
+                    'cut_thumbs_v': [x['sha256'][:12] for x in cut_thumbs.get(it['id'], []) if rel_of(lib, x)],
                     'cuts': f['cuts'], 'dpi': a['dpi'] if a else None, 'width': a['width'] if a else None, 'height': a['height'] if a else None,
                     'added': it['created_at'], 'category': it['category']})
     return out

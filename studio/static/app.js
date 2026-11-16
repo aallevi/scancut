@@ -336,7 +336,14 @@ async function renderLibrary() {
   main.append(grid);
   libLoad();
 }
+// ricaricata (un lavoro finito, un taglio nuovo) la griglia resta dov'era: niente salto in cima
 async function libLoad() {
+  const g0 = $('#libgrid'), keep = g0 ? g0.scrollTop : 0, mode = LIB.mode;
+  await libLoadNow();
+  const g1 = $('#libgrid');
+  if (keep && g1 === g0 && LIB.mode === mode) g1.scrollTop = keep;
+}
+async function libLoadNow() {
   if (LIB.mode === 'trash') return libLoadTrash();
   if (LIB.mode === 'cutouts') return libLoadCutouts();
   if (LIB.mode === 'texts') return libLoadTexts();
@@ -351,8 +358,8 @@ async function libLoad() {
       oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [{ label: 'Open', do: () => { libSelect(it.uuid).then(() => libOpen(it.uuid)); } }, refreshItem(el)]); } },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
       it.cuts ? h('span', { class: 'badge edit', title: `${it.cuts} cut(s)` }, `${it.cuts} ✂`) : h('span', { class: 'badge uncut', title: 'Not cut yet' }, 'uncut')),
-    it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map(r => h('img', { src: `/api/thumb?${qs({ rel: r, size: thumbPx() })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
-      : h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: thumbPx() })}&v=${PREV_V}`, loading: 'lazy', draggable: 'false' }) : null),
+    it.cut_thumbs?.length ? h('div', { class: 'pic mosaic n' + Math.min(4, it.cut_thumbs.length) }, ...it.cut_thumbs.map((r, k) => h('img', { src: `/api/thumb?${qs({ rel: r, size: thumbPx() })}&v=${PREV_V}${it.cut_thumbs_v?.[k] ? '&k=' + it.cut_thumbs_v[k] : ''}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } })))
+      : h('div', { class: 'pic' }, it.thumb ? h('img', { src: `/api/thumb?${qs({ rel: it.thumb, size: thumbPx() })}&v=${PREV_V}${it.thumb_v ? '&k=' + it.thumb_v : ''}`, loading: 'lazy', draggable: 'false' }) : null),
     h('div', { class: 'cap' }, it.title || '(untitled)', h('small', {}, [it.date, it.regions ? `${it.regions} sel.` : ''].filter(Boolean).join(' · ')))));
 }
 // il cestino della libreria: fonti e tagli tolti, da rimettere a posto o da cancellare davvero
@@ -1177,15 +1184,17 @@ function folderTile(peek = []) {
 }
 
 function renderGallery() {
+  // ridisegnata (un lavoro finito, la cartella cambiata) resta dov'era: niente salto in cima
+  const was = $('#main .gallery'), keep = was && was.dataset.dir === S.dir ? was.scrollTop : 0;
   const main = $('#main'); main.innerHTML = '';
   const items = visibleItems(), busy = busyRels();
-  const grid = h('div', { class: 'gallery', tabindex: 0 }); grid.style.setProperty('--th', S.tz + 'px');
+  const grid = h('div', { class: 'gallery', tabindex: 0, 'data-dir': S.dir }); grid.style.setProperty('--th', S.tz + 'px');
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
-  sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), title: c.name, ondblclick: e => { S.selDir = null; e.metaKey ? newTab('dir:' + c.rel) : openDir(c.rel); },
+  sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), 'data-folder': c.rel, title: c.name, ondblclick: e => { S.selDir = null; e.metaKey ? newTab('dir:' + c.rel) : openDir(c.rel); },
     onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('dir:' + c.rel); } },
     oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'dir:' + c.rel, () => openDir(c.rel)); },
-    onclick: () => { S.selDir = c.rel; S.sel.clear(); renderGallery(); renderSide(); renderCmdbar(); } },
+    onclick: () => { S.selDir = c.rel; S.sel.clear(); gallerySel(); renderSide(); renderCmdbar(); } },
     h('div', { class: 'pic', html: folderTile(c.peek) }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
   if (!items.length && !sub.length) grid.append(h('div', { class: 'empty' }, S.items.length ? 'No scans match the search.' : 'This folder is empty.'));
   items.forEach((it, idx) => {
@@ -1205,6 +1214,7 @@ function renderGallery() {
   });
   const t = S.tree.flatMap(n => [n, ...n.children]).find(n => n.rel === S.dir);
   main.append(addressBar(S.dir, null, `${items.length} item${items.length !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`, zoomBtns()), grid);
+  if (keep) grid.scrollTop = keep;
 }
 function clickItem(e, it, idx, items) {
   if (e.shiftKey && S.anchor != null) {
@@ -1216,7 +1226,14 @@ function clickItem(e, it, idx, items) {
     S.sel.has(it.rel) ? S.sel.delete(it.rel) : S.sel.add(it.rel); S.anchor = it.rel;
   } else { S.sel = new Set([it.rel]); S.anchor = it.rel; }
   S.selDir = null;
-  renderGallery(); renderSide(); renderCmdbar();
+  gallerySel(); renderSide(); renderCmdbar();
+}
+// la scelta nella galleria si vede senza ridisegnarla: classi, e il conto nella barra
+function gallerySel() {
+  $$('#main .gallery .thumb[data-rel]').forEach(el => el.classList.toggle('sel', S.sel.has(el.dataset.rel)));
+  $$('#main .gallery .thumb[data-folder]').forEach(el => el.classList.toggle('sel', S.selDir === el.dataset.folder));
+  const n = visibleItems().length, sub = $('#main .addr .sub');
+  if (sub) sub.textContent = `${n} item${n !== 1 ? 's' : ''}${S.sel.size ? `, ${S.sel.size} selected` : ''}`;
 }
 
 // ------------------------------------------------------------ pannello a destra
@@ -1976,7 +1993,7 @@ function step(d, edge) {
     else { LIB.picks = new Set([it.uuid]); LIB.anchor = i; libReadLabel(); libSelectCut(it); }
     $$('#libgrid .thumb')[i]?.scrollIntoView({ block: 'nearest' }); updateNavbar(); return;
   }
-  if (S.view === 'editor') openScan(items[i].rel); else { S.sel = new Set([items[i].rel]); S.anchor = items[i].rel; renderGallery(); renderSide(); }
+  if (S.view === 'editor') openScan(items[i].rel); else { S.sel = new Set([items[i].rel]); S.anchor = items[i].rel; gallerySel(); renderSide(); $(`#main .gallery .thumb[data-rel="${CSS.escape(items[i].rel)}"]`)?.scrollIntoView({ block: 'nearest' }); }
 }
 
 // ------------------------------------------------------------ editor
@@ -2728,7 +2745,7 @@ document.addEventListener('keydown', e => {
   if (S.view === 'library' && LIB.mode === 'objects' && mod && k === 'a') { e.preventDefault(); (LIB.items || []).forEach(c => LIB.picks.add(c.uuid)); $$('#libgrid .thumb').forEach(el => el.classList.add('sel')); LIB.sel = null; LIB.detail = null; return renderSide(); }
   if (S.view === 'library' && !mod) { if (k === 'ArrowRight') return step(1, e.altKey); if (k === 'ArrowLeft') return step(-1, e.altKey); }
   if (S.view === 'gallery') {
-    if (mod && k === 'a') { e.preventDefault(); selectAll(); renderGallery(); renderSide(); renderCmdbar(); }
+    if (mod && k === 'a') { e.preventDefault(); selectAll(); gallerySel(); renderSide(); renderCmdbar(); }
     if (k === 'Enter' && S.selDir) { const d = S.selDir; S.selDir = null; return openDir(d); }
     if (k === 'Enter' && S.sel.size) openScan([...S.sel][0]);
     if (k === 'ArrowRight') step(1); if (k === 'ArrowLeft') step(-1);

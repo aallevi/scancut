@@ -647,7 +647,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(body)))
-        self.send_header('Cache-Control', 'max-age=86400' if cache else 'no-cache' if etag else 'no-store')
+        self.send_header('Cache-Control', cache if isinstance(cache, str) else 'max-age=86400' if cache else 'no-cache' if etag else 'no-store')
         if etag:
             self.send_header('ETag', etag)
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -771,12 +771,16 @@ class Handler(BaseHTTPRequestHandler):
         if path in ('thumb', 'preview'):
             # la stessa via con un altro file (una scansione cestinata, la prossima prende il suo numero): l'anteprima
             # e' del file com'e' ora. Il browser richiede sempre, e riceve "non cambiato" se il file e' lo stesso
+            # Con la versione del file nell'indirizzo (m, s, k: data, impronta) la miniatura si tiene un anno: un file
+            # diverso ha un indirizzo diverso. Cosi' ridisegnare una galleria non richiede di nuovo ogni miniatura
+            # (durante i lavori pesanti le richieste occupavano tutte le connessioni e la finestra si fermava)
             tag = '"' + core.file_key(rel) + '"'
+            keep = 'private, max-age=31536000, immutable' if any(q.get(x) for x in ('m', 's', 'k')) else 'no-cache'
             if self.headers.get('If-None-Match') == tag:
-                self.send_response(304); self.send_header('ETag', tag); self.send_header('Cache-Control', 'no-cache'); self.end_headers()
+                self.send_response(304); self.send_header('ETag', tag); self.send_header('Cache-Control', keep); self.end_headers()
                 return
             p = core.preview_path(rel, int(q.get('size', 256)) if path == 'thumb' else 2400)
-            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', etag=tag)
+            return self.send(open(p, 'rb').read(), 'image/png' if p.endswith('.png') else 'image/jpeg', etag=tag, cache=keep)
         if path == 'info':
             return self.send(core.info(rel))
         if path == 'tile':
