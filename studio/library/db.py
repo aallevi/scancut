@@ -345,6 +345,13 @@ CREATE INDEX IF NOT EXISTS region_live ON region(kind, parent_id, removed_at, as
 CREATE INDEX IF NOT EXISTS item_place ON item(place_id, place_number);
 DROP INDEX IF EXISTS cut_region; CREATE INDEX cut_region ON cut(region_id, id);
 DROP INDEX IF EXISTS cut_path; CREATE INDEX cut_path ON cut(path, id);''')
+        # oggetti: piu' parti che sono lo stesso pezzo di carta (fronte e retro, le due pagine di un foglio)
+        if 'object_id' not in {r[1] for r in self.db.execute('PRAGMA table_info(item)')}:
+            self.db.executescript('ALTER TABLE item ADD COLUMN object_id INTEGER REFERENCES item(id) ON DELETE SET NULL; '
+                                  'ALTER TABLE item ADD COLUMN object_position INTEGER; ALTER TABLE item ADD COLUMN side TEXT; '
+                                  'CREATE INDEX IF NOT EXISTS item_object ON item(object_id, object_position);')
+            self.db.commit()
+            self.log('migrate', 'library', self.meta('uuid'), added='objects (item.object_id, side)')
         if self.meta('schema_version') != str(SCHEMA_VERSION):
             with self.db:
                 self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
@@ -394,13 +401,6 @@ CREATE INDEX region_parent ON region(parent_id);''')
             self.db.execute('PRAGMA foreign_keys = ON')
         n = self.db.execute("SELECT COUNT(*) FROM item WHERE kind = 'part'").fetchone()[0]
         self.log('migrate', 'library', self.meta('uuid'), added='parts as items', parts=n)
-        # oggetti: piu' parti che sono lo stesso pezzo di carta (fronte e retro, le due pagine di un foglio)
-        if 'object_id' not in {r[1] for r in self.db.execute('PRAGMA table_info(item)')}:
-            self.db.executescript('ALTER TABLE item ADD COLUMN object_id INTEGER REFERENCES item(id) ON DELETE SET NULL; '
-                                  'ALTER TABLE item ADD COLUMN object_position INTEGER; ALTER TABLE item ADD COLUMN side TEXT; '
-                                  'CREATE INDEX IF NOT EXISTS item_object ON item(object_id, object_position);')
-            self.db.commit()
-            self.log('migrate', 'library', self.meta('uuid'), added='objects (item.object_id, side)')
 
     def _item_of(self, asset_id, region_id):
         if region_id:

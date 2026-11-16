@@ -678,6 +678,30 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(bridge.resolve_address(lib, '24-05'), folder)   # come le note di Eagle: scatola 24, cartella 5
         self.assertTrue(lib.db.execute("SELECT 1 FROM event WHERE type = 'move'").fetchone())
 
+    def test_an_existing_library_gets_the_object_columns(self):
+        # una libreria fatta prima degli oggetti (senza item.object_id) si apre con il codice nuovo: le colonne arrivano
+        # da migrate() e ogni vista funziona (prima il passo stava dentro una migrazione gia' fatta: tagli spariti)
+        from studio.library import bridge
+        from studio.library.db import Library
+        lib = bridge.library()
+        bridge.cut(self.rel, log=lambda m: None)
+        cols = [r[1] for r in lib.db.execute('PRAGMA table_info(item)') if r[1] not in ('object_id', 'object_position', 'side')]
+        lib.db.commit()
+        lib.db.execute('PRAGMA foreign_keys = OFF')
+        for t in [r[0] for r in lib.db.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")]:
+            lib.db.execute(f'DROP TRIGGER "{t}"')
+        lib.db.executescript(f"DROP INDEX IF EXISTS item_object; CREATE TABLE item_old AS SELECT {', '.join(cols)} FROM item; DROP TABLE item; ALTER TABLE item_old RENAME TO item;")
+        lib.db.execute('PRAGMA foreign_keys = ON')
+        self.assertNotIn('object_id', [r[1] for r in lib.db.execute('PRAGMA table_info(item)')])
+        path = lib.path
+        bridge._lib = None
+        again = Library(path)
+        again.migrate()
+        self.assertIn('object_id', [r[1] for r in again.db.execute('PRAGMA table_info(item)')])
+        self.assertEqual(len(bridge.cutout_list(again)), 2)
+        it = again.db.execute("SELECT uuid FROM item WHERE kind = 'scan'").fetchone()[0]
+        self.assertEqual(len(bridge.item_detail(again, it)['regions']), 2)
+
     def test_joined_parts_are_one_object(self):
         # fronte e retro (o due pagine): parti unite in un oggetto, un legame nel database e basta; ogni vista lo sa,
         # il posto dell'oggetto vale per i lati, separare rimette tutto com'era e il controllo non trova niente
