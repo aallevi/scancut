@@ -350,11 +350,13 @@ def _origin_region(lib, region_id):
 
 def effective_place(lib, region_id, depth=0):
     # (posto, categoria) che valgono per un foglio: il suo, se no quello della sua fonte, se no quello della parte d'origine
-    r = lib.db.execute('SELECT p.place_id, p.category, i.place_id AS ip, i.category AS ic FROM region g JOIN item i ON i.id = g.item_id '
-                       'LEFT JOIN item p ON p.region_id = g.id WHERE g.id = ?', (region_id,)).fetchone()
+    r = lib.db.execute('SELECT p.place_id, p.category, i.place_id AS ip, i.category AS ic, o.place_id AS op, o.category AS oc '
+                       'FROM region g JOIN item i ON i.id = g.item_id LEFT JOIN item p ON p.region_id = g.id LEFT JOIN item o ON o.id = p.object_id '
+                       'WHERE g.id = ?', (region_id,)).fetchone()
     if not r:
         return None, None
-    pid, cat = r['place_id'] or r['ip'], r['category'] or r['ic']
+    # il suo; se no quello dell'oggetto di cui e' un lato (lo stesso pezzo di carta sta in un posto solo); se no la fonte
+    pid, cat = r['place_id'] or r['op'] or r['ip'], r['category'] or r['oc'] or r['ic']
     if (pid is None or cat is None) and depth < 5:
         o = _origin_region(lib, region_id)
         if o:
@@ -373,6 +375,152 @@ def where_kept(lib, region_id):
     a = address(lib, pid, r['place_number']) or {}
     return {'part': r['part'], 'place': lib.db.execute('SELECT uuid FROM place WHERE id = ?', (pid,)).fetchone()[0] if pid else None,
             'own_place': bool(r['place_id']), 'number': r['place_number'], 'category': cat, 'own_category': bool(r['category']), **a}
+
+
+# ---------------------------------------------------------------- oggetti: parti che sono lo stesso pezzo di carta
+# Fronte e retro di un foglio, le due pagine di una doppia, un disegno scandito in due volte: parti diverse (anche di
+# scansioni diverse) che sono una cosa sola. L'unione e' un item 'object' e un legame sulle parti (item.object_id,
+# ordine, lato): niente file, niente copie. Ogni vista le mostra insieme; il posto dell'oggetto vale per i suoi lati.
+
+SIDES = ['front', 'back', 'left', 'right', 'top', 'bottom', 'inside', 'outside']
+
+
+def _part_ref(lib, ref):
+    # una parte indicata come uuid di zona, uuid di parte (item), uuid del taglio, o {rel, id} dello studio -> id della zona
+    if isinstance(ref, dict):
+        p = os.path.realpath(core.abspath(ref['rel']))
+        r = lib.db.execute("SELECT g.id FROM region g JOIN asset a ON a.id = g.asset_id WHERE a.path = ? AND json_extract(g.source, '$.studio_id') = ? "
+                           "AND g.removed_at IS NULL ORDER BY g.id DESC LIMIT 1", (p, ref['id'])).fetchone()
+        return r[0] if r else None
+    r = lib.db.execute('SELECT id FROM region WHERE uuid = ?', (ref,)).fetchone()
+    if r:
+        return r[0]
+    r = lib.db.execute('SELECT region_id FROM item WHERE uuid = ? AND region_id IS NOT NULL', (ref,)).fetchone()
+    if r:
+        return r[0]
+    r = lib.db.execute('SELECT x.region_id FROM cut x JOIN asset a ON a.path = x.path WHERE a.uuid = ? AND x.region_id IS NOT NULL ORDER BY x.id DESC LIMIT 1', (ref,)).fetchone()
+    return r[0] if r else None
+
+
+def object_of(lib, region_id):
+    # l'oggetto di cui questa parte e' un lato, con tutti i suoi lati (vivi), o None
+    p = lib.db.execute('SELECT object_id, side, object_position FROM item WHERE region_id = ?', (region_id,)).fetchone()
+    o = object_detail(lib, p['object_id']) if p and p['object_id'] else None
+    return dict(o, side=p['side'], position=p['object_position']) if o else None      # il lato che e' questa parte
+
+
+def object_detail(lib, object_id):
+    o = lib.db.execute("SELECT * FROM item WHERE id = ? AND kind = 'object'", (object_id,)).fetchone() if isinstance(object_id, int) else \
+        lib.db.execute("SELECT * FROM item WHERE uuid = ? AND kind = 'object'", (object_id,)).fetchone()
+    if not o:
+        return None
+    parts = []
+    for p in lib.db.execute("SELECT p.uuid, p.side, p.object_position, p.trashed_at, g.uuid AS region, g.id AS rid, g.label, g.kind, g.position, g.color, "
+                            "json_extract(g.source, '$.studio_rel') AS srel, json_extract(g.source, '$.studio_id') AS sid, s.uuid AS source, s.title "
+                            "FROM item p JOIN region g ON g.id = p.region_id JOIN item s ON s.id = p.parent_id WHERE p.object_id = ? "
+                            "ORDER BY p.object_position, p.id", (o['id'],)).fetchall():
+        if p['trashed_at']:
+            continue
+        c = lib.db.execute("SELECT a.* FROM cut x JOIN asset a ON a.path = x.path WHERE x.region_id = ? AND " + LIVE +
+                           " ORDER BY x.id DESC LIMIT 1", (p['rid'],)).fetchone()
+        parts.append({'part': p['uuid'], 'region': p['region'], 'side': p['side'], 'position': p['object_position'],
+                      'label': p['label'] or f'{p["kind"]} {p["position"] + 1}', 'color': p['color'], 'source': p['source'], 'title': p['title'],
+                      'studio_rel': p['srel'], 'studio_id': p['sid'],
+                      'cut': {'uuid': c['uuid'], 'name': c['original_name'], 'rel': rel_of(lib, c)} if c and os.path.exists(c['path']) else None})
+    pl = lib.db.execute('SELECT uuid FROM place WHERE id = ?', (o['place_id'],)).fetchone() if o['place_id'] else None
+    return {'uuid': o['uuid'], 'title': o['title'], 'notes': o['notes'], 'n': len(parts), 'parts': parts,
+            'place': pl[0] if pl else None, 'kept': address(lib, o['place_id'], o['place_number']), 'category': o['category']}
+
+
+def join_parts(lib, refs, title=None, sides=None, object_uuid=None):
+    # unisce parti in un oggetto: uno gia' dato (object_uuid), o quello di una delle parti, o uno nuovo. Le parti nuove
+    # vanno in coda, nell'ordine dato, col lato detto (sides: lista parallela, o dizionario per riferimento). Ritorna l'uuid
+    from .db import new_uuid
+    rids = []
+    for ref in refs:
+        rid = _part_ref(lib, ref)
+        if rid is None:
+            raise ValueError('one of these cuts has no part behind it (an old cut, linked by name only): open its source, find its parts and cut it first')
+        rids.append(rid)
+    if len(set(rids)) < 2 and not object_uuid:
+        raise ValueError('an object needs at least two parts')
+    pids = [lib.part_of(r) for r in rids]
+    side_of = {}
+    if isinstance(sides, dict):
+        side_of = {rid: sides.get(ref if not isinstance(ref, dict) else ref['id']) for ref, rid in zip(refs, rids)}
+    elif sides:
+        side_of = {rid: s for rid, s in zip(rids, sides)}
+    with lib.db:
+        oid = lib.db.execute("SELECT id FROM item WHERE uuid = ? AND kind = 'object'", (object_uuid,)).fetchone() if object_uuid else None
+        oid = oid[0] if oid else None
+        if oid is None:
+            have = [r[0] for r in lib.db.execute(f"SELECT DISTINCT object_id FROM item WHERE id IN ({','.join('?' * len(pids))}) AND object_id IS NOT NULL", pids)]
+            if len(have) > 1:
+                raise ValueError('these parts already belong to two different objects: separate first')
+            oid = have[0] if have else None
+        if oid is None:
+            first = lib.db.execute('SELECT s.title, s.date, s.series_id FROM item p JOIN item s ON s.id = p.parent_id WHERE p.id = ?', (pids[0],)).fetchone()
+            u, t = new_uuid(), now()
+            oid = lib.db.execute('INSERT INTO item (uuid, kind, title, date, series_id, created_at, modified_at) VALUES (?,?,?,?,?,?,?)',
+                                 (u, 'object', (title or '').strip() or first['title'], first['date'], first['series_id'], t, t)).lastrowid
+        elif title is not None and title.strip():
+            lib.db.execute('UPDATE item SET title = ?, modified_at = ? WHERE id = ?', (title.strip(), now(), oid))
+        pos = lib.db.execute('SELECT COALESCE(MAX(object_position), -1) + 1 FROM item WHERE object_id = ?', (oid,)).fetchone()[0]
+        for rid, pid in zip(rids, pids):
+            cur = lib.db.execute('SELECT object_id, object_position FROM item WHERE id = ?', (pid,)).fetchone()
+            side = (side_of.get(rid) or '').strip() or None
+            if cur['object_id'] == oid:
+                lib.db.execute('UPDATE item SET side = COALESCE(?, side), modified_at = ? WHERE id = ?', (side, now(), pid))
+                continue
+            lib.db.execute('UPDATE item SET object_id = ?, object_position = ?, side = ?, modified_at = ? WHERE id = ?', (oid, pos, side, now(), pid))
+            pos += 1
+        ou = lib.db.execute('SELECT uuid FROM item WHERE id = ?', (oid,)).fetchone()[0]
+        lib.log('join', 'item', ou, parts=[lib.db.execute('SELECT uuid FROM item WHERE id = ?', (p,)).fetchone()[0] for p in pids])
+    lib.touched(oid)
+    for pid in pids:
+        lib.touched(lib.db.execute('SELECT parent_id FROM item WHERE id = ?', (pid,)).fetchone()[0])
+    schedule_journal()
+    return ou
+
+
+def separate(lib, refs=(), object_uuid=None):
+    # toglie parti da un oggetto (refs), o scioglie l'oggetto intero (object_uuid). Un oggetto rimasto con meno di due
+    # parti si scioglie: le parti restano come sono, con il loro posto se ne avevano uno proprio
+    pids = []
+    if object_uuid:
+        pids = [r[0] for r in lib.db.execute("SELECT p.id FROM item p JOIN item o ON o.id = p.object_id WHERE o.uuid = ?", (object_uuid,))]
+    for ref in refs:
+        rid = _part_ref(lib, ref)
+        pid = lib.part_of(rid) if rid else None
+        if pid:
+            pids.append(pid)
+    if not pids:
+        return 0
+    objs = set()
+    with lib.db:
+        for pid in pids:
+            r = lib.db.execute('SELECT object_id, uuid FROM item WHERE id = ?', (pid,)).fetchone()
+            if r['object_id']:
+                objs.add(r['object_id'])
+                lib.db.execute('UPDATE item SET object_id = NULL, object_position = NULL, side = NULL, modified_at = ? WHERE id = ?', (now(), pid))
+                lib.log('separate', 'item', r['uuid'])
+        for oid in objs:
+            left = lib.db.execute('SELECT id FROM item WHERE object_id = ?', (oid,)).fetchall()
+            if len(left) < 2:
+                for (lid,) in left:
+                    lib.db.execute('UPDATE item SET object_id = NULL, object_position = NULL, side = NULL, modified_at = ? WHERE id = ?', (now(), lid))
+                ou = lib.db.execute('SELECT uuid FROM item WHERE id = ?', (oid,)).fetchone()[0]
+                lib.db.execute('DELETE FROM search WHERE item_uuid = ?', (ou,))
+                lib.db.execute('DELETE FROM item WHERE id = ?', (oid,))
+                lib.log('dissolve', 'item', ou)
+    for pid in pids:
+        lib.touched(lib.db.execute('SELECT parent_id FROM item WHERE id = ?', (pid,)).fetchone()[0])
+    schedule_journal()
+    return len(pids)
+
+
+def objects_list(lib):
+    return [object_detail(lib, r[0]) for r in lib.db.execute("SELECT id FROM item WHERE kind = 'object' AND trashed_at IS NULL ORDER BY modified_at DESC")]
 
 
 def categories(lib):
@@ -867,11 +1015,11 @@ def item_list(lib, q=None, limit=500, offset=0, series=None, place=None):
         uu = [r['uuid'] for r in lib.search(q, limit=limit)]
         if not uu:
             return []
-        rows = lib.db.execute(f"SELECT * FROM item WHERE uuid IN ({','.join('?' * len(uu))}) AND kind != 'part'", uu).fetchall()
+        rows = lib.db.execute(f"SELECT * FROM item WHERE uuid IN ({','.join('?' * len(uu))}) AND kind NOT IN ('part', 'object')", uu).fetchall()
         rank = {u: i for i, u in enumerate(uu)}
         rows.sort(key=lambda r: rank[r['uuid']])
     else:
-        rows = lib.db.execute("SELECT * FROM item i WHERE trashed_at IS NULL AND parent_id IS NULL AND kind != 'cut'"
+        rows = lib.db.execute("SELECT * FROM item i WHERE trashed_at IS NULL AND parent_id IS NULL AND kind NOT IN ('cut', 'object')"
                               + (' AND series_id IS NULL' if series == 'none' else ' AND series_id = (SELECT id FROM series WHERE uuid = ?)' if series else '')
                               + (_in_place_sql(lib, place_subtree(lib, place)) if place else '')
                               + ' ORDER BY date DESC, id DESC LIMIT ? OFFSET ?',
@@ -923,6 +1071,7 @@ def item_detail(lib, uuid):
         g['kept'] = where_kept(lib, g['id'])
         p = lib.db.execute('SELECT uuid, title, date, notes FROM item WHERE region_id = ?', (g['id'],)).fetchone()
         g['part'] = dict(p) if p else None                 # la parte come oggetto: il suo uuid e' quello dell'archivio
+        g['object'] = object_of(lib, g['id'])
         g['cutout'] = None
         if e and os.path.exists(e['path']):
             p = os.path.realpath(e['path'])
@@ -942,7 +1091,7 @@ def item_detail(lib, uuid):
 def info(lib):
     q = lambda s: lib.db.execute(s).fetchone()[0]
     return {'path': lib.path, 'name': lib.meta('name'), 'uuid': lib.meta('uuid'),
-            'items': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind != 'part'"), 'parts': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind = 'part'"),
+            'items': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind NOT IN ('part', 'object')"), 'objects': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind = 'object'"), 'parts': q("SELECT COUNT(*) FROM item WHERE trashed_at IS NULL AND kind = 'part'"),
             'files': q('SELECT COUNT(*) FROM asset'),
             'texts': q('SELECT COUNT(*) FROM reading'), 'cutouts': q("SELECT COUNT(*) FROM item_asset ia JOIN asset a ON a.id = ia.asset_id WHERE ia.role = 'cutout' AND " + LIVE),
             'edits': q("SELECT COUNT(*) FROM item_asset WHERE role = 'edit'"), 'packed': core.sc.PACKED}
@@ -1542,7 +1691,7 @@ def cutout_list(lib, limit=1000, series=None, place=None):
         out.append({'uuid': a['uuid'], 'rel': rel_of(lib, a), 'name': a['original_name'], 'item': a['item'], 'title': a['title'], 'added': a['imported_at'], 'kept': kept,
                     'width': a['width'], 'height': a['height'], 'dpi': a['dpi'], 'sha256': a['sha256'],
                     'region': {'uuid': e['uuid'], 'label': e['label'] or f'{e["kind"]} {e["position"] + 1}', 'color': e['color']} if e else None,
-                    'texts': texts})
+                    'object': object_of(lib, rid[0]) if rid else None, 'texts': texts})
     return out
 
 
@@ -1886,10 +2035,18 @@ def where(lib, rel):
         out.update(part=(c['label'] or f'{c["kind"]} {c["position"] + 1}') if c else None, color=c['color'] if c else None,
                    part_id=c['sid'] if c else None, original=rel_of(lib, src) if src and os.path.exists(lib.asset_path(src)) else None,
                    original_missing=bool(src) and not os.path.exists(lib.asset_path(src)))
+        rid = lib.db.execute('SELECT region_id FROM cut WHERE path = ? AND region_id IS NOT NULL ORDER BY id DESC LIMIT 1', (p,)).fetchone()
+        out['object'] = object_of(lib, rid[0]) if rid else None
     else:
         cuts = lib.db.execute("SELECT a.original_name AS name, a.path FROM asset a JOIN item_asset ia ON ia.asset_id = a.id "
                               "WHERE ia.role = 'cutout' AND " + LIVE + " AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY a.original_name", (a['id'],)).fetchall()
         out['cuts'] = [{'name': c['name'], 'rel': core.relpath(c['path']) if c['path'].startswith(core.ROOT + os.sep) else None} for c in cuts]
+        # ogni foglio di questa scansione: di che oggetto e' un lato (per l'elenco dei fogli nell'editor)
+        out['objects'] = {}
+        for g in lib.db.execute("SELECT id, json_extract(source, '$.studio_id') AS sid FROM region WHERE asset_id = ? AND removed_at IS NULL AND parent_id IS NULL AND kind = 'sheet'", (a['id'],)).fetchall():
+            o = object_of(lib, g['id'])
+            if o and g['sid']:
+                out['objects'][g['sid']] = o
     return out
 
 
@@ -2054,6 +2211,12 @@ def check(lib, deep=False):
         add('part item out of step with its part', f'{r["source"]} › {r["title"] or "part"}', r['uuid'])
     for r in lib.db.execute("SELECT uuid, title FROM item WHERE region_id IS NOT NULL AND kind != 'part'").fetchall():
         add('item of a part with another kind', r['title'] or '', r['uuid'])
+    # 2e) un oggetto (lo stesso pezzo di carta) tiene almeno due parti, e solo parti; una parte sta in un oggetto vero
+    for r in lib.db.execute("SELECT o.uuid, o.title, (SELECT COUNT(*) FROM item p WHERE p.object_id = o.id) AS n FROM item o WHERE o.kind = 'object' AND o.trashed_at IS NULL").fetchall():
+        if r['n'] < 2:
+            add('object with fewer than two parts', r['title'] or '', r['uuid'])
+    for r in lib.db.execute("SELECT p.uuid, p.title FROM item p JOIN item o ON o.id = p.object_id WHERE p.kind != 'part' OR o.kind != 'object'").fetchall():
+        add('object link that is not part to object', r['title'] or '', r['uuid'])
     # 3) niente vive piu' fuori dalla libreria
     for d in ('state', 'text'):
         dd = os.path.join(core.DATA, d)

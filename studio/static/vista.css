@@ -127,6 +127,14 @@ input, textarea, select, button { font: inherit; color: inherit; }
 .badge.studio { background: linear-gradient(#5aa9ef, #2471c4); }
 .badge.edit { background: linear-gradient(#f7c55c, #d79416); }
 .badge.fail { background: linear-gradient(#ef6f5a, #c43424); }
+.thumb.working .pic { position: relative; }
+.thumb.working .pic::after { content: ''; position: absolute; left: 50%; top: 50%; width: 26px; height: 26px; margin: -16px 0 0 -16px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.9); border-top-color: #2471c4; box-shadow: 0 0 0 2px rgba(0,0,0,.15); background: rgba(255,255,255,.6); animation: spin 1s linear infinite; }
+.thumb.working img { opacity: .55; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.badge.obj { background: linear-gradient(#9b7ad8, #6a46b8); }
+.objline { color: #4b3a8a; margin-top: 2px; }
+.objline a { color: #4b3a8a; }
 .empty { padding: 40px; color: var(--muted); text-align: center; grid-column: 1 / -1; }
 
 /* ------------------------------------------------ editor */

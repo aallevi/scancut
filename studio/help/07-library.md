@@ -12,6 +12,22 @@ The library holds everything about sources, parts, cuts and texts. Its views are
 
 The panel on the right shows where a file belongs: its source, its parts, their cuts and texts.
 
+## Objects: parts that are the same piece of paper
+
+Front and back of a sheet, the two pages of a double page, a drawing scanned in two goes: different parts,
+on the same scan or on different ones, that are one thing. Join them as an **object**: the library keeps
+the link, nothing is copied or merged, each part keeps its own cut and text. From then on every view shows
+them together: one tile in Cuts (the sides in order, a ⧉ badge), a line under each part in the source's
+pane and in the editor's sheet list, with the other sides a click away. The object has a name and one
+place; a side without a place of its own takes the object's.
+
+- **Join**: select two or more cuts in Library › Cuts, or two or more sources (their parts are listed),
+  or two or more sheets in the editor, then **Join as one object…**. Give each a side (front, back,
+  left, right, or your own word) and a name.
+- **Separate**: from the object's pane (a side, or all). An object left with one part dissolves; the parts
+  stay exactly as they were.
+- Library › Check reports an object with fewer than two parts.
+
 ## Files inside the library
 
 At first sources and cuts are folders next to the inbox (`originals/`, `cut/`). **Move files in…** (top of

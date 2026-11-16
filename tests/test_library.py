@@ -678,6 +678,47 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(bridge.resolve_address(lib, '24-05'), folder)   # come le note di Eagle: scatola 24, cartella 5
         self.assertTrue(lib.db.execute("SELECT 1 FROM event WHERE type = 'move'").fetchone())
 
+    def test_joined_parts_are_one_object(self):
+        # fronte e retro (o due pagine): parti unite in un oggetto, un legame nel database e basta; ogni vista lo sa,
+        # il posto dell'oggetto vale per i lati, separare rimette tutto com'era e il controllo non trova niente
+        from studio.library import bridge
+        lib = bridge.library()
+        bridge.cut(self.rel, log=lambda m: None)
+        regs = [r[0] for r in lib.db.execute("SELECT uuid FROM region WHERE kind = 'sheet' AND removed_at IS NULL AND parent_id IS NULL ORDER BY position")]
+        self.assertEqual(len(regs), 2)
+        with self.assertRaises(ValueError):
+            bridge.join_parts(lib, regs[:1])
+        ou = bridge.join_parts(lib, regs, title='card', sides=['front', 'back'])
+        o = bridge.object_detail(lib, ou)
+        self.assertEqual((o['title'], o['n'], [p['side'] for p in o['parts']]), ('card', 2, ['front', 'back']))
+        self.assertTrue(all(p['cut'] for p in o['parts']))
+        # lo stesso oggetto dalle parti per uuid del taglio, e dallo studio ({rel, id}): niente doppioni
+        cuts = [p['cut']['uuid'] for p in o['parts']]
+        self.assertEqual(bridge.join_parts(lib, cuts), ou)
+        sid = o['parts'][0]['studio_id']
+        self.assertEqual(bridge.join_parts(lib, [{'rel': self.rel, 'id': sid}, regs[1]]), ou)
+        self.assertEqual(bridge.object_detail(lib, ou)['n'], 2)
+        # le viste: i tagli, la fonte, l'editor; fra le fonti l'oggetto non compare
+        self.assertEqual({c['object']['uuid'] for c in bridge.cutout_list(lib)}, {ou})
+        it = lib.db.execute("SELECT uuid FROM item WHERE kind = 'scan'").fetchone()[0]
+        self.assertEqual([g['object']['side'] for g in bridge.item_detail(lib, it)['regions']], ['front', 'back'])
+        self.assertEqual([len(g['object']['parts']) for g in bridge.item_detail(lib, it)['regions']], [2, 2])
+        self.assertEqual(set(bridge.where(lib, self.rel)['objects']), {p['studio_id'] for p in o['parts']})
+        self.assertNotIn(ou, [i['uuid'] for i in bridge.item_list(lib)])
+        self.assertEqual(bridge.info(lib)['objects'], 1)
+        # il posto dell'oggetto vale per i suoi lati (un pezzo di carta, un posto)
+        box = bridge.save_place(lib, name='Box 7', number=7)
+        bridge.put(lib, items=[ou], place=box)
+        rid = lib.db.execute('SELECT id FROM region WHERE uuid = ?', (regs[1],)).fetchone()[0]
+        self.assertEqual(bridge.where_kept(lib, rid)['place'], box)
+        self.assertEqual([p['kind'] for p in bridge.check(lib) if 'object' in p['kind']], [])
+        # separare un lato scioglie l'oggetto (ne resterebbe uno): le parti restano, nel loro posto di prima
+        self.assertEqual(bridge.separate(lib, [regs[0]]), 1)
+        self.assertIsNone(bridge.object_detail(lib, ou))
+        self.assertIsNone(bridge.where_kept(lib, rid)['place'])
+        self.assertEqual(lib.db.execute("SELECT COUNT(*) FROM item WHERE object_id IS NOT NULL OR kind = 'object'").fetchone()[0], 0)
+        self.assertTrue(lib.db.execute("SELECT 1 FROM event WHERE type = 'join'").fetchone())
+
     def test_cut_of_a_cut_belongs_to_both(self):
         # un taglio ritagliato: i pezzi sono un oggetto loro, figlio dell'oggetto d'origine; posto e categoria
         # vengono dalla parte da cui e' nato il taglio

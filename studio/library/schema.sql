@@ -66,13 +66,17 @@ CREATE TABLE item (
   trashed_at  TEXT,                                 -- nel cestino della libreria (mai cancellato subito); una parte tolta: lo stesso
   place_id    INTEGER REFERENCES place(id) ON DELETE SET NULL,   -- dove sta (una parte senza posto proprio segue la fonte)
   place_number INTEGER,                             -- il suo numero li' (vuoto: lo da' l'archivio)
-  category    TEXT                                  -- categoria dell'archivio (una parte senza: quella della fonte)
+  category    TEXT,                                 -- categoria dell'archivio (una parte senza: quella della fonte)
+  object_id   INTEGER REFERENCES item(id) ON DELETE SET NULL,    -- parti dello stesso pezzo di carta (fronte e retro, due pagine): l'item 'object' che le unisce
+  object_position INTEGER,                          -- l'ordine della parte nell'oggetto
+  side        TEXT                                  -- che lato o pagina e' (front, back, left, right...), libero
 ) STRICT;
 CREATE INDEX item_date ON item(trashed_at, date, created_at);
 CREATE INDEX item_series ON item(series_id);
 CREATE INDEX item_parent ON item(parent_id);
 CREATE UNIQUE INDEX item_region ON item(region_id) WHERE region_id IS NOT NULL;
 CREATE INDEX item_place ON item(place_id, place_number);
+CREATE INDEX item_object ON item(object_id, object_position);
 
 CREATE TABLE item_asset (                -- pagine: fronte, retro, dettagli, piu' scansioni dello stesso oggetto
   item_id  INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,

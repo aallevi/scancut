@@ -245,12 +245,12 @@ function renderCmdbar() {
       { label: 'Archive site (Directus)…', do: archiveDialog, note: 'Connect your archive with a read-only token: Scan Studio sees what is already there, never writes.' },
     ] }),
     cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cuts of the parts (⌘S). After that they follow every change of their part.' }),
-    cmd('Batch', null, { menu: () => [
-      { label: `Detect selected (${S.sel.size}) with ${engName(S.engine)}`, disabled: !S.sel.size, do: () => batch(false) },
-      { label: `Detect and cut selected (${S.sel.size})`, disabled: !S.sel.size, do: () => batch(true) },
-      { label: 'Detect and cut whole folder', do: () => { selectAll(); batch(true); } },
+    cmd('Batch', null, { menu: () => { const c = batchCtx(), n = c.rels.length; return [
+      { label: n ? `${n} source${n > 1 ? 's' : ''} selected` : 'Select sources in a gallery or in Library › Sources', disabled: true },
+      ...batchActions(c),
+      ...(S.view === 'gallery' ? ['-', { label: 'Detect and cut the whole folder', do: () => { selectAll(); batch(true); } }] : []),
       '-', { label: 'Jobs…', do: () => go('jobs') },
-    ] }),
+    ]; } }),
     cmd('Scripts', null, { menu: () => [
       ...S.engines.filter(e => e.kind === 'script').map(e => ({ label: e.name, check: S.engine === e.id, do: () => { S.engine = e.id; renderSide(); } })),
       S.engines.some(e => e.kind === 'script') ? '-' : null,
@@ -303,10 +303,11 @@ const LIB_MODE_NAMES = { objects: 'Sources', cutouts: 'Cuts', texts: 'Texts', tr
 function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; LIB.series = null; LIB.place = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
+  const seq = LIB.renderSeq = (LIB.renderSeq || 0) + 1;      // due chiamate vicine: solo l'ultima disegna
   LIB.info = await api.get('library').catch(() => null);
   LIB.seriesList = await api.get('library/series').catch(() => []);
   await libPlaces(); renderNav(); renderTabs();
-  if (S.view !== 'library') return;
+  if (S.view !== 'library' || seq !== LIB.renderSeq) return;
   const head = h('div', { class: 'libhead' });
   const where = LIB.place ? (LIB.places || []).find(p => p.uuid === LIB.place)?.name : LIB.series ? (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name || 'No series' : null;
   main.append(addressBar(null, null, 'Library · ' + (where ? where + ' · ' : '') + (LIB_MODE_NAMES[LIB.mode] || LIB.mode)), head);
@@ -344,7 +345,8 @@ async function libLoad() {
   g.innerHTML = '';
   if (!LIB.items.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'Empty.'));
   LIB.picks = new Set([...LIB.picks].filter(u => LIB.items.some(x => x.uuid === u)));
-  for (const [i, it] of LIB.items.entries()) g.append(h('div', { class: 'thumb' + (LIB.picks.has(it.uuid) || LIB.sel === it.uuid ? ' sel' : ''), title: it.title,
+  const busy = busyRels();
+  for (const [i, it] of LIB.items.entries()) g.append(h('div', { class: 'thumb' + (LIB.picks.has(it.uuid) || LIB.sel === it.uuid ? ' sel' : '') + (it.thumb && busy.has(it.thumb) ? ' working' : ''), 'data-rel': it.thumb || '', title: it.title,
       onclick: e => libPickItem(e, it, i), ondblclick: e => libOpen(it.uuid, e),
       oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [{ label: 'Open', do: () => { libSelect(it.uuid).then(() => libOpen(it.uuid)); } }, refreshItem(el)]); } },
     h('div', { class: 'badges' }, it.texts ? h('span', { class: 'badge studio', title: 'Has text' }, 'T') : null,
@@ -385,12 +387,27 @@ async function libTrash(body, what) {
 async function libLoadCutouts() {
   let list = await api.get('library/cutouts', Object.assign(LIB.series ? { series: LIB.series } : {}, LIB.place ? { place: LIB.place } : {})).catch(() => []);
   if (LIB.q) { const q = LIB.q.toLowerCase(); list = list.filter(c => (c.name + ' ' + c.title + ' ' + c.texts.map(t => t.plain).join(' ')).toLowerCase().includes(q)); }
-  LIB.cuts = list = libArrange(list);
+  list = libArrange(list);
+  // i tagli che sono lo stesso pezzo di carta (un oggetto) stanno in una tessera sola, nell'ordine dei lati
+  const byObj = new Map(), out = [];
+  for (const c of list) {
+    const ou = c.object?.uuid;
+    if (!ou) { out.push(c); continue; }
+    if (!byObj.has(ou)) { const e = { group: true, uuid: 'obj:' + ou, object: c.object, cuts: [], name: c.object.title || c.title, title: c.title, item: c.item, rel: c.rel, sha256: c.sha256, width: c.width, height: c.height, dpi: c.dpi, texts: [], region: null, kept: c.kept }; byObj.set(ou, e); out.push(e); }
+    const e = byObj.get(ou); e.cuts.push(c); e.texts = e.texts.concat(c.texts);
+  }
+  for (const e of byObj.values()) e.cuts.sort((a, b) => (a.object.position ?? 0) - (b.object.position ?? 0));
+  LIB.cuts = list = out;
   libReadLabel();
   const g = $('#libgrid'); if (!g) return;
   g.innerHTML = '';
   if (!list.length) g.append(h('div', { class: 'empty' }, LIB.q ? 'Nothing matches.' : 'No cuts yet: open a source, find its parts, Cut.'));
-  for (const c of list) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e),
+  for (const c of list) if (c.group) g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), title: `${c.name}: one object, ${c.cuts.length} sides (double-click opens the first)`, onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e),
+      oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [...c.cuts.map(x => ({ label: `Open ${x.object.side || x.name}`, do: () => openLoc('scan:' + x.rel) })), refreshItem(el)]); } },
+    h('div', { class: 'badges' }, h('span', { class: 'badge obj', title: 'One object: these cuts are the same piece of paper' }, `⧉ ${c.cuts.length}`), c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
+    h('div', { class: 'pic mosaic n' + Math.min(4, c.cuts.length) }, ...c.cuts.slice(0, 4).map(x => h('img', { src: `/api/thumb?${qs({ rel: x.rel, size: thumbPx() })}&v=${PREV_V}&s=${x.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', title: x.object.side || x.name, style: { background: bgCss() } }))),
+    h('div', { class: 'cap' }, c.name, h('small', {}, c.cuts.map(x => x.object.side || x.name).join(' · ')), c.kept?.address ? h('small', { class: 'addr', title: c.kept.path }, c.kept.address) : null)));
+  else g.append(h('div', { class: 'thumb' + (LIB.picks.has(c.uuid) ? ' sel' : ''), 'data-rel': c.rel || '', title: c.name + ' (double-click opens this cut)', onclick: e => libPickCut(e, c), ondblclick: e => c.rel && openLoc('scan:' + c.rel, e),
       oncontextmenu: e => { e.preventDefault(); const el = e.currentTarget; menu(el, [...(c.rel ? [{ label: 'Open', do: () => openLoc('scan:' + c.rel) }, { label: 'Open in new tab', do: () => newTab('scan:' + c.rel) }] : []), refreshItem(el)]); } },
     h('div', { class: 'badges' }, c.texts.length ? h('span', { class: 'badge studio', title: `${c.texts.length} text(s)` }, `T ${c.texts.length}`) : null),
     h('div', { class: 'pic' }, c.rel ? h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: thumbPx() })}&v=${PREV_V}&s=${c.sha256.slice(0, 8)}`, loading: 'lazy', draggable: 'false', style: { background: bgCss() } }) : null),
@@ -408,7 +425,8 @@ function libPickCut(e, c) {
 }
 function libReadLabel() { const b = $('#libread'); if (b) b.textContent = LIB.picks.size ? `Read text (${LIB.picks.size})` : `Read text (all ${LIB.cuts?.length || 0})`; }
 async function libReadCuts() {
-  const uuids = LIB.picks.size ? [...LIB.picks] : (LIB.cuts || []).map(c => c.uuid);
+  const ents = LIB.picks.size ? (LIB.cuts || []).filter(c => LIB.picks.has(c.uuid)) : (LIB.cuts || []);
+  const uuids = ents.flatMap(c => c.group ? c.cuts.map(x => x.uuid) : [c.uuid]);
   if (!uuids.length) return;
   const j = await api.post('jobs', { kind: 'readcuts', uuids }); pollJobs();
   status(`Reading ${uuids.length} cut(s) with ${ocrName()}… (see Jobs)`);
@@ -581,11 +599,14 @@ async function libEditIn(asset, app) {
 function sideLibrary(side) {
   const d = LIB.detail;
   const c = LIB.mode === 'cutouts' && LIB.cut ? (LIB.cuts || []).find(x => x.uuid === LIB.cut) : null;
+  if (c?.group) return side.append(objectGroup(c.object), group('Actions', h('div', { class: 'btns' },
+    h('button', { class: 'btn small', title: 'Read the text of every side', onclick: libReadCuts }, 'Read text'))));
   if (c) {
     side.append(group(c.name,
       c.rel ? h('div', { style: { textAlign: 'center' } }, h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 512 })}&v=${PREV_V}`, style: { maxWidth: '100%', maxHeight: '260px', background: bgCss() } })) : null,
       h('div', { class: 'small muted' }, `${c.width} × ${c.height} px${c.dpi ? ` · ${Math.round(c.dpi)} dpi` : ''} · ${c.sha256.slice(0, 12)}…`),
       h('div', { class: 'small' }, 'From ', h('a', { href: '#', onclick: e => { e.preventDefault(); libMode('objects'); libSelect(c.item); } }, c.title), c.region ? h('span', {}, ' › ', h('span', { class: 'sw', style: { display: 'inline-block', width: '9px', height: '9px', background: c.region.color, marginRight: '4px' } }), c.region.label) : null)),
+      c.object ? objectGroup(c.object) : null,
       group(`Texts (${c.texts.length})`, ...(c.texts.length ? c.texts.map(t => h('div', { class: 'libregion', style: { borderLeftColor: c.region?.color || '#ccc' } },
         h('div', { class: 'small lrtext' }, t.plain || '(no text found)'), h('div', { class: 'small muted' }, `${t.model || t.engine}${t.corrected_version ? ` · corrected ×${t.corrected_version}` : ''}${t.earlier ? ` · ${t.earlier} earlier reading(s) kept` : ''}`)))
         : [h('div', { class: 'small muted' }, 'No text read for this part yet.')])),
@@ -597,18 +618,22 @@ function sideLibrary(side) {
         h('button', { class: 'btn small', title: 'This cut goes to the Trash; its part is left out of the cut until it comes back', onclick: () => libTrash({ cuts: [c.uuid] }, `“${c.name}”`) }, 'Move to Trash'))));
     return;
   }
+  if (LIB.mode === 'cutouts' && LIB.picks.size > 1) {
+    const ents = (LIB.cuts || []).filter(x => LIB.picks.has(x.uuid)), cuts = ents.flatMap(x => x.group ? x.cuts : [x]);
+    return side.append(group(`${cuts.length} cuts selected`,
+      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all.'),
+      h('div', { class: 'btns' },
+        h('button', { class: 'btn default', title: 'These cuts are the same piece of paper (front and back, two pages, a drawing scanned in two goes): joined in the library, every view shows them together', onclick: () => joinDialog(cuts.map(c => ({ ref: c.uuid, label: c.region?.label || c.name, title: c.title, rel: c.rel, side: c.object?.side }))) }, 'Join as one object…'),
+        h('button', { class: 'btn', title: `Read the text of these cuts with ${ocrName()}`, onclick: libReadCuts }, 'Read text'),
+        h('button', { class: 'btn', title: 'These cuts go to the library’s Trash; their parts are left out of the cut until they come back', onclick: () => libTrash({ cuts: cuts.map(c => c.uuid) }, `${cuts.length} cuts`) }, 'Move to Trash'))));
+  }
   if (LIB.mode === 'objects' && LIB.picks.size > 1) {
     // piu' fonti scelte: i lavori in blocco, come nella galleria, e il file a piu' pagine
     const items = libPickedItems(), rels = items.map(x => x.thumb).filter(Boolean);
     return side.append(group(`${items.length} sources selected`,
-      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all.'),
-      h('div', { class: 'btns' },
-        h('button', { class: 'btn default', title: 'One file with one page per source (or per cut): PDF or TIFF, lossless', onclick: () => multipageDialog(items) }, 'Multipage file…'),
-        h('button', { class: 'btn', title: 'Each source becomes one part and one cut, whole: nothing is cut away', onclick: () => keepWhole(rels) }, 'Pass whole'),
-        h('button', { class: 'btn', title: `Detect the sheets with ${engName(S.engine)} and cut them, in one job`, onclick: async () => { await api.post('jobs', { kind: 'batch', rels, engine: S.engine, params: engParams(), export: true }); status(`${rels.length} source(s) queued with ${engName(S.engine)}`); pollJobs(); } }, 'Detect + cut'),
-        h('button', { class: 'btn', title: 'Read the text of every cut of these sources', onclick: () => { api.post('jobs', { kind: 'ocr', rels }).then(pollJobs); status('Reading the cuts… (see Jobs)'); } }, 'Read text'),
-        h('button', { class: 'btn', title: 'The sources and their cuts go to the library’s Trash', onclick: () => libTrash({ items: items.map(x => x.uuid) }, `${items.length} sources and their cuts`) }, 'Move to Trash')),
-      group('Engine', engineChooser())));
+      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all. The same actions are in the Batch menu.'),
+      batchButtons({ rels, edited: items.filter(x => x.regions && x.thumb).map(x => x.thumb), items })),
+      group('Engine', engineChooser()));
   }
   if (!d) return side.append(group('Library', h('div', { class: 'muted' }, LIB.mode === 'cutouts' ? 'Select a cut. Double-click opens it in the editor.'
     : LIB.mode === 'texts' ? 'Every text read, each beside the part it comes from.' : LIB.mode === 'trash' ? 'Each entry has its own Put back and Delete now.'
@@ -636,6 +661,7 @@ function sideLibrary(side) {
     group(`Selections (${d.regions.length})`, ...(d.regions.length ? d.regions.map((g, i) => h('div', { class: 'libregion' + (LIB.hilite === g.uuid ? ' hilite' : ''), 'data-region': g.uuid, style: { borderLeftColor: g.color || COLORS[i % COLORS.length] } },
       h('div', { class: 'lrh' }, h('span', { class: 'sw', style: { background: g.color || COLORS[i % COLORS.length] } }), h('b', {}, g.label || `${g.kind} ${i + 1}`),
         g.export_on ? null : h('span', { class: 'muted small' }, ' · out of the cut')),
+      g.object ? objectLine(g.object) : null,
       // il ritaglio di questa zona e il suo testo, insieme
       h('div', { class: 'lrbody' },
         g.cutout?.rel ? h('img', { class: 'lrcut', title: g.cutout.name, src: `/api/thumb?${qs({ rel: g.cutout.rel, size: 256 })}&v=${PREV_V}&t=${encodeURIComponent(g.cutout.at)}`, style: { background: bgCss() } })
@@ -645,6 +671,93 @@ function sideLibrary(side) {
           g.text ? h('div', { class: 'small lrtext' }, g.text.plain.slice(0, 400) + (g.text.plain.length > 400 ? '…' : '')) : h('div', { class: 'small muted' }, 'No text read.'),
           g.text ? h('div', { class: 'small muted' }, `${g.text.model || g.text.engine}${g.text.corrected_version ? ` · corrected ×${g.text.corrected_version}` : ''}`) : null)))) : [h('div', { class: 'small muted' }, 'None yet: open it and Detect.')])),
     group('History', ...d.events.slice(0, 12).map(e => h('div', { class: 'small' }, h('span', { class: e.outcome === 'ok' ? 'muted' : 'warn' }, new Date(e.at).toLocaleString() + ' · '), e.type))));
+}
+
+// ------------------------------------------------------------ oggetti: parti che sono lo stesso pezzo di carta
+// Fronte e retro, le due pagine di una doppia, un disegno scandito in due volte. L'unione sta nella libreria (un legame
+// fra le parti, niente file): ogni vista la mostra, il posto dell'oggetto vale per i suoi lati, separare la scioglie.
+const SIDES = ['front', 'back', 'left', 'right', 'top', 'bottom', 'inside', 'outside'];
+const sideSelect = (value, onchange) => h('select', { class: 'f', title: 'Which side or page this part is', onchange: e => onchange(e.target.value) },
+  h('option', { value: '', selected: !value }, '— side'), ...SIDES.map(x => h('option', { value: x, selected: value === x }, x)),
+  ...(value && !SIDES.includes(value) ? [h('option', { value, selected: true }, value)] : []), h('option', { value: '…' }, 'other…'));
+const cutOfSheet = sh => { const n = S.names?.[sh.id]; return n ? (n.startsWith('cut/') ? n : null) : null; };
+// dopo unire o separare: tutte le viste aperte si rifanno dalla libreria
+async function objectsChanged() {
+  if (S.view === 'library') { if (LIB.sel) LIB.detail = await api.get('library/item', { uuid: LIB.sel }).catch(() => LIB.detail); await libLoad(); }
+  if (S.view === 'editor' && S.rel) { S.where = await api.get('library/where', { rel: S.rel }).catch(() => S.where); }
+  renderSide();
+}
+// la riga "lato di un oggetto" sotto una parte, con gli altri lati da aprire e il modo di separarla
+function objectLine(o, selfRef) {
+  const others = o.parts.filter(p => p.side !== o.side || p.position !== o.position);
+  const open = p => e => { e.preventDefault(); if (p.cut?.rel) openLoc('scan:' + p.cut.rel, e); else if (p.studio_rel) openLoc('scan:' + p.studio_rel, e); };
+  return h('div', { class: 'small objline', title: 'This part is one side of an object: the same piece of paper as the others' },
+    '⧉ ', h('b', {}, o.side || 'side'), ` of “${o.title}”`, others.length ? [' · with '] : null,
+    ...others.flatMap((p, i) => [i ? ', ' : null, h('a', { href: '#', title: `Open ${p.cut ? 'its cut' : 'its source'} · ⌘-click: new tab`, onclick: open(p) }, `${p.side || p.label} (${p.title})`)]),
+    ' · ', h('a', { href: '#', title: 'Show the object: its sides, its place', onclick: e => { e.preventDefault(); objectDialog(o.uuid); } }, 'object'),
+    selfRef ? [' · ', h('a', { href: '#', title: 'This part leaves the object (the others stay joined if they are two or more)', onclick: async e => { e.preventDefault(); await api.post('library/separate', { parts: [selfRef] }); status('Separated'); objectsChanged(); } }, 'separate')] : null);
+}
+// il pannello di un oggetto: titolo, i lati nell'ordine (lato, apri, separa), il posto
+function objectGroup(o) {
+  const title = h('input', { type: 'text', class: 'f', value: o.title || '', title: 'The name of the object', onchange: async e => { await api.post('library/join', { object: o.uuid, parts: [], title: e.target.value }); status('Renamed'); objectsChanged(); } });
+  const open = p => e => { if (p.cut?.rel) openLoc('scan:' + p.cut.rel, e); else if (p.studio_rel) openLoc('scan:' + p.studio_rel, e); };
+  return group(`Object · ${o.n} sides`,
+    h('div', { class: 'small muted' }, 'These parts are the same piece of paper. Each keeps its own cut and text; the object has one place.'),
+    h('div', { class: 'row' }, h('label', {}, 'Name'), title),
+    ...o.parts.map(p => h('div', { class: 'libregion', style: { borderLeftColor: p.color || '#8a96a6' } },
+      h('div', { class: 'lrh' }, h('b', {}, p.side || p.label), h('span', { class: 'muted small' }, ` · ${p.title} › ${p.label}`)),
+      h('div', { class: 'lrbody' },
+        p.cut?.rel ? h('img', { class: 'lrcut', title: p.cut.name + ' · click: open', src: `/api/thumb?${qs({ rel: p.cut.rel, size: 256 })}&v=${PREV_V}`, style: { background: bgCss(), cursor: 'pointer' }, onclick: open(p) }) : h('div', { class: 'lrcut none', title: 'Not cut yet' }, 'no cut'),
+        h('div', { class: 'f' },
+          h('div', { class: 'row' }, sideSelect(p.side, async v => { if (v === '…') v = prompt('Which side or page is this part?', p.side || '') || ''; await api.post('library/join', { object: o.uuid, parts: [p.region], sides: { [p.region]: v } }); objectsChanged(); })),
+          h('div', { class: 'btns' }, h('button', { class: 'btn small', onclick: open(p) }, p.cut ? 'Open cut' : 'Open source'),
+            h('button', { class: 'btn small', title: 'This part leaves the object (the others stay joined if they are two or more)', onclick: async () => { await api.post('library/separate', { parts: [p.region] }); status('Separated'); objectsChanged(); } }, 'Separate')))))),
+    h('div', { class: 'row' }, h('label', {}, 'Place'), placeSelect(o.place, v => libPut({ items: [o.uuid], place: v }).then(objectsChanged), 'Not placed')),
+    o.kept?.address ? h('div', { class: 'small muted' }, `${o.kept.path} · ${o.kept.address.replace(/ · \?$/, '')}`) : h('div', { class: 'small muted' }, 'Not placed: each side follows its own source.'),
+    h('div', { class: 'btns' }, h('button', { class: 'btn small', title: 'The object dissolves: the parts stay as they are, each with its own cut', onclick: async () => {
+      if (await choose('Separate all', `Separate the ${o.n} sides of “${o.title}”?`, 'The parts and their cuts stay exactly as they are; only the link between them goes.', [['yes', 'Separate', true], [null, 'Cancel']]) !== 'yes') return;
+      await api.post('library/separate', { object: o.uuid }); status('Separated'); objectsChanged(); } }, 'Separate all')));
+}
+async function objectDialog(uuid) {
+  const o = await api.get('library/object', { uuid }).catch(() => null);
+  if (!o || o.error) return status('No such object any more');
+  dialog(o.title || 'Object', null, h('div', { style: { width: '460px' } }, objectGroup(o)), [['Close', () => true, true]]);
+}
+// unire: le parti date (ogni riga: tenerla, il lato), il nome; parts: [{ref, label, title, rel, side}]
+function joinDialog(parts) {
+  if (parts.length < 2) return status('Choose at least two parts to join');
+  const name = h('input', { type: 'text', class: 'f', value: parts[0].title?.replace(/\.[^.]+$/, '') || '' });
+  const rows = parts.map((p, i) => ({ p, on: true, side: p.side || (parts.length === 2 ? ['front', 'back'][i] : ''), sel: null }));
+  const body = h('div', { style: { width: '520px', lineHeight: 1.6 } },
+    h('div', { class: 'small muted' }, 'The same piece of paper, seen more than once: front and back, the two pages of a double page, a drawing scanned in two goes. Nothing is copied or merged: the parts stay as they are, each with its own cut; the library knows they are one object and shows them together. The object has one place.'),
+    h('div', { class: 'row' }, h('label', {}, 'Name'), name),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Sides, in this order'),
+    ...rows.map(r => h('div', { class: 'row', style: { alignItems: 'center' } },
+      h('input', { type: 'checkbox', checked: true, onchange: e => r.on = e.target.checked }),
+      r.p.rel ? h('img', { src: `/api/thumb?${qs({ rel: r.p.rel, size: 256 })}&v=${PREV_V}`, style: { width: '44px', height: '44px', objectFit: 'contain', background: bgCss(), border: '1px solid #d5dfe9' } }) : h('div', { style: { width: '44px' } }),
+      h('div', { class: 'f' }, h('b', {}, r.p.label), h('div', { class: 'small muted' }, r.p.title)),
+      (r.sel = sideSelect(r.side, v => { if (v === '…') { v = prompt('Which side or page is this part?', r.side) || ''; } r.side = v; })))));
+  dialog('Join as one object', `${parts.length} parts`, body, [['Join', async () => {
+    const on = rows.filter(r => r.on);
+    if (on.length < 2) { status('An object needs at least two parts'); return false; }
+    const refs = on.map(r => r.p.ref), sides = {};
+    on.forEach(r => { sides[typeof r.p.ref === 'object' ? r.p.ref.id : r.p.ref] = r.side; });
+    const res = await api.post('library/join', { parts: refs, sides, title: name.value.trim() }).catch(e => ({ error: e.message }));
+    if (res.error) { status(res.error); return false; }
+    status(`Joined as “${name.value.trim() || parts[0].title}”`); objectsChanged();
+  }, true], ['Cancel', () => true]]);
+}
+// dalle fonti scelte (galleria o libreria): tutte le loro parti, da unire
+async function joinFromRels(rels) {
+  const parts = [];
+  for (const rel of rels) {
+    const w = await api.get('library/where', { rel }).catch(() => null);
+    if (!w?.item) continue;
+    const d = await api.get('library/item', { uuid: w.item }).catch(() => null);
+    for (const g of d?.regions || []) parts.push({ ref: g.uuid, label: g.label || `${g.kind} ${g.position + 1}`, title: d.item.title, rel: g.cutout?.rel || null, side: g.object?.side });
+  }
+  if (parts.length < 2) return status('These sources have fewer than two parts: find the parts first (Detect, or Pass whole)');
+  joinDialog(parts);
 }
 
 // ------------------------------------------------------------ dove sono le cose (posti, numeri, categorie)
@@ -1065,7 +1178,7 @@ function folderTile(peek = []) {
 
 function renderGallery() {
   const main = $('#main'); main.innerHTML = '';
-  const items = visibleItems();
+  const items = visibleItems(), busy = busyRels();
   const grid = h('div', { class: 'gallery', tabindex: 0 }); grid.style.setProperty('--th', S.tz + 'px');
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
@@ -1081,7 +1194,7 @@ function renderGallery() {
     if (it.done === 'studio') badges.push(h('span', { class: 'badge studio', title: 'Cut in the studio' }, 'studio'));
     if (it.done === 'failed' || S.dir.startsWith('failed')) badges.push(h('span', { class: 'badge fail' }, 'check'));
     if (it.sheets != null && !it.exported) badges.push(h('span', { class: 'badge edit', title: 'Edited, not cut yet' }, `${it.sheets} ✎`));
-    const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : ''), title: it.name,
+    const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : '') + (busy.has(it.rel) ? ' working' : ''), 'data-rel': it.rel, title: it.name,
       onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel) : openScan(it.rel)),
       onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
       oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel), [refreshItem(e.currentTarget)]); } },
@@ -1625,12 +1738,8 @@ function sideGallery(side) {
       info('Removes it from To check. The scan itself stays in originals/; nothing is deleted.'))));
   side.append(group('Engine', engineChooser()),
     group('Batch',
-      h('div', { class: 'btns' },
-        h('button', { class: 'btn', disabled: !sel.length, onclick: () => batch(false) }, 'Detect'),
-        h('button', { class: 'btn default', disabled: !sel.length, onclick: () => batch(true) }, 'Detect + cut'),
-        h('button', { class: 'btn', disabled: !sel.some(i => i.sheets), onclick: () => exportMany(sel.filter(i => i.sheets).map(i => i.rel)) }, 'Export edited'),
-        h('button', { class: 'btn', disabled: !sel.length, onclick: () => keepWhole(sel.map(i => i.rel)), title: 'Each selected scan becomes one part and one cut, whole: nothing is cut away (paper scanned at its own size)' }, 'Pass whole')),
-      h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'Batches run in the background; see Jobs. Existing cuts are never overwritten: changed ones are moved to studio-data/replaced.')));
+      batchButtons({ rels: sel.map(i => i.rel), edited: sel.filter(i => i.sheets).map(i => i.rel) }),
+      h('div', { class: 'small muted', style: { marginTop: '6px' } }, 'The same actions as the Batch menu, on the selected scans. Batches run in the background; see Jobs. Existing cuts are never overwritten: changed ones are moved to studio-data/replaced.')));
 }
 
 let histData = null, histKey = '';
@@ -1712,7 +1821,8 @@ function whereGroup() {
     h('div', { class: 'btns' },
       w.original ? h('button', { class: 'btn small default', title: 'Click: here · ⌘-click: new tab', onclick: async e => { await openLoc('scan:' + w.original, e); if (w.part_id && S.st?.sheets.some(x => x.id === w.part_id)) { selectIds([w.part_id]); renderSide(); draw(); } } }, 'Open source (its part selected)')
         : h('span', { class: 'small muted' }, w.original_missing ? 'The source is not on this Mac (offline or released).' : 'No source recorded.')),
-    w.original && w.part_id && cutOfPart() ? h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens the scan on this part only (the real pixels are there): add back or cut away, then Done', onclick: () => editPart() }, 'Edit its part')) : null);
+    w.original && w.part_id && cutOfPart() ? h('div', { class: 'btns' }, h('button', { class: 'btn default', title: 'Opens the scan on this part only (the real pixels are there): add back or cut away, then Done', onclick: () => editPart() }, 'Edit its part')) : null,
+    w.object ? objectLine(w.object) : null);
   return group('In the library',
     h('div', { class: 'small' }, link(w.title || 'Its source', () => { LIB.mode = 'objects'; go('library').then(() => libSelect(w.item)); }, 'Its source in the library'),
       ` · ${w.cuts?.length || 0} cut${(w.cuts || []).length === 1 ? '' : 's'}`),
@@ -1752,7 +1862,7 @@ function sideEditor(side) {
         oncontextmenu: e => { e.preventDefault(); e.stopPropagation(); soloSheet(s.id); },
         onchange: e => commit(() => { s.on = e.target.checked; }) }),
       h('span', { class: 'dot', style: { background: sheetColor(S.st?.sheets?.[i], i) } }),
-      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not cut yet') , h('small', {}, `${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}${S.info && s.poly?.length && !isInverted(s) ? (() => { const b = bbox(s.poly); return ` · ≈ ${((b[2] - b[0]) / S.info.ppm).toFixed(0)} × ${((b[3] - b[1]) / S.info.ppm).toFixed(0)} mm`; })() : ''}`)),
+      h('div', { class: 'nm', title: name || '' }, (name ? name.split('/').pop() : 'not cut yet') , h('small', {}, `${S.where?.objects?.[s.id] ? `⧉ ${S.where.objects[s.id].side || 'object'} · ` : ''}${s.engine || 'manual'}${sheetEdited(s) ? ' · edited' : ''}${s.holes?.length ? ` · ${s.holes.length} hole(s)` : ''}${s.rot ? ` · ⟳ ${s.rot}°` : ''}${s.ocr ? ' · text' : ''}${isInverted(s) ? ' · inverted' : ''}${S.info && s.poly?.length && !isInverted(s) ? (() => { const b = bbox(s.poly); return ` · ≈ ${((b[2] - b[0]) / S.info.ppm).toFixed(0)} × ${((b[3] - b[1]) / S.info.ppm).toFixed(0)} mm`; })() : ''}`)),
       h('div', {}, h('button', { class: 'btn small', title: 'Preview the cut', onclick: e => { e.stopPropagation(); cutoutDialog(s); } }, '👁'))));
   });
   if (!st?.sheets.length) list.append(h('div', { class: 'muted' }, 'No sheets yet. Press Detect, or draw one with the polygon or box tool.'));
@@ -1766,6 +1876,7 @@ function sideEditor(side) {
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = true)) }, 'Into the cut'),
       h('button', { class: 'btn small', onclick: () => commit(() => many.forEach(x => x.on = false)) }, 'Out of the cut'),
       h('button', { class: 'btn small', title: 'Make one sheet out of these (each keeps its exact edge)', onclick: mergeSelected }, 'Merge into one'),
+      h('button', { class: 'btn small', title: 'These parts are the same piece of paper (the two pages of a double page, front and back scanned together): joined in the library, every view shows them together. Each keeps its own cut', onclick: () => joinDialog(many.map(x => ({ ref: { rel: S.rel, id: x.id }, label: x.label || (S.names[x.id] || '').split('/').pop() || 'part', title: S.rel.split('/').pop(), rel: cutOfSheet(x), side: S.where?.objects?.[x.id]?.side }))) }, 'Join as one object…'),
       h('button', { class: 'btn small', title: 'Everything except these (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', disabled: !many.some(x => sheetEdited(x) && x.poly0), onclick: () => commit(() => many.forEach(x => { if (x.poly0) { x.poly = JSON.parse(JSON.stringify(x.poly0)); x.ops = []; } })) }, 'Undo their edits'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
@@ -1781,7 +1892,8 @@ function sideEditor(side) {
       h('button', { class: 'btn small', disabled: !sheetEdited(sel) || !sel.poly0, onclick: () => commit(() => { sel.poly = JSON.parse(JSON.stringify(sel.poly0)); sel.ops = []; }) }, 'Undo all edits'),
       h('button', { class: 'btn small', title: 'Everything except this sheet (⇧⌘I)', onclick: invertSelected }, 'Invert'),
       h('button', { class: 'btn small', onclick: deleteSelected }, 'Delete')),
-    sel.ocr !== undefined ? h('div', { class: 'small', style: { marginTop: '6px' } }, h('a', { href: '#', onclick: e => { e.preventDefault(); toggleTextPane(true); } }, sel.ocr ? `Text: ${sel.ocr.split('\n').length} line(s) · show` : 'No text found · show')) : null) : null,
+    sel.ocr !== undefined ? h('div', { class: 'small', style: { marginTop: '6px' } }, h('a', { href: '#', onclick: e => { e.preventDefault(); toggleTextPane(true); } }, sel.ocr ? `Text: ${sel.ocr.split('\n').length} line(s) · show` : 'No text found · show')) : null,
+    S.where?.objects?.[sel.id] ? objectLine(S.where.objects[sel.id], { rel: S.rel, id: sel.id }) : null) : null,
     (st?.history || []).length ? h('div', { class: 'row', style: { marginTop: '6px' } }, h('label', {}, 'Earlier'),
       h('select', { class: 'f', onchange: e => { if (e.target.value !== '') restoreVersion(+e.target.value); } },
         h('option', { value: '' }, `${st.history.length} earlier version(s)…`),
@@ -2827,6 +2939,51 @@ async function keepWhole(rels) {
       status(`${rels.length} scan(s) passed whole: one part each, cutting… (see Jobs)`); pollJobs(); refreshItems();
     }, true], ['Cancel', () => true]]);
 }
+// Le azioni in blocco, le stesse dappertutto: menu Batch, pannello della galleria, fonti scelte nella libreria.
+// ctx: rels (le scansioni), edited (quelle con parti gia' segnate), items (le voci della libreria, se ci sono), cuts (uuid dei tagli)
+function batchActions(ctx) {
+  const rels = ctx.rels || [], n = rels.length, ed = ctx.edited || [], items = ctx.items || [];
+  const job = (body, msg) => async () => { await api.post('jobs', body); status(msg); pollJobs(); };
+  return [
+    { label: `Detect with ${engName(S.engine)}`, title: 'Finds the parts of each source with the chosen engine; nothing is cut yet', disabled: !n,
+      do: job({ kind: 'batch', rels, engine: S.engine, params: engParams(), export: false }, `${n} source(s) queued with ${engName(S.engine)}`) },
+    { label: 'Detect + cut', title: 'Finds the parts and cuts them, in one job', disabled: !n, default: true,
+      do: job({ kind: 'batch', rels, engine: S.engine, params: engParams(), export: true }, `${n} source(s) queued with ${engName(S.engine)}, then cut`) },
+    { label: `Cut the parts${ed.length ? ` (${ed.length})` : ''}`, title: 'Cuts the parts already marked on these sources (by Detect or by hand), as they are now; nothing is detected again', disabled: !ed.length,
+      do: () => exportMany(ed) },
+    { label: 'Pass whole…', title: 'Each source becomes one part and one cut, whole: nothing is cut away (paper scanned at its own size); turned if you say so', disabled: !n,
+      do: () => keepWhole(rels) },
+    '-',
+    { label: 'Read text of the cuts', title: `Reads every cut of these sources with ${ocrName()}`, disabled: !n,
+      do: job({ kind: 'ocr', rels }, 'Reading the cuts… (see Jobs)') },
+    { label: 'Read the whole documents', title: `Reads every word on each source with ${ocrName()}; the text is kept by the library`, disabled: !n,
+      do: () => readDocs(rels) },
+    '-',
+    { label: 'Join as one object…', title: 'The parts of these sources are the same piece of paper (front and back, two pages): joined in the library, every view shows them together', disabled: n < 1,
+      do: () => joinFromRels(rels) },
+    { label: 'Multipage file…', title: 'One file with one page per source (or per cut): PDF or TIFF, lossless', disabled: !n,
+      do: async () => multipageDialog(items.length ? items : await libItemsFor(rels)) },
+    '-',
+    { label: 'Move to Trash', title: 'The sources and their cuts go to the library’s Trash', disabled: !n,
+      do: async () => { const its = items.length ? items : await libItemsFor(rels); if (its.length) libTrash({ items: its.map(x => x.uuid) }, `${its.length} source(s) and their cuts`); else status('These scans are not in the library yet'); } },
+  ];
+}
+// i bottoni di quelle azioni (per i pannelli); le voci di menu sono le stesse cose
+const batchButtons = ctx => h('div', { class: 'btns' }, batchActions(ctx).filter(a => a !== '-').map(a => h('button', { class: 'btn small' + (a.default ? ' default' : ''), title: a.title, disabled: a.disabled, onclick: a.do }, a.label)));
+const batchCtx = () => S.view === 'gallery' ? (sel => ({ rels: sel.map(i => i.rel), edited: sel.filter(i => i.sheets).map(i => i.rel) }))(S.items.filter(i => S.sel.has(i.rel)))
+  : S.view === 'library' && LIB.mode === 'objects' ? (items => ({ rels: items.map(x => x.thumb).filter(Boolean), edited: items.filter(x => x.regions && x.thumb).map(x => x.thumb), items }))(libPickedItems())
+  : { rels: [], edited: [], items: [] };
+// le voci della libreria di queste scansioni (per i lavori che vogliono la libreria, da una galleria)
+async function libItemsFor(rels) {
+  const out = [];
+  for (const rel of rels) {
+    const w = await api.get('library/where', { rel }).catch(() => null);
+    if (!w?.item) continue;
+    const d = await api.get('library/item', { uuid: w.item }).catch(() => null);
+    if (d) out.push({ uuid: d.item.uuid, title: d.item.title, batch: d.item.batch, cuts: d.assets.filter(a => a.role === 'cutout').length, regions: d.regions.length, thumb: rel });
+  }
+  return out;
+}
 async function exportMany(rels) { if (!rels.length) return; await api.post('jobs', { kind: 'export', rels }); status(`Cutting ${rels.length} scan(s)… (see Jobs)`); pollJobs(); }
 async function batch(exp) {
   const rels = [...S.sel]; if (!rels.length) return;
@@ -2931,10 +3088,30 @@ async function settingsDialog() {
 
 // ------------------------------------------------------------ lavori
 let jobTimer = null;
+// le scansioni (rel) su cui un lavoro sta lavorando o aspetta
+function busyRels() {
+  const out = new Set();
+  for (const j of S.jobs || []) {
+    if (j.status !== 'running' && j.status !== 'queued') continue;
+    const a = j.args || {};
+    for (const r of Array.isArray(a.rels) ? a.rels : []) if (typeof r === 'string') out.add(r);
+    if (typeof a.rel === 'string') out.add(a.rel);
+  }
+  return out;
+}
+// le miniature delle scansioni in lavorazione girano; finito un lavoro, la vista si rifa' (niente stato vecchio)
+function markWorking() {
+  const b = busyRels();
+  $$('.thumb[data-rel]').forEach(el => el.classList.toggle('working', b.has(el.dataset.rel)));
+}
 async function pollJobs() {
   clearTimeout(jobTimer);
   S.jobs = await api.get('jobs').catch(() => S.jobs);
   updateJobBar();
+  const doneN = S.jobs.filter(j => j.status === 'done' || j.status === 'failed').length;
+  if (S._doneN != null && doneN !== S._doneN) { if (S.view === 'library') libLoad(); else if (S.view === 'gallery') refreshItems(); }
+  S._doneN = doneN;
+  markWorking();
   if (S.view === 'jobs') renderJobs();
   const active = S.jobs.some(j => j.status === 'running' || j.status === 'queued');
   if (active || S.view === 'jobs') jobTimer = setTimeout(pollJobs, active ? 900 : 3000);

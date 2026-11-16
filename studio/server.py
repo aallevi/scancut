@@ -845,6 +845,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == 'library/where':
             lib = bridge.library(create=False)
             return self.send(bridge.where(lib, rel) if lib else {'known': False})
+        if path == 'library/object':
+            lib = bridge.library(create=False)
+            return self.send((bridge.object_detail(lib, q.get('uuid')) if lib else None) or {'error': 'no such object'})
         if path == 'library/series':
             lib = bridge.library(create=False)
             return self.send(bridge.series_list(lib) if lib else [])
@@ -1062,6 +1065,15 @@ class Handler(BaseHTTPRequestHandler):
             except sqlite3.IntegrityError as e:
                 return self.send({'error': str(e)}, code=409)
             return self.send({'uuid': u, 'places': bridge.places(lib)})
+        if path == 'library/join':
+            # parti (zone, parti, tagli per uuid, o {rel, id} dello studio) unite in un oggetto: lo stesso pezzo di carta
+            try:
+                u = bridge.join_parts(bridge.library(), b.get('parts') or [], b.get('title'), b.get('sides'), b.get('object'))
+            except ValueError as e:
+                return self.send({'error': str(e)})
+            return self.send({'object': u})
+        if path == 'library/separate':
+            return self.send({'separated': bridge.separate(bridge.library(), b.get('parts') or [], b.get('object'))})
         if path == 'library/put':
             # in un posto (con numero) e/o una categoria: fonti intere o singole parti; un indirizzo "24-05" si risolve
             lib = bridge.library()
