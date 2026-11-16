@@ -79,6 +79,8 @@ const I = {
   orb_open: '<svg viewBox="0 0 20 20"><path d="M6 3l10 7-10 7z" fill="#fff"/></svg>',
   orb_scan: '<svg viewBox="0 0 20 20"><rect x="2" y="12.5" width="16" height="4.5" rx="1.2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M5 12.5V5.5a1 1 0 011-1h5.5L14.5 7v5.5" fill="none" stroke="#fff" stroke-width="1.6" stroke-linejoin="round"/><path d="M3 9.5h14" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>',
   zin: '<svg viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M11 11l5 5M5 7.5h5M7.5 5v5" stroke="#fff" stroke-width="1.6"/></svg>',
+  pprev: '<svg viewBox="0 0 18 18"><path d="M4 4h2v10H4z" fill="#fff"/><path d="M14 4L7 9l7 5z" fill="#fff"/></svg>',
+  pnext: '<svg viewBox="0 0 18 18"><path d="M12 4h2v10h-2z" fill="#fff"/><path d="M4 4l7 5-7 5z" fill="#fff"/></svg>',
   shuffle: '<svg viewBox="0 0 18 18"><path d="M2 5h3l6 8h4M2 13h3l6-8h4" fill="none" stroke="#fff" stroke-width="1.5"/><path d="M13 3l3 2-3 2zM13 11l3 2-3 2z" fill="#fff"/></svg>',
   tzin: '<svg class="ico" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5" fill="#fff" stroke="#3a6ea5" stroke-width="1.4"/><path d="M10 10l4.5 4.5" stroke="#3a6ea5" stroke-width="1.8"/><path d="M4 6.5h5M6.5 4v5" stroke="#3a6ea5" stroke-width="1.3"/></svg>',
   tzout: '<svg class="ico" viewBox="0 0 16 16"><circle cx="6.5" cy="6.5" r="4.5" fill="#fff" stroke="#3a6ea5" stroke-width="1.4"/><path d="M10 10l4.5 4.5" stroke="#3a6ea5" stroke-width="1.8"/><path d="M4 6.5h5" stroke="#3a6ea5" stroke-width="1.3"/></svg>',
@@ -1835,7 +1837,7 @@ function renderNavbar() {
   const btn = (icon, title, fn, id) => h('div', { class: 'nb' + (navOff()[id] ? ' off' : ''), id: 'nb-' + id, title, onclick: e => { if (!e.currentTarget.classList.contains('off')) fn(e); } }, svg(icon));
   nb.append(
     h('div', { class: 'left' }, h('span', { class: 'status', id: 'status' }, ''), h('div', { class: 'progress', id: 'jobbar', style: { width: '90px', display: 'none' } }, h('i', { style: { width: '0%' } }))),
-    h('div', { class: 'pair' }, btn(I.prev, 'Previous (←) · ⌥: the first', e => step(-1, e.altKey), 'prev'), btn(I.next, 'Next (→) · ⌥: the last', e => step(1, e.altKey), 'next')),
+    h('div', { class: 'pair' }, btn(I.pprev, 'Previous (←) · ⌥: the first', e => step(-1, e.altKey), 'prev'), btn(I.pnext, 'Next (→) · ⌥: the last', e => step(1, e.altKey), 'next')),
     h('div', { class: 'nb' + (S.shuffle ? ' on' : ''), title: 'Shuffle: the arrows (and ← →) go to a random scan instead of the next one', onclick: e => { S.shuffle = !S.shuffle; store('shuffle', S.shuffle ? '1' : ''); e.currentTarget.classList.toggle('on', S.shuffle); updateNavbar(); } }, svg(I.shuffle)),
     h('div', { class: 'orb', title: ed ? (S.st?.sheets.length ? 'Cut (⌘S): the cuts of the parts; afterwards they follow every change of their part' : 'Pass whole (⌘S): no parts yet, so the whole scan becomes one cut') : 'Scan the next page with the scanner, areas and settings of the Scanners page (Space, when “Space bar scans” is on)', onclick: () => ed ? doExport() : scanNextPage() }, svg(ed ? I.orb_cut : I.orb_scan)),
     ed ? h('div', { class: 'pair' }, btn(I.undo, 'Undo (⌘Z)', undo, 'undo'), btn(I.redo, 'Redo (⇧⌘Z)', redo, 'redo'))
@@ -1880,6 +1882,7 @@ async function openScan(rel) {
   // niente dell'immagine di prima resta a schermo mentre arriva questa (si vedeva l'originale, o un altro disegno)
   S.info = null; S.st = null; V.img = null; clearTimeout(tileTimer); tileSeq++;
   const parts = rel.split('/'); if (parts.length >= 2) S.dir = parts.slice(0, -1).join('/');
+  if (!(S.items || []).some(x => x.rel === rel)) api.get('list', { dir: S.dir }).then(l => { if (S.rel === rel) { S.items = l; updateNavbar(); } }).catch(() => {});
   S.view = 'editor';
   renderCmdbar(); renderNav(); renderNavbar();
   const main = $('#main'); main.innerHTML = '';
