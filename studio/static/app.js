@@ -1362,7 +1362,8 @@ function renderTextPane() {
     h('div', { class: 'tbh' }, h('span', { class: 'sw', style: { background: t.color } }), h('b', {}, t.title), h('small', {}, '› ' + t.region),
       h('small', { style: { marginLeft: 'auto' } }, `${t.model}${t.version ? ` · corrected ×${t.version}` : ''}`),
       t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '6px' }, title: 'Read this text again on its scan, the same pixels (the reading you have now is kept: Versions)', onclick: e => { e.stopPropagation(); rereadLibText(t); } }, '↻') : null,
-      t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '2px' }, title: 'Every reading of this text, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: t.sid }, e.currentTarget, t.rel); } }, 'Versions ▾') : null),
+      t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '2px' }, title: 'Every reading of this text, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: t.sid }, e.currentTarget, t.rel); } }, 'Versions ▾') : null,
+      isLibArea(t) ? h('span', { class: 'x', title: 'Remove this area (kept in the history)', onclick: () => removeLibArea(t) }, '✕') : null),
     h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
       onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cuts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
     t.item ? h('div', { class: 'small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); LIB.mode = 'objects'; go('library').then(() => libSelect(t.item)); } }, 'Show in the library')) : null));
@@ -1408,6 +1409,14 @@ function renderTextPane() {
         h('button', { class: 'btn small', title: 'A Markdown file next to the cuts, never over an existing one', onclick: saveTextFile }, 'Save .md'),
         h('label', { class: 'small' }, h('input', { type: 'checkbox', checked: !!S.settings?.ocr_on_export, onchange: async e => { S.settings = await api.post('settings', { ocr_on_export: e.target.checked }); } }), ' read at every cut'))));
   if (S.find) requestAnimationFrame(showFound);
+}
+// un'area della parte mostrata su un suo taglio: si toglie sulla sua scansione (resta nella storia)
+const isLibArea = t => !!(t.sid && t.rel && (t.sid.includes('/') || t.sid.startsWith('loose:')));
+async function removeLibArea(t) {
+  const r = await api.post('library/remove_area', { rel: t.rel, id: t.sid }).catch(e => ({ error: e.message }));
+  if (r.error) return status(r.error);
+  await refreshLibTexts(); draw();
+  status('Area removed: from its part, its cut and the transcriptions (kept in the history)');
 }
 // le letture di una parte: ognuna resta (un lettore, poi un altro); si sceglie quella da usare, le altre restano
 // i testi della libreria mostrati su un taglio: si rileggono e si scelgono sulla loro scansione (la zona e' una sola)
@@ -1561,14 +1570,15 @@ function renderMirror() {
   const ppm = S.info.ppm, sheets = S.st.sheets;
   // un rettangolo per testo; secondary: area dentro un foglio (bordo tratteggiato, sopra il foglio).
   // Doppio clic: si scrive dentro, nello stesso posto; uscendo il testo si salva dove appartiene
-  const block = (b, col, text, title, onEdit, secondary, rot) => {
+  const block = (b, col, text, title, onEdit, secondary, rot, onRemove) => {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
     const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
     const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
       style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
-      h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title), body);
+      h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title,
+        onRemove ? h('span', { class: 'mx', title: 'Remove this area (kept in the history)', onclick: e => { e.stopPropagation(); onRemove(); } }, '✕') : null), body);
     if (onEdit) el.addEventListener('dblclick', e => {
       e.stopPropagation();
       if (el.querySelector('textarea')) return;
@@ -1587,11 +1597,14 @@ function renderMirror() {
     const col = sheetColor(S.st?.sheets?.[i], i), L = sheetLetter(sh);
     // l'area principale (il foglio), poi le sue aree secondarie sopra
     block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }), false, sh.rot);
-    (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; delete a.reread; }), true));
+    (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; delete a.reread; }), true, 0,
+      () => commit(() => { sh.areas.splice(sh.areas.indexOf(a), 1); })));
   });
-  (S.st.loose || []).forEach(t => block(t.box, '#888888', t.text, 'loose', v => commit(() => { t.text = v; delete t.reread; })));
-  if (!sheets.some(x => x.ocr !== undefined)) (S.libTexts || []).forEach(t => block([0, 0, S.info.w, S.info.h], t.color || '#8a96a6', t.plain, `${t.title} › ${t.region}`,
-    async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cuts'); renderMirror(); renderTextPane(); }));
+  (S.st.loose || []).forEach(t => block(t.box, '#888888', t.text, 'loose', v => commit(() => { t.text = v; delete t.reread; }), false, 0,
+    () => commit(() => { S.st.loose.splice(S.st.loose.indexOf(t), 1); })));
+  if (!sheets.some(x => x.ocr !== undefined)) (S.libTexts || []).forEach(t => block(t.box || [0, 0, S.info.w, S.info.h], t.color || '#8a96a6', t.plain, `${t.title} › ${t.region}`,
+    async v => { await api.post('library/correct', { reading: t.reading, text: v }); t.plain = v; t.version++; status('Text corrected: in the library, on its scan and in its cuts'); renderMirror(); renderTextPane(); },
+    !!t.box, 0, isLibArea(t) ? () => removeLibArea(t) : null));
   if (!pg.children.length) pg.append(h('div', { class: 'mempty', style: { fontSize: 4 * ppm + 'px', padding: 10 * ppm + 'px' } }, 'Read some text (Text pane) and it appears here, where it is on the scan.'));
   placeMirror();
 }
@@ -2121,16 +2134,23 @@ async function openScan(rel) {
   new ResizeObserver(() => { resize(); draw(); }).observe(stage);
   $('#title').textContent = `${parts.at(-1)} - Scan Studio`;
   try {
+    // tutto insieme: misure, parti, la libreria e i testi non aspettano l'immagine. Mentre l'anteprima arriva si vede
+    // la miniatura della galleria (gia' fatta: si chiede solo se la galleria l'ha mostrata), poi l'anteprima
+    const where = api.get('library/where', { rel }).catch(() => null), texts = api.get('library/texts_for', { rel }).catch(() => null);
+    const low = (S.items || []).some(x => x.rel === rel) ? new Image() : null;
+    if (low) low.src = `/api/thumb?${qs({ rel, size: thumbPx() })}&v=${PREV_V}`;
     const [info, st] = await Promise.all([api.get('info', { rel }), api.get('state', { rel })]);
     if (S.rel !== rel) return;
-    const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}&k=${info.key || ''}`; await im.decode();
-    if (S.rel !== rel) return;
-    S.info = info; setState(st);                         // misure, parti e immagine insieme, tutte di questo file
-    V.img = im; V.pScale = im.naturalWidth / info.w;
+    S.info = info; setState(st);                         // misure e parti di questo file: si disegnano subito
     resize(); fit(); restoreTab(rel); renderSide(); renderTextPane(); renderMirror(); renderCmdbar(); renderOptions(); draw();
-    api.get('library/where', { rel }).then(w => { if (S.rel === rel) { S.where = w; renderSide(); } }).catch(() => {});
-    api.get('library/texts_for', { rel }).then(t => { if (S.rel !== rel) return; S.libTexts = t || []; if (S.libTexts.length) toggleTextPane(true); renderTextPane(); renderMirror(); }).catch(() => {});
+    where.then(w => { if (w && S.rel === rel) { S.where = w; renderSide(); } });
+    texts.then(t => { if (!t || S.rel !== rel) return; S.libTexts = t; if (S.libTexts.length) toggleTextPane(true); renderTextPane(); renderMirror(); draw(); });
     if (BUSY[rel]) busy(true, BUSY[rel], rel);
+    let full = false;
+    if (low) low.decode().then(() => { if (S.rel === rel && !full && S.info === info) { V.img = low; V.pScale = low.naturalWidth / info.w; draw(); } }).catch(() => {});
+    const im = new Image(); im.src = `/api/preview?${qs({ rel })}&v=${PREV_V}&k=${info.key || ''}`; await im.decode();
+    if (S.rel !== rel || S.info !== info) return;
+    full = true; V.img = im; V.pScale = im.naturalWidth / info.w; draw();
     // alla prima apertura solo il taglio automatico (veloce); SAM e gli altri motori solo con Detect
     if (!st.sheets.length && !/^cut\//.test(rel)) status('No sheets yet: choose an engine and press Detect (or draw one).');
   } catch (e) {
@@ -2305,6 +2325,12 @@ function draw() {
     c.setLineDash([]); c.font = '600 10px "Segoe UI", Tahoma, sans-serif'; const tag = `${sheetLetter(sh)}·${k + 1}`, w = c.measureText(tag).width + 8;
     c.fillStyle = col; c.globalAlpha = .85; c.fillRect(x0, y0, w, 13); c.globalAlpha = 1; c.fillStyle = '#fff'; c.fillText(tag, x0 + 4, y0 + 10); c.restore();
   }));
+  if (!sheets.length) (S.libTexts || []).filter(t => t.box).forEach(t => {
+    const [x0, y0] = toScr(t.box[0], t.box[1]), [x1, y1] = toScr(t.box[2], t.box[3]), col = t.color || '#8a96a6';
+    c.save(); c.setLineDash([5, 3]); c.lineWidth = 1.25; c.strokeStyle = col; c.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    c.setLineDash([]); c.font = '600 10px "Segoe UI", Tahoma, sans-serif'; const w = c.measureText(t.region).width + 8;
+    c.fillStyle = col; c.globalAlpha = .85; c.fillRect(x0, y0, w, 13); c.globalAlpha = 1; c.fillStyle = '#fff'; c.fillText(t.region, x0 + 4, y0 + 10); c.restore();
+  });
   for (const t of S.st?.loose || []) {
     const [a, b] = toScr(t.box[0], t.box[1]), [e, f] = toScr(t.box[2], t.box[3]);
     c.save(); c.setLineDash([6, 4]); c.lineWidth = 1.5; c.strokeStyle = '#888'; c.strokeRect(a, b, e - a, f - b); c.restore();
@@ -2684,6 +2710,18 @@ async function ocrBox(box) {
   let r = null;
   try { r = await api.post('ocr_box', { rel, box }); } catch (e) { busy(false, null, rel); return alertDialog('Read text', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return;
+  if (cutOfPart()) {
+    // un taglio e' la sua parte: il riquadro e' un'area della parte, sulla scansione (lo stesso riquadro: una lettura in piu')
+    const iou0 = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), hh = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * hh;
+      return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
+    const same = (S.libTexts || []).find(t => t.box && isLibArea(t) && iou0(t.box, box) >= .8);
+    if (same) { await rereadLibText(same); toggleTextPane(true); renderMirror(); draw(); return; }
+    const a = await api.post('library/cut_area', { rel, box: box.map(Math.round), text: r.text || '', reader: ocrName() }).catch(e => ({ error: e.message }));
+    if (a.error) return alertDialog('Read text', a.error);
+    await refreshLibTexts();
+    status(r.text ? `Area added to ${S.where?.part || 'the part'}: on its scan, its cut and the transcriptions` : `Area added to ${S.where?.part || 'the part'} (no text found)`);
+    toggleTextPane(true); renderMirror(); draw(); return;
+  }
   const under = (S.st?.sheets || []).filter(s => s.poly && !isInverted(s)).map(s => [s, boxCover(box, s.poly)]).filter(x => x[1] >= .5).sort((a, b) => b[1] - a[1])[0]?.[0];
   // lo stesso riquadro di un'area che c'e' gia': una lettura in piu' di quell'area (Versions), non un'area doppia
   const iou = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), hh = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * hh;

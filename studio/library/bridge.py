@@ -1818,6 +1818,82 @@ def read_cutouts(lib, uuids, progress=None, log=print, mode='reader'):
 
 
 # ---------------------------------------------------------------- il testo di un file aperto nello studio
+def cut_part(lib, rel):
+    # la parte di un taglio: la sua zona, la scansione e il foglio da cui viene
+    c = lib.db.execute("SELECT r.id, r.item_id, r.color, json_extract(r.source, '$.studio_rel') AS srel, json_extract(r.source, '$.studio_id') AS sid "
+                       'FROM cut x JOIN region r ON r.id = x.region_id WHERE x.path = ? ORDER BY x.id DESC LIMIT 1',
+                       (os.path.realpath(core.abspath(rel)),)).fetchone()
+    return c if c and c['srel'] and c['sid'] else None
+
+
+def area_from_cut(lib, rel, box, text=None, reader=None, region_id=None):
+    # un riquadro letto su un taglio e' un'area della sua parte: va sulla scansione, nel punto che il taglio mostra
+    # (lo stesso raddrizzo e gli stessi giri, al contrario). region_id: una zona che c'era gia' (sciolta sul taglio)
+    # cambia posto con le sue letture
+    c = cut_part(lib, rel)
+    if not c:
+        raise ValueError('this cut has no part in the library')
+    st = core.load_state(c['srel'])
+    sh = next((x for x in st['sheets'] if x['id'] == c['sid']), None)
+    fr = sh and core.cut_frame(c['srel'], sh)
+    if not fr:
+        raise ValueError('the part of this cut is not on its scan any more')
+    H, W = core.image(c['srel'])[0].shape[:2]
+    b = core.cut_box_to_scan(fr, box)
+    b = [max(0, min(W, b[0])), max(0, min(H, b[1])), max(0, min(W, b[2])), max(0, min(H, b[3]))]
+    nid = 'a' + str(max([0] + [int(a['id'][1:]) for a in sh.get('areas') or [] if a['id'][1:].isdigit()]) + 1)
+    if region_id:
+        src = store_asset(lib, c['srel'])
+        lib.db.execute("UPDATE region SET asset_id = ?, item_id = ?, parent_id = ?, geometry = ?, color = ?, removed_at = NULL, source = ? WHERE id = ?",
+                       (src, c['item_id'], c['id'], json.dumps({'box': b}), c['color'],
+                        json.dumps({'studio_area': f'{c["sid"]}/{nid}', 'studio_rel': c['srel'], 'from_cut': rel}), region_id))
+        lib.db.commit()
+        lib.log('move', 'region', None, why='an area read on a cut is an area of its part', cut=rel, to=f'{c["sid"]}/{nid}')
+    sh.setdefault('areas', []).append({'id': nid, 'box': b, 'text': text or '', **({'reader': reader} if reader else {})})
+    core.save_state(st)
+    return {'rel': c['srel'], 'id': f'{c["sid"]}/{nid}', 'box': b}
+
+
+def store_asset(lib, rel):
+    from . import store
+    return store.asset_for(lib, rel, create=False)['id']
+
+
+def areas_on_cuts_to_parts(lib):
+    # aree lette su un taglio quando restavano "sciolte" sul taglio: passano alla parte, con le loro letture
+    moved = 0
+    for r in lib.db.execute("SELECT g.id, g.geometry, json_extract(g.source, '$.studio_rel') AS rel, json_extract(g.source, '$.studio_loose') AS lid "
+                            "FROM region g WHERE g.kind = 'text' AND g.parent_id IS NULL AND g.removed_at IS NULL "
+                            "AND g.asset_id IN (SELECT asset_id FROM item_asset WHERE role = 'cutout')").fetchall():
+        if not r['rel'] or not cut_part(lib, r['rel']):
+            continue
+        cur = lib.db.execute('SELECT plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (r['id'],)).fetchone()
+        try:
+            area_from_cut(lib, r['rel'], json.loads(r['geometry'])['box'], cur['plain'] if cur else '', region_id=r['id'])
+        except (ValueError, KeyError, OSError) as e:
+            print('library: area on', r['rel'], 'stays:', e)
+            continue
+        cst = core.load_state(r['rel'])
+        if any(a['id'] == r['lid'] for a in cst.get('loose') or []):
+            cst['loose'] = [a for a in cst['loose'] if a['id'] != r['lid']]
+            core.save_state(cst)
+        moved += 1
+    return moved
+
+
+def remove_area(lib, rel, sid):
+    # un'area tolta da qualunque vista (anche da un suo taglio): la scansione non la mostra piu', resta nella storia
+    st = core.load_state(rel)
+    if sid.startswith('loose:'):
+        st['loose'] = [a for a in st.get('loose') or [] if a['id'] != sid[6:]]
+    else:
+        part, aid = sid.split('/', 1)
+        for sh in st['sheets']:
+            if sh['id'] == part:
+                sh['areas'] = [a for a in sh.get('areas') or [] if a['id'] != aid]
+    core.save_state(st)
+
+
 def texts_for_rel(lib, rel):
     # i testi che la libreria lega a questo file (un ritaglio: quelli della sua zona)
     p = os.path.realpath(core.abspath(rel))
@@ -1825,23 +1901,56 @@ def texts_for_rel(lib, rel):
         lib.db.execute('SELECT * FROM asset WHERE sha256 = ?', (sha256(p),)).fetchone()
     if not a:
         return []
-    out, seen = [], set()
+    out, seen, frames = [], set(), {}
     for t in lib.db.execute('SELECT t.* FROM current_text t WHERE t.reading_id IN (SELECT reading_id FROM text_link WHERE asset_id = ?) '
                             'OR (t.region_id IS NULL AND t.asset_id = ?) ORDER BY t.created_at DESC, t.reading_id DESC', (a['id'], a['id'])):
         k = t['region_id'] or t['uuid']
         if k in seen:
             continue
         seen.add(k)
+        if t['region_id'] and lib.db.execute('SELECT removed_at FROM region WHERE id = ?', (t['region_id'],)).fetchone()['removed_at']:
+            continue                                       # una zona tolta (resta nella storia) non si mostra
         reg = lib.db.execute("SELECT r.label, r.kind, r.position, r.color, i.title, i.uuid AS item, json_extract(r.source, '$.studio_rel') AS srel, "
                              "json_extract(r.source, '$.studio_id') AS sid, json_extract(r.source, '$.studio_area') AS area, json_extract(r.source, '$.studio_loose') AS loose "
                              'FROM region r JOIN item i ON i.id = r.item_id WHERE r.id = ?', (t['region_id'],)).fetchone() if t['region_id'] else None
         # da dove si rilegge: la zona sulla sua scansione (parte s1, area s1/a2 o area sciolta loose:l1), come la vede lo studio
         key = reg and (reg['area'] or (f'loose:{reg["loose"]}' if reg['loose'] else reg['sid']))
-        out.append({'reading': t['reading_id'], 'uuid': t['uuid'], 'plain': t['plain'], 'model': t['model'] or t['engine'],
+        box, name = None, None
+        if reg and reg['area'] and reg['srel']:
+            box = _box_on_cut(lib, rel, reg['srel'], reg['area'].split('/')[0], t['region_id'], frames)
+            name = _area_name(lib, t['region_id'])
+        out.append({'box': box, 'reading': t['reading_id'], 'uuid': t['uuid'], 'plain': t['plain'], 'model': t['model'] or t['engine'],
                     'version': t['corrected_version'] or 0, 'title': reg['title'] if reg else '', 'item': reg['item'] if reg else None,
-                    'region': (reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole file', 'color': reg['color'] if reg else '#8a96a6',
+                    'region': name or ((reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole file'), 'color': reg['color'] if reg else '#8a96a6',
                     'rel': reg['srel'] if reg else None, 'sid': key or None})
     return out
+
+
+def _area_name(lib, region_id):
+    # il nome che l'area ha sulla sua scansione (come sheetLetter nello studio): "a·2", o "sheet·1" con un foglio solo
+    g = lib.db.execute('SELECT parent_id FROM region WHERE id = ?', (region_id,)).fetchone()
+    if not g or not g['parent_id']:
+        return None
+    par = lib.db.execute('SELECT * FROM region WHERE id = ?', (g['parent_id'],)).fetchone()
+    on = [r['id'] for r in lib.db.execute("SELECT id FROM region WHERE asset_id = ? AND kind = 'sheet' AND parent_id IS NULL AND removed_at IS NULL "
+                                          'AND export_on ORDER BY position', (par['asset_id'],))]
+    letter = 'abcdefghijklmnopqrstuvwxyz'[on.index(par['id']) % 26] if len(on) > 1 and par['id'] in on else (par['label'] or 'sheet')
+    sib = [r['id'] for r in lib.db.execute('SELECT id FROM region WHERE parent_id = ? AND removed_at IS NULL ORDER BY position, id', (par['id'],))]
+    return f'{letter}·{sib.index(region_id) + 1}' if region_id in sib else None
+
+
+def _box_on_cut(lib, rel, srel, sid, region_id, frames):
+    # dove sta un'area della parte sul taglio aperto (per la vista affiancata del taglio); None se non si sa
+    try:
+        if srel not in frames:
+            frames[srel] = {x['id']: x for x in core.load_state(srel)['sheets']}
+        sh = frames[srel].get(sid)
+        g = lib.db.execute('SELECT geometry FROM region WHERE id = ?', (region_id,)).fetchone()
+        fr = sh and core.cut_frame(srel, sh)
+        return core.scan_box_to_cut(fr, json.loads(g['geometry'])['box']) if fr and g else None
+    except Exception as e:
+        print('library: area box on the cut:', type(e).__name__, e)
+        return None
 
 
 def reread(lib, rel, sid, read=None):

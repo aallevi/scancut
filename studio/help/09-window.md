@@ -20,6 +20,11 @@ Back and Forward (⌘[ and ⌘]) elsewhere. A button that can do nothing right n
 The two lenses at the top of a gallery and of the library (or ⌘+ and ⌘−) make the thumbnails bigger or
 smaller, in steps. The size is remembered.
 
+## Opening a scan
+
+Parts, texts, the side-by-side view and the library details appear at once; the image comes after.
+Until the full preview arrives the gallery's thumbnail stands in for it.
+
 ## Panes
 
 Click a section's title to fold it (in the sidebar and in the right pane). To give the image all the

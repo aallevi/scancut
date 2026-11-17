@@ -1151,6 +1151,16 @@ class Handler(BaseHTTPRequestHandler):
             elif not records.archive_url():
                 return self.send({'error': 'no archive address: set it in Settings › Archive'}, code=400)
             return self.send(JOBS.public(JOBS.add('archive', **args)))
+        if path == 'library/cut_area':
+            # un riquadro letto su un taglio: un'area della sua parte, sulla scansione
+            lib = bridge.library(create=False)
+            try:
+                return self.send(bridge.area_from_cut(lib, rel, b['box'], b.get('text'), b.get('reader')))
+            except ValueError as e:
+                return self.send({'error': str(e)}, code=400)
+        if path == 'library/remove_area':
+            bridge.remove_area(bridge.library(create=False), b['rel'], str(b['id']))
+            return self.send({'ok': True})
         if path == 'library/correct':
             lib = bridge.library(create=False)
             bridge.correct_text(lib, int(b['reading']), str(b['text']))
@@ -1358,6 +1368,8 @@ def serve(root, port=PORT, ready=None, dev=False):
     lib = bridge.library(create=False)
     if lib:
         bridge.start_watch(lib)
+        # aree lette su un taglio e rimaste sciolte sul taglio (prima): alla loro parte, in sottofondo
+        threading.Thread(target=lambda: bridge._safe(bridge.areas_on_cuts_to_parts, lib), daemon=True).start()
     # la prima volta su una cartella di scansioni che c'era gia': fonti, parti e tagli di prima nella libreria, una volta
     lib0 = bridge.library(create=True)
     if not lib0.meta('root_imported') and os.path.isdir(core.abspath('originals')) and any(

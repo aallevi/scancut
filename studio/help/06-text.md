@@ -64,6 +64,11 @@ tables through pandoc, pandoc grid tables in Markdown). Scan files are never wri
 carry their text.
 
 On a cut, the Text pane shows its part's texts (the part, its secondary areas, the loose areas it
-carries). ↻ reads one again on its scan, the same pixels as the cut, and keeps the reading you had;
+carries). A cut is its part: a box read on a cut is a secondary area of that part, placed on the scan
+where the cut shows it (through the same straightening and turns), with the same name there and on the
+cut. Areas read on a cut before this were moved to their part, with their readings.
+
+Every area can be removed with its ✕, in the Text pane and in the side-by-side view, also from a cut
+(it goes from its part, its cut and the transcriptions; the history keeps it). ↻ reads one again on its scan, the same pixels as the cut, and keeps the reading you had;
 **Versions** lists every reading and lets you pick one. Both change the text everywhere: the scan,
 the cut file, the transcriptions.

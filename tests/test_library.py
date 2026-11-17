@@ -425,6 +425,46 @@ class BridgeTest(unittest.TestCase):
         lib.correct(r['id'], 'a<br>b <u>c</u>')
         self.assertEqual(lib.db.execute('SELECT plain FROM correction ORDER BY id DESC LIMIT 1').fetchone()[0], 'a<br>b <u>c</u>')
 
+    def test_an_area_read_on_a_cut_belongs_to_its_part(self):
+        # un riquadro letto su un taglio e' un'area della parte, sulla scansione nel punto giusto (anche girato);
+        # torna sul taglio dove era, si toglie da li', e una zona rimasta sciolta su un taglio passa alla parte
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][1]['rot'] = 90                                               # il taglio girato
+        core.save_state(st)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        sid = st['sheets'][1]['id']
+        cut = core.relpath(lib.db.execute("SELECT x.path FROM cut x JOIN region r ON r.id = x.region_id WHERE json_extract(r.source, '$.studio_id') = ? "
+                                          'ORDER BY x.id DESC LIMIT 1', (sid,)).fetchone()[0])
+        rgba = core.cut_sheet(self.rel, core.load_state(self.rel)['sheets'][1])[0]
+        H, W = rgba.shape[:2]
+        box = [W // 4, H // 4, W // 2, H // 2]
+        r = bridge.area_from_cut(lib, cut, box, 'on the cut')
+        self.assertEqual(r['rel'], self.rel)
+        sh = next(x for x in core.load_state(self.rel)['sheets'] if x['id'] == sid)
+        self.assertEqual([a['text'] for a in sh['areas']], ['on the cut'])            # un'area della parte
+        fr = core.cut_frame(self.rel, sh)
+        back = core.scan_box_to_cut(fr, sh['areas'][0]['box'])
+        self.assertTrue(all(abs(a - b) <= 6 for a, b in zip(back, box)), (back, box))     # un foglio storto: il riquadro dritto che lo contiene
+        t = [x for x in bridge.texts_for_rel(lib, cut) if x['plain'] == 'on the cut']
+        self.assertEqual(len(t), 1)                                                  # il taglio la mostra, al suo posto
+        self.assertTrue(all(abs(a - b) <= 6 for a, b in zip(t[0]["box"], box)))
+        self.assertEqual(t[0]['region'], 'b·1')                                     # lo stesso nome che ha sulla scansione
+        bridge.remove_area(lib, t[0]['rel'], t[0]['sid'])
+        self.assertFalse([x for x in bridge.texts_for_rel(lib, cut) if x['plain'] == 'on the cut'])
+        # una zona sciolta sul taglio (come prima): alla parte, con la sua lettura
+        cst = core.load_state(cut)
+        cst['loose'] = [{'id': 'l1', 'box': box, 'text': 'old loose'}]
+        core.save_state(cst)
+        self.assertEqual(bridge.areas_on_cuts_to_parts(lib), 1)
+        sh = next(x for x in core.load_state(self.rel)['sheets'] if x['id'] == sid)
+        self.assertIn('old loose', [a['text'] for a in sh['areas']])
+        self.assertFalse(core.load_state(cut).get('loose'))
+        self.assertEqual(bridge.areas_on_cuts_to_parts(lib), 0)
+
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
         from studio import core

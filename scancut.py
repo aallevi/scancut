@@ -75,7 +75,7 @@ def disk(d):
 def load(path, ppm_known=None):
     im = Image.open(path)
     icc = im.info.get('icc_profile')
-    dpi = im.info.get('dpi', (0, 0))[0] or (dpi_of(path) if path.lower().endswith('.jxl') else 0)
+    dpi = header_dpi(path, im)
     if im.mode in ('I;16', 'I;16B', 'I;16L', 'I'):
         # grigio a 16 bit: convert('RGB') di Pillow lo fa tutto bianco; per cercare i bordi
         # basta il byte alto (i pixel dei ritagli a 16 bit li prende lo studio dall'originale)
@@ -84,6 +84,11 @@ def load(path, ppm_known=None):
     else:
         rgb = np.asarray(im.convert('RGB'))
     h, w = rgb.shape[:2]
+    ppm = ppm_for(w, dpi, ppm_known)
+    return rgb, icc, dpi or ppm * 25.4, ppm
+
+
+def ppm_for(w, dpi, ppm_known=None):
     # il letto di uno scanner A4 e' largo ~216 mm: se il dpi dichiarato
     # non torna con le dimensioni, si ricava da li'
     ppm = dpi / 25.4 if dpi else 0
@@ -91,7 +96,19 @@ def load(path, ppm_known=None):
         ppm = ppm_known
     elif not (150 <= w / ppm <= 240 if ppm else False):
         ppm = w / 216.0
-    return rgb, icc, dpi or ppm * 25.4, ppm
+    return ppm
+
+
+def header_dpi(path, im):
+    # come dpi_of, sul file gia' aperto (un JPEG XL porta il dpi nell'EXIF)
+    d = im.info.get('dpi', (0, 0))[0]
+    if not d and path.lower().endswith('.jxl'):
+        try:
+            x = im.getexif().get(282)
+            d = round(float(x), 3) if x else 0
+        except Exception:
+            d = 0
+    return d or 0
 
 
 W_LAB = np.array([1.0, 2.0, 2.0], np.float32)   # la tinta conta piu' della luce: il fondo e' neutro
@@ -428,11 +445,13 @@ def soft(M, ppm):
     return np.clip((g - 0.5) * k + 0.5, 0, 1)
 
 
-def cutout(rgb, m, holes, ppm, exact=False):
+def cutout(rgb, m, holes, ppm, exact=False, frame=None):
     # m: sagoma piena del foglio, holes: buchi da lasciare trasparenti.
     # I pixel sono sempre quelli della scansione: cambia solo la trasparenza.
     # Raddrizza; poi con exact il bordo resta pixel per pixel quello della bacchetta,
     # altrimenti (Apple Vision) i lati dritti diventano rette e gli altri si lisciano.
+    # frame (un dict, facoltativo): dove sta il ritaglio sul pezzo dato (margine, rotazione, angolo del ritaglio),
+    # per portare un punto del taglio sulla scansione e viceversa. Il ritaglio non cambia.
     cnt = max(cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0],
               key=cv2.contourArea)
     (cx, cy), _, ang = cv2.minAreaRect(cnt)
@@ -451,6 +470,8 @@ def cutout(rgb, m, holes, ppm, exact=False):
         hf = cv2.warpAffine(hf, Rm, size, flags=cv2.INTER_LINEAR)
     else:
         ang = 0.0
+    if frame is not None:
+        frame.update(pad=pad, R=Rm.tolist() if turn else None)
     M, Hm = mf > 0.5, hf > 0.5
     # i buchi del raccoglitore sono tondi: al posto della sagoma, l'ellisse che la ricalca
     if Hm.any():
@@ -463,7 +484,7 @@ def cutout(rgb, m, holes, ppm, exact=False):
         Hm = tondi > 0
     if exact:
         alpha = np.clip(mf, 0, 1) * (1 - soft(Hm, ppm))
-        return crop_rgba(rgb, alpha), ang, rect
+        return crop_rgba(rgb, alpha, frame), ang, rect
     h, w = M.shape
     ys, xs = np.nonzero(M)
     y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
@@ -491,11 +512,13 @@ def cutout(rgb, m, holes, ppm, exact=False):
         dist = sign * (pos - e)                # >0 dentro il foglio
         cover = np.minimum(cover, np.clip(dist + 1.0, 0, 1))
     alpha = np.minimum(soft(M, ppm), cover) * (1 - soft(Hm, ppm))
-    return crop_rgba(rgb, alpha), ang, rect
+    return crop_rgba(rgb, alpha, frame), ang, rect
 
 
-def crop_rgba(rgb, alpha):
+def crop_rgba(rgb, alpha, frame=None):
     ys, xs = np.nonzero(alpha > 0.02)
+    if frame is not None:
+        frame.update(off=[int(xs.min()), int(ys.min())])
     alpha = alpha[ys.min():ys.max()+1, xs.min():xs.max()+1]
     rgb = rgb[ys.min():ys.max()+1, xs.min():xs.max()+1]
     a8 = np.round(alpha * 255).astype(np.uint8)

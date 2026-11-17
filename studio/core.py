@@ -194,6 +194,8 @@ def image(rel):
             _img_cache.pop(k0); _alpha.pop(k0, None)
         _img_cache[k] = (rgb, icc, dpi, ppm)
         _alpha[k] = a
+        if not os.path.exists(_info_path(k)):
+            _keep_info(rel, k, rgb.shape[1], rgb.shape[0], dpi, ppm, im.mode in ('RGBA', 'LA', 'PA') or 'transparency' in im.info)
         return _img_cache[k]
 
 
@@ -278,11 +280,48 @@ def preview_path(rel, size):
     return p
 
 
+def _info_path(k):
+    return os.path.join(DATA, 'cache', 'info', k + '.json')
+
+
+def _keep_info(rel, k, w, h, dpi, ppm, has_alpha):
+    # misure del file (per la sua versione), tenute su disco: l'editor le ha subito. alpha: il file ha un canale
+    # di trasparenza (serve a non disegnare il foglio bianco dietro)
+    d = {'rel': rel, 'key': k, 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm, 'alpha': bool(has_alpha),
+         'mm': [round(w / ppm), round(h / ppm)], 'name': os.path.basename(rel)}
+    try:
+        p = _info_path(k)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p + f'.{os.getpid()}.part', 'w') as f:
+            json.dump(d, f)
+        os.replace(p + f'.{os.getpid()}.part', p)
+    except OSError:
+        pass
+    return d
+
+
 def info(rel):
-    rgb, icc, dpi, ppm = image(rel)
-    h, w = rgb.shape[:2]
-    return {'rel': rel, 'key': file_key(rel), 'w': w, 'h': h, 'dpi': round(dpi), 'ppm': ppm, 'alpha': alpha(rel) is not None,
-            'mm': [round(w / ppm), round(h / ppm)], 'name': os.path.basename(rel)}
+    k = file_key(rel)
+    try:
+        with open(_info_path(k)) as f:
+            return dict(json.load(f), rel=rel, name=os.path.basename(rel))
+    except (OSError, ValueError):
+        pass
+    # basta l'intestazione del file, con le stesse regole di image() e sc.load: niente da decodificare
+    try:
+        p = abspath(rel)
+        with Image.open(p) as im:
+            w, h = im.size
+            alpha_ = im.mode in ('RGBA', 'LA', 'PA') or 'transparency' in im.info
+            if alpha_ and not is_recut(rel):
+                raise OSError('una scansione con alfa: la misura dipende dai pixel (alfa tutto pieno o no)')
+            d0 = (im.info.get('dpi') or (0, 0))[0] or 0
+            dpi = sc.header_dpi(p, im)
+            ppm = sc.ppm_for(w, dpi, d0 / 25.4 if d0 and (alpha_ or is_recut(rel)) else None)
+            return _keep_info(rel, k, w, h, dpi or ppm * 25.4, ppm, alpha_)
+    except OSError:
+        rgb, icc, dpi, ppm = image(rel)
+        return _keep_info(rel, k, rgb.shape[1], rgb.shape[0], dpi, ppm, alpha(rel) is not None)
 
 
 def tile(rel, x, y, w, h, out_w):
@@ -1210,6 +1249,63 @@ def sheet_mask_cached(rel, sheet):
             _mask_cache.pop(next(iter(_mask_cache)))
         _mask_cache[k] = sheet_mask(rel, sheet)
     return _mask_cache[k]
+
+
+_frame_cache = {}
+
+
+def cut_frame(rel, sheet):
+    # dove sta il taglio di una parte sulla sua scansione: lo stesso raddrizzo e lo stesso ritaglio di cut_sheet
+    # (fatti su un'immagine vuota, i pixel non servono), poi i quarti di giro. Per portare un riquadro dal taglio
+    # alla scansione (un'area letta sul taglio e' un'area della parte) e dalla scansione al taglio
+    k = hashlib.sha1(json.dumps([file_key(rel), sheet], sort_keys=True).encode()).hexdigest()
+    if k in _frame_cache:
+        return _frame_cache[k]
+    _, _, _, ppm = image(rel)
+    y0, x0, M, Hh, exact = sheet_mask_cached(rel, sheet)
+    if M.sum() < 50:
+        return None
+    fr = {}
+    rgba = sc.cutout(np.zeros(M.shape + (3,), np.uint8), M, Hh, ppm, exact=exact, frame=fr)[0]
+    fr.update(x0=int(x0), y0=int(y0), w=int(rgba.shape[1]), h=int(rgba.shape[0]), q=(int(sheet.get('rot', 0)) // 90) % 4)
+    if len(_frame_cache) > 24:
+        _frame_cache.pop(next(iter(_frame_cache)))
+    _frame_cache[k] = fr
+    return fr
+
+
+def _cut_pt_to_scan(fr, x, y):
+    w, h, q = fr['w'], fr['h'], fr['q']
+    # i quarti di giro all'indietro (np.rot90(k=-q) in cut_sheet gira in senso orario)
+    x, y = {0: (x, y), 1: (y, h - x), 2: (w - x, h - y), 3: (w - y, x)}[q]
+    x, y = x + fr['off'][0], y + fr['off'][1]
+    if fr['R']:
+        R = np.array(fr['R'])
+        x, y = np.linalg.solve(R[:, :2], np.array([x, y]) - R[:, 2])
+    return float(x - fr['pad'] + fr['x0']), float(y - fr['pad'] + fr['y0'])
+
+
+def _scan_pt_to_cut(fr, x, y):
+    x, y = x - fr['x0'] + fr['pad'], y - fr['y0'] + fr['pad']
+    if fr['R']:
+        R = np.array(fr['R'])
+        x, y = R[:, :2] @ np.array([x, y]) + R[:, 2]
+    x, y = x - fr['off'][0], y - fr['off'][1]
+    w, h, q = fr['w'], fr['h'], fr['q']
+    return {0: (x, y), 1: (h - y, x), 2: (w - x, h - y), 3: (y, w - x)}[q]
+
+
+def _map_box(fn, fr, box):
+    pts = [fn(fr, x, y) for x in (box[0], box[2]) for y in (box[1], box[3])]
+    return [round(min(p[0] for p in pts)), round(min(p[1] for p in pts)), round(max(p[0] for p in pts)), round(max(p[1] for p in pts))]
+
+
+def cut_box_to_scan(fr, box):
+    return _map_box(_cut_pt_to_scan, fr, box)
+
+
+def scan_box_to_cut(fr, box):
+    return _map_box(_scan_pt_to_cut, fr, box)
 
 
 def cut_sheet(rel, sheet, deep=False):
