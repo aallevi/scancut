@@ -4,6 +4,7 @@
 import os, re, sys, json, glob, time, shutil, threading, subprocess, urllib.request, urllib.error
 
 from . import core
+from .library.textfmt import html_to_md
 
 
 # ---------------------------------------------------------------- il server del modello
@@ -119,7 +120,6 @@ def _unloop(text):
         out.append(line); last = line
     return '\n'.join(out)
 
-
 def _ocr_one(im, model, prompt):
     import base64, io
     b = io.BytesIO(); im.save(b, 'PNG')
@@ -139,7 +139,7 @@ def _ocr_one(im, model, prompt):
         text = r['choices'][0]['message']['content'] or ''
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.S)
     text = re.sub(r'^```(?:markdown)?\s*|\s*```$', '', text.strip())
-    return _unloop(text.strip())
+    return html_to_md(_unloop(text.strip()))         # Markdown, come lo tiene la libreria
 
 
 def ocr_image(path, model, progress=None):
@@ -255,7 +255,7 @@ def layout_to_md(raw):
             out.append(body)
     if not out:
         out = [re.sub(r'<\|/?det\|>', '', raw).strip()]
-    return _unloop('\n\n'.join(out))
+    return html_to_md(_unloop('\n\n'.join(out)))
 
 
 def ocr_mlx(path, mid, progress=None):

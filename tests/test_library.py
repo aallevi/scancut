@@ -393,6 +393,79 @@ class BridgeTest(unittest.TestCase):
         self.assertNotIn(r'\scanstudio', tex)                                    # solo comandi standard
         self.assertIn('docmute', open(os.path.join(d, 'journal.tex')).read())
 
+    def test_html_tables_from_a_reader_become_markdown(self):
+        # LightOnOCR scrive le tabelle in HTML: allo studio, al diario e a pandoc arrivano come tabelle Markdown
+        from studio.library import journal
+        from studio.library.textfmt import html_to_md
+        t = html_to_md('Table:\n\n<table>\n<tr><th>A</th><th>B|C</th></tr>\n<tr><td colspan="2"><b>wide</b> &amp; x</td></tr>\n</table>\nend<br>line')
+        self.assertIn('| A | B\\|C |\n|---|---|\n| **wide** & x |  |', t)
+        self.assertNotIn('<', t)
+        self.assertEqual(html_to_md('a < b, no tags'), 'a < b, no tags')
+        # salvato: Markdown nella libreria, l'HTML del lettore in raw; il diario LaTeX ha una tabella vera
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'Here:\n<table><tr><td>x</td><td>y</td></tr></table>'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        cur = lambda: lib.db.execute('SELECT * FROM current_text WHERE region_id = (SELECT id FROM region WHERE kind = \'sheet\' ORDER BY id LIMIT 1) '
+                                     'ORDER BY created_at DESC, reading_id DESC LIMIT 1').fetchone()
+        self.assertIn('| x | y |', cur()['plain'])
+        n = lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0]
+        core.save_state(core.load_state(self.rel) | {'sheets': st['sheets']})        # lo stesso testo in HTML: nessuna correzione nuova
+        bridge.sync_rel(self.rel)
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0], n)
+        r = lib.db.execute('SELECT * FROM reading WHERE id = ?', (lib.add_reading(cur()['asset_id'], 'mlx', '<table><tr><td>x</td><td>y</td></tr></table>',
+                                                                                  region_id=cur()['region_id'], model='lightonocr-bbox'),)).fetchone()
+        self.assertEqual(r['plain'], '| x | y |\n|---|---|')
+        self.assertIn('<table>', r['raw'])                                         # quel che il lettore ha scritto
+        d = os.path.join(self.root, 'journal')
+        journal.write(lib, d, 'tex')
+        tex = ''.join(open(os.path.join(d, f)).read() for f in os.listdir(d) if f != 'journal.tex' and f.endswith('.tex'))
+        self.assertNotIn('textless', tex)
+        self.assertRegex(tex, r'x & y')
+        # un testo letto prima (ancora in HTML): all'apertura diventa Markdown, l'originale resta in raw
+        lib.db.execute('UPDATE reading SET plain = ?, raw = NULL WHERE id = ?', ('<table><tr><td>p</td></tr></table>', r['id']))
+        lib.db.commit()
+        lib.migrate()
+        r = lib.db.execute('SELECT plain, raw FROM reading WHERE id = ?', (r['id'],)).fetchone()
+        self.assertEqual(r['plain'], '| p |\n|---|')
+        self.assertIn('<table>', r['raw'])
+        self.assertTrue(any('| p |' in (x['text'] or '') for x in lib.db.execute('SELECT text FROM search')))     # anche la ricerca
+        # una correzione incollata con tag: lo stesso Markdown
+        rid = lib.db.execute('SELECT id FROM reading ORDER BY id LIMIT 1').fetchone()[0]
+        lib.correct(rid, 'a<br>b')
+        self.assertEqual(lib.db.execute('SELECT plain FROM correction ORDER BY id DESC LIMIT 1').fetchone()[0], 'a  \nb')
+
+    def test_text_is_never_written_into_a_scan(self):
+        # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
+        from studio import core
+        with self.assertRaises(ValueError):
+            core.embed_text(core.abspath(self.rel), 'some text')
+        self.assertFalse(hasattr(core, 'ocr_files'))
+
+    def test_the_check_sees_a_journal_out_of_date(self):
+        # il diario si confronta per parole (pandoc cambia la forma): un testo che il file non ha si vede ancora
+        from studio.library import bridge, journal
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = '# A title — with a dash\n\nbody'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        d = os.path.join(self.root, 'journal')
+        bridge.set_journal_dir(lib, d, 'tex')
+        journal.write(lib, d, 'tex')
+        self.assertFalse([x for x in bridge.check(lib) if x['kind'] == 'journal out of date'])
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'Something else entirely'
+        core.save_state(st)
+        bridge.sync_rel(self.rel)
+        self.assertTrue([x for x in bridge.check(lib) if x['kind'] == 'journal out of date'])
+
     def test_journal_pictures_from_the_reader(self):
         # una figura segnata dal lettore (riquadro su 0-1000 del taglio): pixel veri ritagliati dal taglio, in figures/,
         # al suo posto nel testo; il resto (tabella) passa per pandoc

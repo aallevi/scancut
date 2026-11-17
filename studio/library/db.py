@@ -9,6 +9,7 @@
 
 import os, json, uuid as _uuid, shutil, sqlite3, hashlib, time, threading
 from datetime import datetime, timezone
+from .textfmt import html_to_md
 
 SCHEMA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'schema.sql')
 PLACES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'places.sql')
@@ -248,6 +249,10 @@ class Library:
     def add_reading(self, asset_id, engine, plain, region_id=None, model=None, doc=None, raw=None, languages=None,
                     confidence=None, params=None, model_digest=None):
         u = new_uuid()
+        md = html_to_md(plain)                    # il testo in Markdown; quel che il lettore ha scritto resta in raw
+        if md != plain and raw is None:
+            raw = plain
+        plain = md
         cur = self.db.execute('INSERT INTO reading (uuid, region_id, asset_id, engine, model, model_digest, params, languages,'
                               ' confidence, plain, doc, raw, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                               (u, region_id, asset_id, engine, model, model_digest, json.dumps(params) if params else None,
@@ -259,6 +264,7 @@ class Library:
 
     def correct(self, reading_id, plain, doc=None, note=None):
         # una correzione a mano: una versione in piu', la lettura del motore resta com'era
+        plain = html_to_md(plain)                 # anche a mano o incollato: lo stesso Markdown
         v = self.db.execute('SELECT COALESCE(MAX(version), 0) + 1 FROM correction WHERE reading_id = ?', (reading_id,)).fetchone()[0]
         self.db.execute('INSERT INTO correction (reading_id, version, plain, doc, note, created_at) VALUES (?,?,?,?,?,?)',
                         (reading_id, v, plain, json.dumps(doc) if doc else None, note, now()))
@@ -352,6 +358,28 @@ DROP INDEX IF EXISTS cut_path; CREATE INDEX cut_path ON cut(path, id);''')
                                   'CREATE INDEX IF NOT EXISTS item_object ON item(object_id, object_position);')
             self.db.commit()
             self.log('migrate', 'library', self.meta('uuid'), added='objects (item.object_id, side)')
+        # testi letti prima del formato unico (tabelle in HTML di LightOnOCR): in Markdown, l'originale in raw.
+        # Si ripete a ogni apertura ma tocca solo quel che ha ancora tag
+        # (le parti toccate in self.texts_converted: il ponte rifa' i metadati dei loro tagli e il diario)
+        items, self.texts_converted = set(), set()
+        for r in self.db.execute("SELECT id, plain, raw, asset_id, region_id FROM reading WHERE plain LIKE '%<%'").fetchall():
+            md = html_to_md(r['plain'])
+            if md != r['plain']:
+                self.db.execute('UPDATE reading SET plain = ?, raw = COALESCE(raw, ?) WHERE id = ?', (md, r['plain'], r['id']))
+                items.add(self._item_of(r['asset_id'], r['region_id']))
+                self.texts_converted.add(r['region_id'])
+        for r in self.db.execute("SELECT c.id, c.plain, t.asset_id, t.region_id FROM correction c JOIN reading t ON t.id = c.reading_id "
+                                 "WHERE c.plain LIKE '%<%'").fetchall():
+            md = html_to_md(r['plain'])
+            if md != r['plain']:
+                self.db.execute('UPDATE correction SET plain = ? WHERE id = ?', (md, r['id']))
+                items.add(self._item_of(r['asset_id'], r['region_id']))
+                self.texts_converted.add(r['region_id'])
+        if items:
+            self.db.commit()
+            for i in items - {None}:
+                self.touched(i)
+            self.log('migrate', 'library', self.meta('uuid'), texts_to_markdown=len(items))
         if self.meta('schema_version') != str(SCHEMA_VERSION):
             with self.db:
                 self.db.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))

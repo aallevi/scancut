@@ -317,19 +317,6 @@ class Jobs:
             j['done'] += 1
             j['pct'] = j['done'] / n * 100
 
-    def do_ocr(self, j, say):
-        # il testo dei ritagli scelti, uno alla volta (la barra avanza davvero), nei loro metadati
-        j['result'] = []
-        for rel in j['args']['rels']:
-            if j['status'] == 'cancelled':
-                break
-            j['current'] = os.path.basename(rel)
-            try:
-                j['result'] += core.ocr_files([rel], log=say)
-            except Exception as e:
-                say(f'{rel}: ERROR {e}')
-            j['done'] += 1
-
     def do_readcuts(self, j, say):
         # il testo di molti tagli, uno alla volta (barra vera): per uuid, per file (rels) o tutti quelli di alcune fonti
         # (sources). Con il lettore scelto per questo lavoro (reader) e il modo (reader, new, redo: vedi read_cutouts)
@@ -1030,8 +1017,6 @@ class Handler(BaseHTTPRequestHandler):
                 core.abspath(r)
             if act == 'rotate':
                 return self.send({'done': bridge.rotate_cutouts(rels, int(b.get('deg', 90)))})
-            if act == 'ocr':
-                return self.send({'done': core.ocr_files(rels)})
             if act == 'merge':
                 return self.send({'done': [core.relpath(core.merge_tiff(rels))]})
             if act == 'trash':
@@ -1241,7 +1226,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send({'ok': True})
         if path == 'jobs':
             kind = b.pop('kind')
-            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'ocr', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install', 'archive', 'multipage'):
+            if kind not in ('readcuts', 'libimport', 'switch', 'batch', 'export', 'read', 'ocr_sheets', 'claude', 'pull', 'preview', 'scan', 'install', 'archive', 'multipage'):
                 return self.send({'error': 'unknown job kind'}, code=400)
             return self.send(JOBS.public(JOBS.add(kind, **b)))
         if path == 'jobs_clear':

@@ -1491,7 +1491,7 @@ function mdToHtml(text, region, rot) {
   const lines = (text || '').split('\n'), out = [];
   let list = null, table = null;
   const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push('</table>'); table = null; } };
-  for (const raw of lines) {
+  for (const [li0, raw] of lines.entries()) {
     const l = raw.trimEnd();
     const fig = l.match(/!\[[^\]]*\]\([^)]*\)\s*(\d+),(\d+),(\d+),(\d+)/);
     if (fig && region && S.rel) {
@@ -1504,7 +1504,9 @@ function mdToHtml(text, region, rot) {
     if (/^\s*\|.*\|\s*$/.test(l)) {
       if (/^\s*\|[\s:|-]+\|\s*$/.test(l)) continue;
       if (!table) { close(); table = 1; out.push('<table>'); }
-      out.push('<tr>' + l.trim().slice(1, -1).split('|').map(c => `<td>${mdInline(c.trim())}</td>`).join('') + '</tr>'); continue;
+      // la riga sopra |---| e' l'intestazione; \| e' una barra dentro la cella
+      const th = /^\s*\|[\s:|-]+\|\s*$/.test(lines[li0 + 1] || '') ? 'th' : 'td';
+      out.push('<tr>' + l.trim().slice(1, -1).split(/(?<!\\)\|/).map(c => `<${th}>${mdInline(c.trim().replace(/\\\|/g, '|'))}</${th}>`).join('') + '</tr>'); continue;
     }
     const hd = l.match(/^(#{1,4})\s+(.*)/);
     if (hd) { close(); out.push(`<h${hd[1].length}>${mdInline(hd[2])}</h${hd[1].length}>`); continue; }
@@ -1855,20 +1857,10 @@ async function cutoutAction(action, items, deg) {
     const ok = await choose('Move to Trash', `Move ${rels.length} cut(s) to the Trash?`, rels.map(r => r.split('/').pop()).join(', ') + '. They wait in Library › Trash, where you can put them back, until it empties (Settings).', [['yes', 'Move to Trash', true], [null, 'Cancel']]);
     if (!ok) return;
   }
-  if (action === 'ocr') {
-    const j = await api.post('jobs', { kind: 'ocr', rels }); pollJobs();
-    let x = j;
-    while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 700)); x = await api.get('job', { id: j.id }); }
-    const done = x.result || [];
-    alertDialog('Text found', h('pre', { class: 'log' }, done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n') || x.log.join('\n')));
-    status(`${done.length} cut(s) read`);
-    S.sel.clear(); await refreshItems(); return renderSide();
-  }
   status({ rotate: 'Rotating…', trash: 'Moving to Trash…', merge: 'Merging…' }[action], true);
   try {
     const r = await api.post('cutouts', { action, rels, deg });
-    if (action === 'ocr') alertDialog('Text found', h('pre', { class: 'log' }, r.done.map(d => `${d.rel.split('/').pop()}:\n${d.text || '(no text)'}\n`).join('\n')));
-    status(action === 'merge' ? `Merged into ${r.done[0]}` : `${r.done.length} cut(s) ${{ rotate: 'rotated', ocr: 'read', trash: 'moved to the Trash' }[action]}`);
+    status(action === 'merge' ? `Merged into ${r.done[0]}` : `${r.done.length} cut(s) ${{ rotate: 'rotated', trash: 'moved to the Trash' }[action]}`);
   } catch (e) { alertDialog('Cuts', e.message); }
   S.sel.clear(); await refreshItems(); renderSide();
 }

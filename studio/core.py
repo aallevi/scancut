@@ -1728,9 +1728,14 @@ def ocr_text(path):
 
 
 def embed_text(path, text):
-    # nei campi descrizione che leggono tutti (XMP, IPTC, EXIF): i pixel non cambiano
+    # nei campi descrizione che leggono tutti (XMP, IPTC, EXIF): i pixel non cambiano. Solo nei tagli: una
+    # scansione (originals/, inbox/, failed/) non si tocca mai, nemmeno nei metadati (cosi' erano cambiate
+    # tre fonti dal vecchio "leggi i tagli" del menu Batch, che mandava i loro percorsi)
     if not text or not tool('exiftool'):
         return False
+    p = os.path.realpath(path)
+    if any(p.startswith(os.path.realpath(abspath(d)) + os.sep) for d in ('originals', 'inbox', 'failed')):
+        raise ValueError(f'not writing text into a scan: {relpath(p)}')
     r = subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', f'-XMP-dc:Description={text}',
                         f'-IPTC:Caption-Abstract={text[:2000]}', f'-IFD0:ImageDescription={text}', path],
                        capture_output=True, text=True, timeout=120)
@@ -1774,18 +1779,6 @@ def ocr_box(rel, box):
         return ocr_text(tmp)
     finally:
         os.remove(tmp)
-
-
-def ocr_files(rels, log=print):
-    out = []
-    for rel in rels:
-        p = abspath(rel)
-        t = ocr_text(p)
-        if t:
-            embed_text(p, t)
-        out.append({'rel': rel, 'text': t})
-        log(f'{rel}: ' + (f'{len(t.splitlines())} line(s) of text' if t else 'no text found'))
-    return out
 
 
 def _backup(path, stamp):
