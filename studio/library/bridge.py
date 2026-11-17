@@ -38,13 +38,7 @@ def library(create=True):
                 _lib = Library(p, create=True, name=os.path.basename(core.ROOT.rstrip('/')))
             else:
                 return None
-        lib = _lib
-        moved, lib.texts_converted = getattr(lib, 'texts_converted', set()) - {None}, set()
-    if moved:                                          # testi passati al Markdown aprendo: i tagli e il diario li seguono
-        for rid in moved:
-            _safe(refresh_cutout_text, lib, rid)
-        schedule_journal()
-    return lib
+        return _lib
 
 
 def rel_of(lib, asset):
@@ -1288,8 +1282,6 @@ def sync_text(lib, aid, rid, text, reader=None, reread=False):
     # testo nuovo: la prima lettura, una correzione a mano, o (reread) una lettura in piu' che lascia le altre
     if text is None:
         return
-    from .textfmt import html_to_md
-    text = html_to_md(text)                          # come lo salva la libreria: lo stesso testo non e' una correzione
     cur = lib.db.execute('SELECT reading_id, plain FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
     if cur is None or (reread and cur['plain'] != text):
         e_, m_ = reader_of()
@@ -1331,8 +1323,7 @@ def on_read_sheet(rel, sid, text):
         return                                        # parte nuova: la registra il salvataggio dello stato
     cur = lib.db.execute('SELECT plain, engine, model FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
     e_, m_ = reader_of()
-    from .textfmt import html_to_md
-    if cur and cur['plain'] == html_to_md(text) and (cur['engine'], cur['model']) == (e_, m_):
+    if cur and cur['plain'] == text and (cur['engine'], cur['model']) == (e_, m_):
         return
     lib.add_reading(aid, e_, text, region_id=rid, model=m_)
     _text_changed(lib, rid)
@@ -1573,8 +1564,7 @@ def _refresh_cutout_text(lib, region_id):
         if not core.tool('exiftool'):
             continue
         ref = f'scanstudio://cutout/{a["uuid"] if a else ""}?item={reg["item"]}&region={reg["uuid"]}&' + '&'.join(r.split('/')[-1] for r in refs)
-        # gia' allineato: stessi testi (indirizzo con le versioni) e stesso contenuto (un testo puo' cambiare forma
-        # senza versione nuova, come le tabelle HTML passate al Markdown)
+        # gia' allineato: stessi testi (indirizzo con le versioni) e stesso contenuto
         try:
             cur = json.loads(subprocess.run([core.tool('exiftool'), '-j', '-XMP-dc:Identifier', '-XMP-dc:Description', p],
                                             capture_output=True, text=True).stdout)[0]
@@ -1731,9 +1721,7 @@ def attach_doc_text(lib, a, text, reader=None):
     # il testo letto su un file intero entra nella libreria:
     #  un taglio -> e' il testo della sua parte (foglio della fonte, metadati del taglio, diario)
     #  una fonte -> e' il testo della fonte intera
-    from .textfmt import html_to_md
     e_, m_ = reader or reader_of()
-    text = html_to_md(text)                           # come lo salva la libreria: lo stesso testo non fa doppioni
     e = lib.db.execute('SELECT region_id FROM cut WHERE path = ? ORDER BY id DESC LIMIT 1', (lib.asset_path(a),)).fetchone()
     rid = e['region_id'] if e else None
     cur = lib.db.execute('SELECT reading_id, plain FROM current_text WHERE ' + ('region_id = ?' if rid else 'region_id IS NULL AND asset_id = ?') +

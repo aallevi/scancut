@@ -1479,8 +1479,25 @@ function placeMirror() {
   pg.style.transform = `translate(${V.ox}px, ${V.oy}px) scale(${V.s})`;
 }
 const mdEsc = t => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// l'HTML che i lettori scrivono (LightOnOCR: tabelle con celle unite, a capo, apici) si mostra com'e', ma solo
+// con questi elementi e con colspan/rowspan: il resto resta testo, niente script ne' stili
+const HTML_OK = new Set(['TABLE', 'THEAD', 'TBODY', 'TFOOT', 'TR', 'TH', 'TD', 'CAPTION', 'B', 'STRONG', 'I', 'EM', 'U', 'S', 'DEL', 'SUP', 'SUB',
+  'BR', 'P', 'SPAN', 'UL', 'OL', 'LI', 'CODE']);
+function safeHtml(src) {
+  const walk = n => [...n.childNodes].map(c => {
+    if (c.nodeType === 3) return mdEsc(c.textContent);
+    if (c.nodeType !== 1) return '';
+    const tag = c.tagName.toLowerCase();
+    if (!HTML_OK.has(c.tagName)) return walk(c);
+    if (tag === 'br') return '<br>';
+    const at = ['colspan', 'rowspan'].filter(a => /^\d{1,3}$/.test(c.getAttribute(a) || '')).map(a => ` ${a}="${c.getAttribute(a)}"`).join('');
+    return `<${tag}${at}>${walk(c)}</${tag}>`;
+  }).join('');
+  return walk(new DOMParser().parseFromString(src, 'text/html').body);
+}
+const INLINE_OK = /&lt;(\/?)(b|strong|i|em|u|s|del|sup|sub|code)&gt;|&lt;br\s*\/?&gt;/gi;
 function mdInline(t) {
-  return mdEsc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>').replace(/`([^`]+)`/g, '<code>$1</code>');
+  return mdEsc(t).replace(INLINE_OK, (m, sl, tag) => tag ? `<${sl}${tag.toLowerCase()}>` : '<br>').replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|[^*])\*([^*]+)\*/g, '$1<i>$2</i>').replace(/`([^`]+)`/g, '<code>$1</code>');
 }
 function mdToHtml(text, region, rot) {
   // region: [x0, y0, x1, y1] della zona letta, per le figure; rot: giro del taglio letto (gradi orari, quarti).
@@ -1488,11 +1505,15 @@ function mdToHtml(text, region, rot) {
   // misurarsi sulla scansione (lo stesso giro di np.rot90(k=-q) in core.cutout, al contrario)
   const q = ((Math.round((rot || 0) / 90) % 4) + 4) % 4;
   const unturn = (u, v) => q === 1 ? [v, 1 - u] : q === 2 ? [1 - u, 1 - v] : q === 3 ? [1 - v, u] : [u, v];
-  const lines = (text || '').split('\n'), out = [];
+  // le tabelle HTML: un segnaposto per riga, poi la tabella com'e' (vedi safeHtml)
+  const tables = [];
+  const lines = (text || '').replace(/<table\b[\s\S]*?<\/table>/gi, m => `\n\u0000T${tables.push(safeHtml(m)) - 1}\n`).split('\n'), out = [];
   let list = null, table = null;
   const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push('</table>'); table = null; } };
   for (const [li0, raw] of lines.entries()) {
     const l = raw.trimEnd();
+    const tb = l.match(/^\u0000T(\d+)$/);
+    if (tb) { close(); out.push(tables[+tb[1]]); continue; }
     const fig = l.match(/!\[[^\]]*\]\([^)]*\)\s*(\d+),(\d+),(\d+),(\d+)/);
     if (fig && region && S.rel) {
       close();

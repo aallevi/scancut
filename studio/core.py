@@ -1722,9 +1722,13 @@ def ocr_text(path):
         if tmp and os.path.exists(f):
             os.remove(f)
     rows = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
-    rows = [x for x in rows if x.get('conf', 0) >= 0.3]
-    rows.sort(key=lambda x: (round(x['box'][1] / max(x['box'][3], 1)), x['box'][0]))
-    return '\n'.join(x['text'] for x in rows)
+    keep = [x for x in rows if x.get('conf', 0) >= 0.3]
+    keep.sort(key=lambda x: (round(x['box'][1] / max(x['box'][3], 1)), x['box'][0]))
+    text = '\n'.join(x['text'] for x in keep)
+    # tutta l'uscita: ogni riga con il suo riquadro e la sua confidenza, anche quelle troppo incerte per il testo
+    from .library import textfmt
+    textfmt.remember(text, json.dumps({'reader': 'vision', 'lines': rows}, ensure_ascii=False))
+    return text
 
 
 def embed_text(path, text):

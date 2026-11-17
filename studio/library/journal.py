@@ -103,7 +103,7 @@ TEX_HEAD = r"""\documentclass[12pt,a4paper]{article}
 \usepackage{iftex}
 \ifPDFTeX\usepackage[utf8]{inputenc}\usepackage[T1]{fontenc}\else\usepackage{fontspec}\fi
 \usepackage[margin=3cm]{geometry}
-\usepackage{graphicx,longtable,booktabs,array,calc,amsmath,amssymb}
+\usepackage{graphicx,longtable,booktabs,array,calc,amsmath,amssymb,multirow,soul}
 \usepackage[normalem]{ulem}
 \usepackage{hyperref}
 \providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
@@ -183,17 +183,53 @@ def _with_figures(text, ti, names, md):
     return FIG.sub(sub, math_md(text))
 
 
-def pandoc_tex(text):
-    # il Markdown del lettore in LaTeX con pandoc (titoli, elenchi, tabelle, enfasi, formule); le righe restano righe
+def _pandoc(text, src, dst, *extra):
     try:
-        r = subprocess.run(['pandoc', '-f', 'markdown+hard_line_breaks-raw_tex-raw_html-auto_identifiers', '-t', 'latex', '--wrap=preserve',
-                            '--shift-heading-level-by=1'], input=text, capture_output=True, text=True, timeout=60)
-        if r.returncode == 0:
-            # i titoli del testo stanno sotto quello del taglio, senza numeri (come lui)
-            return re.sub(r'\\((?:sub)*section|paragraph)\{', r'\\\1*{', r.stdout.strip())
+        r = subprocess.run(['pandoc', '-f', src, '-t', dst, '--wrap=preserve', *extra], input=text, capture_output=True, text=True, timeout=60)
+        return r.stdout.strip() if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
-        pass
-    return md_to_tex(text)                                # senza pandoc: la conversione semplice di prima
+        return None
+
+
+def _html_tables(text, dst):
+    # le tabelle HTML dei lettori (celle unite, a capo, apici) lette da pandoc come HTML: tutto quel che dicono
+    # arriva nel diario (LaTeX con multirow, Markdown a griglia). Segnaposto, poi al loro posto
+    from .textfmt import HTML_TABLE
+    found = {}
+
+    def sub(m):
+        out = _pandoc(m.group(0), 'html', dst)
+        if out is None:
+            return m.group(0)
+        k = f'SCANSTUDIOTABLE{hashlib.md5(m.group(0).encode()).hexdigest()}'
+        found[k] = out
+        return f'\n\n{k}\n\n'
+    return HTML_TABLE.sub(sub, text), found
+
+
+def pandoc_tex(text):
+    # il testo del lettore in LaTeX con pandoc (titoli, elenchi, tabelle anche HTML, enfasi, apici, formule);
+    # le righe restano righe
+    from .textfmt import inline_for_pandoc
+    t, tables = _html_tables(text, 'latex')
+    out = _pandoc(inline_for_pandoc(t), 'markdown+hard_line_breaks-raw_tex-raw_html-auto_identifiers', 'latex', '--shift-heading-level-by=1')
+    if out is None:
+        return md_to_tex(text)                            # senza pandoc: la conversione semplice di prima
+    for k, v in tables.items():
+        out = out.replace(k, v)
+    # i titoli del testo stanno sotto quello del taglio, senza numeri (come lui)
+    return re.sub(r'\\((?:sub)*section|paragraph)\{', r'\\\1*{', out)
+
+
+def md_text(text):
+    # per il diario Markdown (nvim, EasyPrint con pandoc): le tabelle HTML come tabelle a griglia di pandoc, che
+    # tengono le celle unite, e l'HTML in linea nelle sue forme; il resto com'e'
+    from .textfmt import inline_for_pandoc
+    t, tables = _html_tables(text, 'markdown')
+    t = inline_for_pandoc(t)
+    for k, v in tables.items():
+        t = t.replace(k, v)
+    return re.sub(r'\n{3,}', '\n\n', t)
 
 
 def _figure_tex(n):
@@ -238,9 +274,9 @@ def as_md(e, stamp, names=None):
     head += [f'source: scanstudio://item/{e["item"]}', f'part: scanstudio://region/{e["uuid"]}']
     head += ['readonly: true', f'# Scan Studio · read-only, written {stamp}. Correct the text in Scan Studio: this file is rewritten.', '---', '']
     names = names or {}
-    body = [_with_figures(e['text'], 0, names, True).strip(), ''] if e['text'] else []
+    body = [md_text(_with_figures(e['text'], 0, names, True)).strip(), ''] if e['text'] else []
     for i, (h, t) in enumerate(e['areas'], 1):
-        body += [f'## {h}', '', _with_figures(t, i, names, True).strip(), '']
+        body += [f'## {h}', '', md_text(_with_figures(t, i, names, True)).strip(), '']
     return '\n'.join(head + body).rstrip() + '\n'
 
 

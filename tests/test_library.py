@@ -393,51 +393,37 @@ class BridgeTest(unittest.TestCase):
         self.assertNotIn(r'\scanstudio', tex)                                    # solo comandi standard
         self.assertIn('docmute', open(os.path.join(d, 'journal.tex')).read())
 
-    def test_html_tables_from_a_reader_become_markdown(self):
-        # LightOnOCR scrive le tabelle in HTML: allo studio, al diario e a pandoc arrivano come tabelle Markdown
-        from studio.library import journal
-        from studio.library.textfmt import html_to_md
-        t = html_to_md('Table:\n\n<table>\n<tr><th>A</th><th>B|C</th></tr>\n<tr><td colspan="2"><b>wide</b> &amp; x</td></tr>\n</table>\nend<br>line')
-        self.assertIn('| A | B\\|C |\n|---|---|\n| **wide** & x |  |', t)
-        self.assertNotIn('<', t)
-        self.assertEqual(html_to_md('a < b, no tags'), 'a < b, no tags')
-        # salvato: Markdown nella libreria, l'HTML del lettore in raw; il diario LaTeX ha una tabella vera
-        from studio.library import bridge
+    def test_a_reading_is_kept_whole_and_rendered(self):
+        # il testo si tiene com'e' (HTML compreso) e l'uscita intera del lettore in raw; il diario lo rende:
+        # tabelle con celle unite (LaTeX e Markdown a griglia), apici; una correzione si tiene com'e' scritta
+        from studio.library import bridge, journal, textfmt
         from studio import core
         lib = bridge.library()
         bridge.import_root(lib)
+        html = 'Here x<sup>2</sup>:\n<table><tr><th colspan="2">AB</th></tr><tr><td>x<br>y</td><td>z</td></tr></table>'
+        textfmt.remember(html, '{"reader": "mlx:test", "boxes": [[1, 2, 3, 4]]}')
         st = core.load_state(self.rel)
-        st['sheets'][0]['ocr'] = 'Here:\n<table><tr><td>x</td><td>y</td></tr></table>'
+        st['sheets'][1]['ocr'] = html                                            # un foglio non ancora letto
         core.save_state(st)
         bridge.sync_rel(self.rel)
-        cur = lambda: lib.db.execute('SELECT * FROM current_text WHERE region_id = (SELECT id FROM region WHERE kind = \'sheet\' ORDER BY id LIMIT 1) '
-                                     'ORDER BY created_at DESC, reading_id DESC LIMIT 1').fetchone()
-        self.assertIn('| x | y |', cur()['plain'])
+        r = lib.db.execute("SELECT r.* FROM reading r JOIN current_text t ON t.reading_id = r.id WHERE t.plain = ?", (html,)).fetchone()
+        self.assertEqual(r['plain'], html)                                        # niente convertito
+        self.assertIn('"boxes"', r['raw'])                                        # tutta l'uscita
         n = lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0]
-        core.save_state(core.load_state(self.rel) | {'sheets': st['sheets']})        # lo stesso testo in HTML: nessuna correzione nuova
+        core.save_state(core.load_state(self.rel) | {'sheets': st['sheets']})
         bridge.sync_rel(self.rel)
-        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0], n)
-        r = lib.db.execute('SELECT * FROM reading WHERE id = ?', (lib.add_reading(cur()['asset_id'], 'mlx', '<table><tr><td>x</td><td>y</td></tr></table>',
-                                                                                  region_id=cur()['region_id'], model='lightonocr-bbox'),)).fetchone()
-        self.assertEqual(r['plain'], '| x | y |\n|---|---|')
-        self.assertIn('<table>', r['raw'])                                         # quel che il lettore ha scritto
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0], n)     # lo stesso testo: niente
         d = os.path.join(self.root, 'journal')
         journal.write(lib, d, 'tex')
         tex = ''.join(open(os.path.join(d, f)).read() for f in os.listdir(d) if f != 'journal.tex' and f.endswith('.tex'))
         self.assertNotIn('textless', tex)
-        self.assertRegex(tex, r'x & y')
-        # un testo letto prima (ancora in HTML): all'apertura diventa Markdown, l'originale resta in raw
-        lib.db.execute('UPDATE reading SET plain = ?, raw = NULL WHERE id = ?', ('<table><tr><td>p</td></tr></table>', r['id']))
-        lib.db.commit()
-        lib.migrate()
-        r = lib.db.execute('SELECT plain, raw FROM reading WHERE id = ?', (r['id'],)).fetchone()
-        self.assertEqual(r['plain'], '| p |\n|---|')
-        self.assertIn('<table>', r['raw'])
-        self.assertTrue(any('| p |' in (x['text'] or '') for x in lib.db.execute('SELECT text FROM search')))     # anche la ricerca
-        # una correzione incollata con tag: lo stesso Markdown
-        rid = lib.db.execute('SELECT id FROM reading ORDER BY id LIMIT 1').fetchone()[0]
-        lib.correct(rid, 'a<br>b')
-        self.assertEqual(lib.db.execute('SELECT plain FROM correction ORDER BY id DESC LIMIT 1').fetchone()[0], 'a  \nb')
+        self.assertIn(r'\multicolumn{2}', tex)
+        self.assertIn(r'\textsuperscript{2}', tex)
+        md = journal.md_text(html)
+        self.assertIn('+===', md)                                                  # griglia di pandoc: tiene le celle unite
+        self.assertIn('x^2^', md)
+        lib.correct(r['id'], 'a<br>b <u>c</u>')
+        self.assertEqual(lib.db.execute('SELECT plain FROM correction ORDER BY id DESC LIMIT 1').fetchone()[0], 'a<br>b <u>c</u>')
 
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti

@@ -55,10 +55,13 @@ box is, in the part's colour, formatted. Click a text to correct it.
 In the library, as the part's text: every reading is kept, corrections are versions on top. In each
 cut file, inside its description. A cut's text is always its part's text.
 
-Every text is kept as Markdown: headings, lists, emphasis, tables. Some readers write tables in HTML
-(LightOnOCR); they become Markdown tables when the text is stored, and so does HTML you type or paste.
-The reader's own output stays with the reading. The scan files themselves are never written to: only
-cuts carry their text.
+A text is kept exactly as the reader wrote it, and so is a correction as you typed it: nothing is
+converted. With it the library keeps the reader's whole output: the box and confidence of every line
+(Apple Vision), every block with its box (LightOnOCR, Unlimited-OCR), the full answer for every strip
+(GLM-OCR). Every view shows the text as it is: Markdown, and HTML tables with merged cells, line
+breaks in cells, superscript, subscript and underline, in the studio and in the transcriptions (LaTeX
+tables through pandoc, pandoc grid tables in Markdown). Scan files are never written to: only cuts
+carry their text.
 
 On a cut, the Text pane shows its part's texts (the part, its secondary areas, the loose areas it
 carries). ↻ reads one again on its scan, the same pixels as the cut, and keeps the reading you had;

@@ -1,49 +1,41 @@
-# il formato unico dei testi della libreria: Markdown. I lettori scrivono a modo loro (LightOnOCR le tabelle e
-# l'enfasi in HTML); tutto passa di qui prima di essere salvato (Library.add_reading, Library.correct), cosi' la
-# vista dello studio, il diario LaTeX/Markdown, pandoc (EasyPrint), la ricerca e i metadati del taglio leggono la
-# stessa cosa. Quel che il lettore ha scritto davvero resta in reading.raw.
+# il testo letto si tiene com'e': quel che il lettore ha dato (Markdown, HTML, LaTeX, riquadri) in reading.plain,
+# e tutta la sua uscita (riquadri dei blocchi, confidenze, pezzi) in reading.raw. Niente si converte salvando;
+# chi mostra il testo (lo studio, il diario, pandoc) lo rende com'e', tabelle HTML comprese.
 
-import re
+import re, threading
+from collections import OrderedDict
 
-
-def _cell(c):
-    # il contenuto di una cella o di un pezzo HTML in Markdown in linea: a capo, grassetto, corsivo; il resto testo
-    c = re.sub(r'<br\s*/?>', ' ', c, flags=re.I)
-    c = re.sub(r'<(b|strong)\b[^>]*>(.*?)</\1>', r'**\2**', c, flags=re.I | re.S)
-    c = re.sub(r'<(i|em)\b[^>]*>(.*?)</\1>', r'*\2*', c, flags=re.I | re.S)
-    c = re.sub(r'</?[a-zA-Z][^>]*>', '', c)
-    c = c.replace('&nbsp;', ' ').replace('&lt;', '<').replace('&gt;', '>').replace('&quot;', '"').replace('&#39;', "'").replace('&amp;', '&')
-    return ' '.join(c.split())
+_raw, _lock = OrderedDict(), threading.Lock()
 
 
-def _table_md(m):
-    rows = []
-    for tr in re.findall(r'<tr\b[^>]*>(.*?)</tr>', m.group(0), re.I | re.S):
-        cells = re.findall(r'<t([hd])\b([^>]*)>(.*?)</t[hd]>', tr, re.I | re.S)
-        row = []
-        for _, attrs, c in cells:
-            span = re.search(r'colspan\s*=\s*["\']?(\d+)', attrs, re.I)
-            row += [_cell(c).replace('|', '\\|')] + [''] * (int(span.group(1)) - 1 if span else 0)
-        if row:
-            rows.append(row)
-    if not rows:
-        return _cell(m.group(0))
-    n = max(len(r) for r in rows)
-    rows = [r + [''] * (n - len(r)) for r in rows]
-    line = lambda r: '| ' + ' | '.join(r) + ' |'
-    # la prima riga fa da intestazione (Markdown non ha tabelle senza): con <th> lo e' gia'
-    return '\n\n' + '\n'.join([line(rows[0]), '|' + '---|' * n] + [line(r) for r in rows[1:]]) + '\n\n'
+def remember(plain, raw):
+    # l'uscita intera di una lettura, ritrovata da chi la salva nella libreria (qualunque strada faccia il testo:
+    # lavoro, foglio, riquadro, stato dello studio)
+    if plain and raw:
+        with _lock:
+            _raw[plain] = raw
+            _raw.move_to_end(plain)
+            while len(_raw) > 200:
+                _raw.popitem(last=False)
 
 
-def html_to_md(text):
-    # alcuni lettori (LightOnOCR) scrivono le tabelle e l'enfasi in HTML dentro il Markdown: in Markdown vero, cosi'
-    # la vista dello studio, il diario LaTeX e pandoc (EasyPrint) le leggono come tabelle e non come tag
-    if not text or '<' not in text:
-        return text
-    t = re.sub(r'<table\b.*?</table>', _table_md, text, flags=re.I | re.S)
-    t = re.sub(r'<br\s*/?>', '  \n', t, flags=re.I)
-    t = re.sub(r'<(b|strong)>(.*?)</\1>', r'**\2**', t, flags=re.I | re.S)
-    t = re.sub(r'<(i|em)>(.*?)</\1>', r'*\2*', t, flags=re.I | re.S)
-    t = re.sub(r'</?(?:p|div|span|u|sup|sub|thead|tbody|center|font)\b[^>]*>', '', t, flags=re.I)
-    return re.sub(r'\n{3,}', '\n\n', t).strip()
+def raw_for(plain):
+    with _lock:
+        return _raw.get(plain)
 
+
+# blocchi HTML che i lettori scrivono dentro il Markdown (LightOnOCR: tabelle, con celle unite e a capo)
+HTML_TABLE = re.compile(r'<table\b.*?</table>', re.I | re.S)
+_INLINE = [(re.compile(r'<sup>(.*?)</sup>', re.I | re.S), lambda m: '^' + m.group(1).replace(' ', '\\ ') + '^'),
+           (re.compile(r'<sub>(.*?)</sub>', re.I | re.S), lambda m: '~' + m.group(1).replace(' ', '\\ ') + '~'),
+           (re.compile(r'<u>(.*?)</u>', re.I | re.S), lambda m: '[' + m.group(1) + ']{.underline}'),
+           (re.compile(r'<(b|strong)>(.*?)</\1>', re.I | re.S), lambda m: '**' + m.group(2) + '**'),
+           (re.compile(r'<(i|em)>(.*?)</\1>', re.I | re.S), lambda m: '*' + m.group(2) + '*'),
+           (re.compile(r'<br\s*/?>', re.I), lambda m: '\\\n')]
+
+
+def inline_for_pandoc(text):
+    # solo per rendere (mai salvato): l'HTML in linea nelle forme che il Markdown di pandoc conosce
+    for rx, fn in _INLINE:
+        text = rx.sub(fn, text)
+    return text

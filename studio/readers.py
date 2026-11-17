@@ -4,7 +4,7 @@
 import os, re, sys, json, glob, time, shutil, threading, subprocess, urllib.request, urllib.error
 
 from . import core
-from .library.textfmt import html_to_md
+from .library import textfmt
 
 
 # ---------------------------------------------------------------- il server del modello
@@ -137,9 +137,9 @@ def _ocr_one(im, model, prompt):
                                       'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': prompt},
                                       {'type': 'image_url', 'image_url': {'url': 'data:image/png;base64,' + b64}}]}]}, timeout=900)
         text = r['choices'][0]['message']['content'] or ''
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.S)
-    text = re.sub(r'^```(?:markdown)?\s*|\s*```$', '', text.strip())
-    return html_to_md(_unloop(text.strip()))         # Markdown, come lo tiene la libreria
+    out = re.sub(r'<think>.*?</think>', '', text, flags=re.S)
+    out = re.sub(r'^```(?:markdown)?\s*|\s*```$', '', out.strip())
+    return _unloop(out.strip()), text                # il testo da mostrare, e la risposta intera del modello
 
 
 def ocr_image(path, model, progress=None):
@@ -155,12 +155,17 @@ def ocr_image(path, model, progress=None):
     if not server_up() and not start_ollama():
         raise RuntimeError('the local model server is not running (Add-ons › Text (OCR))')
     parts = _strips(im)
-    out = []
+    out, raw = [], []
     for i, part in enumerate(parts):
-        out.append(_ocr_one(part, model, prompt))
+        t, r = _ocr_one(part, model, prompt)
+        out.append(t)
+        raw.append({'size': list(part.size), 'output': r})
         if progress:
             progress(i + 1, len(parts))
-    return '\n\n'.join(t for t in out if t)
+    text = '\n\n'.join(t for t in out if t)
+    # tutta l'uscita: la risposta del modello per ogni striscia letta (pensieri, recinti, ripetizioni comprese)
+    textfmt.remember(text, json.dumps({'reader': 'ollama:' + model, 'image': list(im.size), 'strips': raw}, ensure_ascii=False))
+    return text
 
 
 # ---------------------------------------------------------------- lettori su MLX (GPU Apple), nel loro Python
@@ -255,7 +260,7 @@ def layout_to_md(raw):
             out.append(body)
     if not out:
         out = [re.sub(r'<\|/?det\|>', '', raw).strip()]
-    return html_to_md(_unloop('\n\n'.join(out)))
+    return _unloop('\n\n'.join(out))
 
 
 def ocr_mlx(path, mid, progress=None):
@@ -293,7 +298,10 @@ def ocr_mlx(path, mid, progress=None):
         raise RuntimeError(f'{m["name"]}: {res["error"]}')
     if progress:
         progress(1, 1)
-    return layout_to_md(res['text'])
+    text = layout_to_md(res['text'])
+    # tutta l'uscita: con i riquadri di ogni blocco (titolo, testo, tabella, figura), per la vista affiancata
+    textfmt.remember(text, json.dumps(dict(res, reader='mlx:' + mid, image=list(im.size)), ensure_ascii=False))
+    return text
 
 
 def addon_rows():
