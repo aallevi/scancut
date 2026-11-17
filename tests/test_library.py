@@ -678,6 +678,51 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(bridge.resolve_address(lib, '24-05'), folder)   # come le note di Eagle: scatola 24, cartella 5
         self.assertTrue(lib.db.execute("SELECT 1 FROM event WHERE type = 'move'").fetchone())
 
+    def test_reading_cuts_with_a_chosen_reader_and_mode(self):
+        # un lavoro legge con il suo lettore (le impostazioni non cambiano); "new" lascia i tagli gia' letti,
+        # "redo" legge di nuovo; leggere a ogni taglio diventa un lavoro a parte con i tagli appena scritti
+        from studio import core
+        from studio.library import bridge
+        lib = bridge.library()
+        bridge.cut(self.rel, log=lambda m: None)
+        # a ogni taglio: il taglio non legge, passa i tagli scritti a chi li mettera' in coda
+        got = []
+        core.after_cut_read = got.append
+        core.save_settings({'ocr_on_export': True})
+        try:
+            os.remove(core.abspath('cut/card/card 1 b.png'))      # (radice di prova) il taglio va riscritto
+            bridge.cut(self.rel, log=lambda m: None)
+        finally:
+            core.after_cut_read = None
+            core.save_settings({'ocr_on_export': False})
+        self.assertEqual(len(got), 1)
+        self.assertTrue(all(r.startswith('cut/') for r in got[0]))
+        uu = bridge.cut_uuids(lib, sources=[self.rel])
+        self.assertEqual(len(uu), 2)
+        calls = []
+        real = core.ocr_text
+        core.ocr_text = lambda path: calls.append(core.reader()) or 'words'
+        old = core.read_doc
+        def fake_read(rel, progress=None, redo=False):
+            known = None if redo else core.read_cached(rel)
+            return known if known is not None else core.ocr_text(rel)
+        core.read_doc = fake_read
+        try:
+            with core.use_reader('ollama:test-model'):
+                r = bridge.read_cutouts(lib, uu, log=lambda m: None)
+            self.assertEqual(calls, ['ollama:test-model'] * 2)
+            self.assertEqual(core.reader(), core.settings().get('ocr_engine') or 'vision')     # dopo, quello di sempre
+            self.assertEqual([x['text'] for x in r], ['words', 'words'])
+            self.assertTrue(all(bridge.cut_has_text(lib, lib.db.execute('SELECT * FROM asset WHERE uuid = ?', (u,)).fetchone()) for u in uu))
+            calls.clear()
+            self.assertEqual(bridge.read_cutouts(lib, uu, log=lambda m: None, mode='new'), [])
+            self.assertEqual(calls, [])
+            with core.use_reader('ollama:test-model'):
+                bridge.read_cutouts(lib, uu, log=lambda m: None, mode='redo')
+            self.assertEqual(len(calls), 2)
+        finally:
+            core.ocr_text, core.read_doc = real, old
+
     def test_an_existing_library_gets_the_object_columns(self):
         # una libreria fatta prima degli oggetti (senza item.object_id) si apre con il codice nuovo: le colonne arrivano
         # da migrate() e ogni vista funziona (prima il passo stava dentro una migrazione gia' fatta: tagli spariti)

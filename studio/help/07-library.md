@@ -12,6 +12,12 @@ The library holds everything about sources, parts, cuts and texts. Its views are
 
 The panel on the right shows where a file belongs: its source, its parts, their cuts and texts.
 
+## Many cuts at once
+
+Select cuts in Library › Cuts (⌘-click, ⇧-click, ⌘A). The Batch menu and the pane offer: Read text…, turn
+left or right (losslessly, with their parts), Join as one object…, a multipage file of just these cuts,
+Export these cuts…, Show their sources, Move to Trash.
+
 ## Objects: parts that are the same piece of paper
 
 Front and back of a sheet, the two pages of a double page, a drawing scanned in two goes: different parts,

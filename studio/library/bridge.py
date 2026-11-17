@@ -719,6 +719,17 @@ def empty_trash(lib, older_than_days=None, only=None):
 # Una copia dei tagli in una cartella scelta, ordinata come si vuole: per posto (Cassettiera / Box 24 /
 # Folder 5), per serie, o tutti insieme. I file sono gli stessi byte; mai sopra un altro (identico: resta).
 
+def pages_for_cuts(lib, uuids):
+    # le pagine di un file a piu' pagine fatto di tagli scelti uno per uno, nell'ordine dato
+    out = []
+    for u in uuids:
+        a = lib.db.execute("SELECT a.*, i.title FROM asset a JOIN item_asset ia ON ia.asset_id = a.id JOIN item i ON i.id = ia.item_id WHERE a.uuid = ? AND ia.role = 'cutout'", (u,)).fetchone()
+        rel = rel_of(lib, a) if a else None
+        if rel and os.path.exists(core.abspath(rel)):
+            out.append((rel, a['title'], a['original_name']))
+    return out
+
+
 def pages_for(lib, uuids, use='sources'):
     # le pagine di un file a piu' pagine: per ogni fonte scelta, nell'ordine dato, i suoi file (la scansione)
     # o i suoi tagli (uno per parte, nell'ordine dei nomi). Ritorna [(rel, titolo, nome del file)]
@@ -985,7 +996,7 @@ def take_edit(lib, work, w):
 # ---------------------------------------------------------------- per l'interfaccia
 
 def reader_of():
-    eng = core.settings().get('ocr_engine') or 'vision'
+    eng = core.reader()
     return (eng.split(':', 1)[0], eng.split(':', 1)[1]) if ':' in eng else (eng, eng)
 
 
@@ -1754,9 +1765,34 @@ def import_read_cache(lib):
             attach_doc_text(lib, a, open(p, encoding='utf-8').read())
 
 
-def read_cutouts(lib, uuids, progress=None, log=print):
-    eng = core.settings().get('ocr_engine') or 'vision'
-    done = []
+def cut_has_text(lib, a):
+    # questo taglio (la sua parte) ha gia' un testo letto, con qualunque lettore
+    e = lib.db.execute('SELECT region_id FROM cut WHERE path = ? ORDER BY id DESC LIMIT 1', (lib.asset_path(a),)).fetchone()
+    rid = e['region_id'] if e else None
+    return bool(lib.db.execute('SELECT 1 FROM current_text WHERE ' + ('region_id = ?' if rid else 'region_id IS NULL AND asset_id = ?') + ' LIMIT 1',
+                               (rid or a['id'],)).fetchone())
+
+
+def cut_uuids(lib, rels=(), sources=()):
+    # gli uuid dei tagli: per file (rels di tagli) o per fonte (rels di scansioni: tutti i loro tagli al loro posto)
+    out = []
+    for r in rels:
+        a = lib.db.execute('SELECT uuid FROM asset WHERE path = ?', (os.path.realpath(core.abspath(r)),)).fetchone()
+        if a:
+            out.append(a[0])
+    for r in sources:
+        a = lib.db.execute('SELECT id FROM asset WHERE path = ?', (os.path.realpath(core.abspath(r)),)).fetchone()
+        if not a:
+            continue
+        out += [x[0] for x in lib.db.execute("SELECT c.uuid FROM asset c JOIN item_asset ia ON ia.asset_id = c.id WHERE ia.role = 'cutout' AND " + LIVE.replace('a.', 'c.') +
+                                             " AND ia.item_id = (SELECT item_id FROM item_asset WHERE asset_id = ? LIMIT 1) ORDER BY c.original_name", (a['id'],))]
+    return list(dict.fromkeys(out))
+
+
+def read_cutouts(lib, uuids, progress=None, log=print, mode='reader'):
+    # mode: 'reader' = si legge se questo lettore non l'ha gia' letto (se si', quella lettura);
+    #       'new' = solo i tagli senza nessun testo; 'redo' = di nuovo (la lettura di prima resta, fra le versioni)
+    done, skipped = [], 0
     for k, u in enumerate(uuids):
         a = lib.db.execute('SELECT * FROM asset WHERE uuid = ?', (u,)).fetchone()
         rel = rel_of(lib, a) if a else None
@@ -1764,10 +1800,14 @@ def read_cutouts(lib, uuids, progress=None, log=print):
             log(f'{u}: not found'); continue
         if progress:
             progress(k, len(uuids), a['original_name'])
-        text = core.read_doc(rel, (lambda i, n, k=k: progress(k + i / n, len(uuids), a['original_name'])) if progress else None)
+        if mode == 'new' and cut_has_text(lib, a):
+            skipped += 1; continue
+        text = core.read_doc(rel, (lambda i, n, k=k: progress(k + i / n, len(uuids), a['original_name'])) if progress else None, redo=mode == 'redo')
         attach_doc_text(lib, a, text)
         log(f'{a["original_name"]}: ' + (f'{len(text.splitlines())} line(s)' if text else 'no text'))
         done.append({'uuid': u, 'text': text})
+    if skipped:
+        log(f'{skipped} cut(s) already had text: left as they are')
     schedule_journal()
     return done
 

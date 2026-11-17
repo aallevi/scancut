@@ -582,7 +582,7 @@ html.native .window { overflow: hidden; }
 .libcuts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
 .libcuts img { width: 100%; aspect-ratio: 1; object-fit: contain; border: 1px solid #d5dfe9; cursor: pointer; }
 .badge.uncut { background: #e9eef4; color: #6a7a8c; border: 1px solid #c3d1e0; }
-.libbar { flex-wrap: nowrap; }
+.libbar { flex-wrap: wrap; row-gap: 6px; }
 .libbar > b, .libbar > .muted { white-space: nowrap; }
 .libbar .muted { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .libsort { display: inline-flex; gap: 4px; flex: none; }

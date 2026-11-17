@@ -15,6 +15,15 @@ PORT = 8765
 
 # ---------------------------------------------------------------- lavori in coda
 
+def _after_cut_read(rels):
+    # "leggi a ogni taglio": un lavoro a parte per i tagli appena scritti, con il lettore per dopo il taglio
+    if rels:
+        JOBS.add('readcuts', rels=rels, mode='new', reader=core.settings().get('ocr_on_export_engine') or None, after_cut=True)
+
+
+core.after_cut_read = _after_cut_read
+
+
 class Jobs:
     def __init__(self):
         self.jobs, self.q = {}, queue.Queue()
@@ -296,7 +305,8 @@ class Jobs:
                 j['pct'] = (i + k / m) / n * 100
                 j['current'] = f'{os.path.basename(rel)} · part {k} of {m}'
             try:
-                t = core.read_doc(rel, prog)
+                with core.use_reader(a.get('reader')):
+                    t = core.read_doc(rel, prog, redo=a.get('mode') == 'redo')
                 bridge._safe(bridge.on_read_doc, rel, t)          # nella libreria: testo della parte, o della fonte
                 if a.get('embed') and core.is_recut(rel) and t:
                     core.embed_text(core.abspath(rel), t)
@@ -321,11 +331,24 @@ class Jobs:
             j['done'] += 1
 
     def do_readcuts(self, j, say):
-        # il testo di molti ritagli, uno alla volta (barra vera)
+        # il testo di molti tagli, uno alla volta (barra vera): per uuid, per file (rels) o tutti quelli di alcune fonti
+        # (sources). Con il lettore scelto per questo lavoro (reader) e il modo (reader, new, redo: vedi read_cutouts)
+        a = j['args']
         lib = bridge.library(create=False)
+        uuids = list(a.get('uuids') or []) + bridge.cut_uuids(lib, a.get('rels') or [], a.get('sources') or [])
+        if a.get('rels') and a.get('after_cut'):
+            time.sleep(1)                                       # il taglio appena scritto entra nella libreria
+            uuids = list(dict.fromkeys(uuids + bridge.cut_uuids(lib, a['rels'])))
+        uuids = list(dict.fromkeys(uuids))
+        if not uuids:
+            raise ValueError('no cuts to read')
         def prog(k, n, name):
             j['pct'] = k / n * 100; j['current'] = name
-        j['result'] = bridge.read_cutouts(lib, j['args']['uuids'], prog, log=say)
+        with core.use_reader(a.get('reader')):
+            say(f'Reader: {core.reader()}')
+            j['result'] = bridge.read_cutouts(lib, uuids, prog, log=say, mode=a.get('mode') or 'reader')
+        if a.get('unload'):
+            readers.unload_ocr()
         j['done'] = 1
 
     def do_libimport(self, j, say):
@@ -374,7 +397,7 @@ class Jobs:
         dest = safe_dest(a.get('dir'))
         os.makedirs(dest, exist_ok=True)
         lib = bridge.library(create=False)
-        pages = bridge.pages_for(lib, a.get('items') or [], a.get('use') or 'sources')
+        pages = bridge.pages_for_cuts(lib, a['cuts']) if a.get('cuts') else bridge.pages_for(lib, a.get('items') or [], a.get('use') or 'sources')
         if not pages:
             raise ValueError('nothing to put in the file: no ' + ('cuts' if a.get('use') == 'cuts' else 'files') + ' for these sources')
         fmt = 'tiff' if a.get('format') == 'tiff' else 'pdf'
@@ -913,6 +936,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send({'error': str(e)})
         if path == 'jobs':
             return self.send([JOBS.public(j) for j in sorted(JOBS.jobs.values(), key=lambda j: -j['created'])][:50])
+        if path == 'readers':
+            # i lettori del testo: quelli pronti e quelli da scaricare (Add-ons), il predefinito e quello per dopo il taglio
+            rows = [r for r in readers.addon_rows() if r.get('group') == 'Text (OCR)' and r.get('use')]
+            s_ = core.settings()
+            return self.send({'readers': [{'value': r['use']['ocr_engine'], 'name': r['name'], 'ok': bool(r['ok']), 'line': r.get('line', '')} for r in rows],
+                              'default': s_.get('ocr_engine') or 'vision', 'after_cut': s_.get('ocr_on_export_engine') or '', 'on_cut': bool(s_.get('ocr_on_export'))})
         if path == 'job':
             j = JOBS.jobs.get(q.get('id'))
             return self.send(JOBS.public(j)) if j else self.send({'error': 'no such job'}, code=404)

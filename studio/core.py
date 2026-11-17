@@ -1262,7 +1262,8 @@ DEFAULT_SETTINGS = {
     'archive_url': '',                 # il sito-archivio (Directus), in sola lettura; la chiave nel Portachiavi
     'verify_jxl': False,
     'keep_16bit': True,
-    'ocr_on_export': False,            # riconoscere il testo (Apple Vision) e scriverlo nei metadati di ogni ritaglio
+    'ocr_on_export': False,            # leggere il testo di ogni taglio appena fatto (un lavoro a parte, nella libreria)
+    'ocr_on_export_engine': '',        # con quale lettore (vuoto: quello predefinito)
     'it8_remind': True,                # ricordare di ricalibrare i colori (IT8)
     'it8_days': 90,                    # ogni quanti giorni
     'it8_last': 0,                     # ultima calibrazione (o inizio del conteggio)
@@ -1512,6 +1513,7 @@ def export(rel, replace=None, log=print, subfolder=None, only=None):
     # resta; se diverso, il nuovo prende " (2)" (o, con export_existing=replace, il vecchio
     # va in studio-data/replaced/). subfolder: i ritagli in una sottocartella della loro.
     s_ = settings()
+    to_read = []
     if replace is None:
         replace = s_.get('export_existing') == 'replace'
     fmt = s_.get('export_format', 'png')
@@ -1549,10 +1551,7 @@ def export(rel, replace=None, log=print, subfolder=None, only=None):
             if sheets[sid].get('ocr'):
                 embed_text(out, sheets[sid]['ocr'])          # il testo letto (e corretto) nello studio
             elif s_.get('ocr_on_export'):
-                try:
-                    embed_text(out, ocr_text(out))
-                except Exception as e:
-                    log(f'OCR: {e}')
+                to_read.append(out)                          # letto dopo, in un lavoro suo (vedi after_cut_read)
             written.append({'id': sid, 'path': out, 'status': 'written', 'size': list(rgba.shape[1::-1]),
                             'tilt': round(ang, 2), 'rect': round(rect, 3), 'moved_old': moved})
             sc.log(f'studio: {relpath(out)}  {rgba.shape[1]}x{rgba.shape[0]}  tilt {ang:+.2f}'
@@ -1588,6 +1587,11 @@ def export(rel, replace=None, log=print, subfolder=None, only=None):
         remember_batch(rel, st['engine'], st.get('params') or {})
     if settings().get('eagle'):
         eagle_add([w['path'] for w in written if w['status'] == 'written'], log)
+    if to_read and after_cut_read:
+        try:
+            after_cut_read([relpath(p) for p in to_read if os.path.exists(p)])
+        except Exception as e:
+            log(f'Reading after the cut: {e}')
     return written
 
 
@@ -1639,15 +1643,42 @@ def _readable(path):
     return path, False
 
 
-def read_doc(rel, progress=None):
+_rd = threading.local()
+
+
+def reader():
+    # il lettore che vale qui: quello scelto per questo lavoro (use_reader), se no quello delle impostazioni
+    return getattr(_rd, 'eng', None) or settings().get('ocr_engine') or 'vision'
+
+
+class use_reader:
+    # with use_reader('ollama:glm-ocr'): ... -> le letture di questo thread usano quel lettore
+    def __init__(self, eng):
+        self.eng = eng or None
+
+    def __enter__(self):
+        self.old = getattr(_rd, 'eng', None)
+        _rd.eng = self.eng or self.old
+        return self
+
+    def __exit__(self, *a):
+        _rd.eng = self.old
+
+
+# dopo un taglio con "leggi a ogni taglio": chi registra qui mette in coda la lettura (il server: un lavoro a parte,
+# cosi' il taglio finisce subito e il testo passa dalla libreria come ogni altra lettura)
+after_cut_read = None
+
+
+def read_doc(rel, progress=None, redo=False):
     # il testo di un documento intero (fonte o taglio), con il lettore scelto. Se la libreria ha gia' una
     # lettura di questo file con questo lettore, e' quella (con le correzioni); se no si legge, e la lettura
     # entra nella libreria (un taglio: testo della sua parte; una fonte: testo intero). Nessun file cambia.
     from .library import bridge
-    known = read_cached(rel)
+    known = None if redo else read_cached(rel)
     if known is not None:
         return known
-    eng = settings().get('ocr_engine') or 'vision'
+    eng = reader()
     f, tmp = _readable(abspath(rel))
     try:
         if eng.startswith('ollama:'):
@@ -1672,7 +1703,7 @@ def read_cached(rel):
 
 def ocr_text(path):
     # il testo riconosciuto; '' se non c'e' testo. Con un modello di Ollama: Markdown, anche a mano
-    eng = settings().get('ocr_engine') or 'vision'
+    eng = reader()
     if eng.startswith(('ollama:', 'mlx:')):
         from . import readers
         f, tmp = _readable(path)

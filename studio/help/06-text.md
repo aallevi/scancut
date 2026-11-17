@@ -24,6 +24,27 @@ Text in several languages is kept as written, never translated.
 - **Read whole scan**: every word on the page, in a reader.
 - In a gallery: select files and use Text › Read the whole document, or read into the cut files.
 
+## Reading many at once
+
+Select sources in a gallery or Library › Sources, or cuts in Library › Cuts or a cuts folder, then
+**Read text…** (Batch menu, the pane, or Text › Read text of the selection). The window asks:
+
+- **What**: for sources, their cuts one by one, or the whole scans.
+- **Reader**: any installed reader, for this job only. The default stays as it is unless you tick
+  **Make this the default reader**. Readers not installed are listed and greyed; Add-ons installs them.
+- **Which**: only those not read yet; those not read with this reader; or all again. Earlier readings
+  are never lost: they stay under Versions.
+- **Free the model's memory when done**, for a long batch with a big model.
+
+Every reading goes to the library: the text of the part, its cut file's description and the
+transcriptions, and it follows every correction.
+
+## Text settings
+
+Text › Text settings…: the default reader; **Read each new cut** and the reader for it. Reading after a
+cut runs as its own job once the cut is written, so cutting is never slowed down, and only cuts without a
+text are read. A fast reader there (Apple Vision) and a careful one for the cuts you choose is a good pair.
+
 ## Side by side
 
 A second view the size of the scan, zooming and scrolling with it: each text sits where its part or

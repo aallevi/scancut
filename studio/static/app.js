@@ -231,7 +231,9 @@ function renderCmdbar() {
         { label: ed ? 'Read the whole scan' : `Read the whole document${S.sel.size > 1 ? 's' : ''} (${S.sel.size})`, disabled: ed ? false : !S.sel.size, do: () => ed ? readWholeScan() : readDocs([...S.sel]), note: 'Every word on the page, shown in a reader. Sources are never changed.' },
         { label: `Read into the cut files (${cuts.length})`, disabled: ed || !cuts.length, do: () => readDocs(cuts, true), note: 'Also writes the text into each file’s description (XMP, IPTC, EXIF).' },
         '-',
+        { label: 'Read text of the selection…', disabled: !batchCtx().rels.length && !(S.view === 'library' && LIB.mode === 'cutouts' && (LIB.cuts || []).length), do: () => S.view === 'library' && LIB.mode === 'cutouts' ? libReadCuts() : readFromCtx(batchCtx()), note: 'Choose the reader for this job, and whether to read only what has no text yet.' },
         { label: 'Read text automatically when cutting', check: !!S.settings?.ocr_on_export, do: async () => { S.settings = await api.post('settings', { ocr_on_export: !S.settings.ocr_on_export }); } },
+        { label: 'Text settings…', do: textSettings, note: 'Default reader, reading each new cut (and with which reader), model memory.' },
         { label: 'Where the text is stored…', do: () => showHelpTopic('text/where-it-is-stored') },
       ];
     } }),
@@ -245,7 +247,9 @@ function renderCmdbar() {
       { label: 'Archive site (Directus)…', do: archiveDialog, note: 'Connect your archive with a read-only token: Scan Studio sees what is already there, never writes.' },
     ] }),
     cmd('Cut', () => ed ? doExport() : exportMany(targets()), { disabled: ed ? !S.st?.sheets.length : !S.sel.size, title: 'Cut: save the cuts of the parts (⌘S). After that they follow every change of their part.' }),
-    cmd('Batch', null, { menu: () => { const c = batchCtx(), n = c.rels.length; return [
+    cmd('Batch', null, { menu: () => { if (S.view === 'library' && LIB.mode === 'cutouts') { const cs = libPickedCuts(false); return [
+      { label: cs.length ? `${cs.length} cut${cs.length > 1 ? 's' : ''} selected` : 'Select cuts (⌘-click, ⇧-click, ⌘A)', disabled: true }, ...cutBatchActions(cs), '-', { label: 'Jobs…', do: () => go('jobs') }]; }
+      const c = batchCtx(), n = c.rels.length; return [
       { label: n ? `${n} source${n > 1 ? 's' : ''} selected` : 'Select sources in a gallery or in Library › Sources', disabled: true },
       ...batchActions(c),
       ...(S.view === 'gallery' ? ['-', { label: 'Detect and cut the whole folder', do: () => { selectAll(); batch(true); } }] : []),
@@ -431,16 +435,81 @@ function libPickCut(e, c) {
   libSelectCut(c, true);
 }
 function libReadLabel() { const b = $('#libread'); if (b) b.textContent = LIB.picks.size ? `Read text (${LIB.picks.size})` : `Read text (all ${LIB.cuts?.length || 0})`; }
-async function libReadCuts() {
-  const ents = LIB.picks.size ? (LIB.cuts || []).filter(c => LIB.picks.has(c.uuid)) : (LIB.cuts || []);
-  const uuids = ents.flatMap(c => c.group ? c.cuts.map(x => x.uuid) : [c.uuid]);
-  if (!uuids.length) return;
-  const j = await api.post('jobs', { kind: 'readcuts', uuids }); pollJobs();
-  status(`Reading ${uuids.length} cut(s) with ${ocrName()}… (see Jobs)`);
+// i tagli scelti nella vista Cuts (un oggetto vale per i suoi lati), o tutti quelli che si vedono
+const libPickedCuts = (orAll) => { const e = LIB.picks.size ? (LIB.cuts || []).filter(c => LIB.picks.has(c.uuid)) : orAll ? (LIB.cuts || []) : []; return e.flatMap(c => c.group ? c.cuts : [c]); };
+function libReadCuts() {
+  const cuts = libPickedCuts(true);
+  if (cuts.length) textDialog({ cuts: cuts.map(c => c.uuid), label: LIB.picks.size ? `${cuts.length} selected cut(s)` : `all ${cuts.length} cuts shown` });
+}
+// Leggere il testo, da ovunque: cosa (tagli, i tagli di alcune fonti, documenti interi), con quale lettore, e come
+// (solo quelli non letti, con questo lettore, di nuovo). Il lettore vale per questo lavoro; "predefinito" lo tiene.
+// t: { cuts: [uuid] } | { files: [rel di tagli] } | { sources: [rel di scansioni] }, label
+async function textDialog(t) {
+  const R = await api.get('readers').catch(() => ({ readers: [], default: 'vision' }));
+  let reader = R.default, mode = 'new', what = t.sources ? 'cuts' : 'cuts', unload = false, makeDefault = false;
+  const sel = h('select', { class: 'f', onchange: e => { if (e.target.value === '__more') { e.target.value = reader; closeAll(); return go('addons'); } reader = e.target.value; note.textContent = (R.readers.find(r => r.value === reader) || {}).line || ''; } },
+    ...R.readers.map(r => h('option', { value: r.value, selected: r.value === reader, disabled: !r.ok }, r.name + (r.ok ? '' : ' (not installed)') + (r.value === R.default ? ' · default' : ''))),
+    h('option', { value: '__more' }, 'Install more readers… (Add-ons)'));
+  const note = h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, (R.readers.find(r => r.value === reader) || {}).line || '');
+  const radio = (nm, v, label, on, set, title) => h('label', { class: 'radio', style: { display: 'block' }, title: title || '' }, h('input', { type: 'radio', name: nm, checked: on, onchange: () => set(v) }), ' ' + label);
+  let closeAll = () => $('.dlg-back')?.remove();
+  dialog('Read text', t.label || '', h('div', { style: { width: '560px', lineHeight: 1.6 } },
+    t.sources ? [h('div', { class: 'gh' }, 'Read'),
+      radio('tw', 'cuts', 'Their cuts, one by one (the text of each part)', true, v => what = v),
+      radio('tw', 'docs', 'The whole scans (every word on the page, shown in a reader)', false, v => what = v)] : null,
+    h('div', { class: 'gh', style: { marginTop: t.sources ? '8px' : 0 } }, 'Reader'),
+    h('div', { class: 'row' }, sel), note,
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Which'),
+    radio('tm', 'new', 'Only those not read yet', true, v => mode = v, 'Cuts that already have a text (from any reader) are left as they are'),
+    radio('tm', 'reader', 'Those not read with this reader', false, v => mode = v, 'Each is read with this reader unless it already was; texts from other readers stay as versions'),
+    radio('tm', 'redo', 'All of them again', false, v => mode = v, 'A new reading of each; the earlier ones stay, under Versions, and you can go back to them'),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'After'),
+    h('label', { class: 'radio', style: { display: 'block' } }, h('input', { type: 'checkbox', onchange: e => makeDefault = e.target.checked }), ' Make this the default reader'),
+    h('label', { class: 'radio', style: { display: 'block' } }, h('input', { type: 'checkbox', onchange: e => unload = e.target.checked }), ' Free the model’s memory when done'),
+    h('div', { class: 'small muted', style: { whiteSpace: 'normal', marginTop: '6px' } }, 'Each text goes to the library: it is the text of the part, written into its cut file and the transcriptions, and follows every correction. Pixels never change. Reading runs in the background (Jobs).'),
+    h('div', { class: 'small', style: { marginTop: '4px' } }, h('a', { href: '#', onclick: e => { e.preventDefault(); closeAll(); textSettings(); } }, 'Text settings…'))),
+    [['Read', async () => {
+      if (!(R.readers.find(r => r.value === reader) || {}).ok) { status('That reader is not installed: Add-ons'); return false; }
+      if (makeDefault) S.settings = await api.post('settings', { ocr_engine: reader });
+      if (t.sources && what === 'docs') {
+        const j = await api.post('jobs', { kind: 'read', rels: t.sources, reader, mode });
+        pollJobs(); status(`Reading ${t.sources.length} whole scan(s)… (see Jobs)`); waitShowReader(j);
+      } else {
+        const body = { kind: 'readcuts', reader, mode, unload };
+        if (t.cuts) body.uuids = t.cuts; if (t.files) body.rels = t.files; if (t.sources) body.sources = t.sources;
+        const r = await api.post('jobs', body).catch(e => ({ error: e.message }));
+        if (r.error) { status(r.error); return false; }
+        pollJobs(); status(`Reading ${t.label || 'the cuts'} with ${(R.readers.find(x => x.value === reader) || {}).name || reader}… (see Jobs)`);
+      }
+    }, true], ['Cancel', () => true]]);
+}
+async function waitShowReader(j) {
   let x = j;
   while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 900)); x = await api.get('job', { id: j.id }); }
-  status(x.status === 'done' ? `Read ${x.result.length} cut(s)` : 'Reading failed: see Jobs');
-  if (S.view === 'library') { libLoad(); if (LIB.cut) libSelectCut((LIB.cuts || []).find(c => c.uuid === LIB.cut) || {}, true); }
+  if ((x.result || []).length) showReader(x.result);
+}
+// le impostazioni del testo in un posto: il lettore predefinito, leggere a ogni taglio (e con quale), la memoria
+async function textSettings() {
+  const R = await api.get('readers').catch(() => ({ readers: [], default: 'vision' }));
+  const opts = (v, empty) => [...(empty ? [h('option', { value: '', selected: !v }, empty)] : []),
+    ...R.readers.map(r => h('option', { value: r.value, selected: r.value === v, disabled: !r.ok }, r.name + (r.ok ? '' : ' (not installed)')))];
+  const def = h('select', { class: 'f' }, ...opts(R.default));
+  const auto = h('input', { type: 'checkbox', checked: R.on_cut });
+  const autoR = h('select', { class: 'f' }, ...opts(R.after_cut, 'The default reader'));
+  dialog('Text settings', 'How writing is read', h('div', { style: { width: '560px', lineHeight: 1.6 } },
+    h('div', { class: 'row' }, h('label', {}, 'Default reader'), def),
+    h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, 'Used by the Text pane, the Text menu and every reading unless you choose another for that job. Apple Vision is instant; GLM-OCR and the other models read handwriting and keep the layout, and take seconds to minutes per page.'),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'When cutting'),
+    h('label', { class: 'radio', style: { display: 'block' } }, auto, ' Read each new cut'),
+    h('div', { class: 'row' }, h('label', {}, 'With'), autoR),
+    h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, 'Runs after the cut, as its own job: cutting is never slowed down. Only cuts without a text are read. A fast reader here (Apple Vision) and a careful one for chosen cuts is a good pair.'),
+    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Readers'),
+    h('div', { class: 'btns' }, h('button', { class: 'btn small', onclick: () => { $('.dlg-back')?.remove(); go('addons'); } }, 'Install or remove readers (Add-ons)'),
+      h('button', { class: 'btn small', title: 'Frees the memory of the reading model now (it loads again when needed)', onclick: async () => { await api.post('sam_unload', {}).catch(() => null); status('Models unloaded: memory freed'); } }, 'Free model memory'))),
+    [['Save', async () => {
+      S.settings = await api.post('settings', { ocr_engine: def.value, ocr_on_export: auto.checked, ocr_on_export_engine: autoR.value });
+      OCR_READERS = null; status(`Default reader: ${ocrName()}`); if (S.view === 'editor') renderTextPane();
+    }, true], ['Cancel', () => true]]);
 }
 async function libSelectCut(c, keepPicks) {
   if (!c?.uuid) return;
@@ -516,26 +585,28 @@ async function libSelect(uuid, picked) {
 // le fonti scelte, nell'ordine in cui si vedono
 const libPickedItems = () => (LIB.items || []).filter(x => LIB.picks.has(x.uuid));
 // un file a piu' pagine (PDF senza perdita, o TIFF) dalle fonti scelte: le scansioni, o i loro tagli, una pagina ciascuno
-function multipageDialog(items) {
-  const first = items[0], series = first?.batch || (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name;
-  const name = h('input', { type: 'text', class: 'f', value: series || first?.title || 'pages' });
+// cuts: tagli scelti uno per uno ([{uuid, title}]): le pagine sono loro, nell'ordine
+function multipageDialog(items, cuts) {
+  const first = cuts ? cuts[0] : items[0], series = first?.batch || (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name;
+  const name = h('input', { type: 'text', class: 'f', value: series || (first?.title || '').replace(/\.[^.]+$/, '') || 'pages' });
   const dir = h('input', { type: 'text', class: 'f', value: store('multidir') || '~/Desktop/Scan Studio files' });
   let use = 'sources', fmt = 'pdf';
   const radio = (nm, v, label, on, set) => h('label', { class: 'radio', style: { display: 'block' } }, h('input', { type: 'radio', name: nm, checked: on, onchange: () => set(v) }), ' ' + label);
-  dialog('Multipage file', `${items.length} source(s), in the order shown, one file`, h('div', { style: { width: '560px', lineHeight: 1.6 } },
+  dialog('Multipage file', cuts ? `${cuts.length} cut(s), in the order shown, one file` : `${items.length} source(s), in the order shown, one file`, h('div', { style: { width: '560px', lineHeight: 1.6 } },
     h('div', { class: 'row' }, h('label', {}, 'Name'), name),
     h('div', { class: 'row' }, h('label', {}, 'Into'), dir, h('button', { class: 'btn small', onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Write the file into' }); if (r.dir) dir.value = r.dir; } }, 'Choose…')),
-    h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Pages'),
-    radio('mp', 'sources', 'The scans, as they are', true, v => use = v),
+    cuts ? null : h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Pages'),
+    cuts ? null : radio('mp', 'sources', 'The scans, as they are', true, v => use = v),
     // senza tagli non c'e' niente da mettere: la scelta si vede spenta e dice perche'
-    (ncuts => h('label', { class: 'radio' + (ncuts ? '' : ' off'), style: { display: 'block', opacity: ncuts ? 1 : .5 } }, h('input', { type: 'radio', name: 'mp', disabled: !ncuts, onchange: () => use = 'cuts' }), ' Their cuts (one page per cut, transparent where cut away)' + (ncuts ? ` · ${ncuts}` : ' · none yet: cut them first')))(items.reduce((n, x) => n + (x.cuts || 0), 0)),
+    cuts ? null : (ncuts => h('label', { class: 'radio' + (ncuts ? '' : ' off'), style: { display: 'block', opacity: ncuts ? 1 : .5 } }, h('input', { type: 'radio', name: 'mp', disabled: !ncuts, onchange: () => use = 'cuts' }), ' Their cuts (one page per cut, transparent where cut away)' + (ncuts ? ` · ${ncuts}` : ' · none yet: cut them first')))(items.reduce((n, x) => n + (x.cuts || 0), 0)),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Format'),
     radio('mf', 'pdf', 'PDF, lossless (pages the size of the scan; opens anywhere)', true, v => fmt = v),
     radio('mf', 'tiff', 'TIFF with several pages, lossless', false, v => fmt = v),
     h('div', { class: 'small muted', style: { whiteSpace: 'normal' } }, 'Real pixels, 8 bits per channel, no JPEG. The file is a copy for reading or sending: the library keeps the sources and cuts. An existing file is never overwritten.')),
     [['Make the file', async () => {
       store('multidir', dir.value.trim());
-      const j = await api.post('jobs', { kind: 'multipage', items: items.map(x => x.uuid), use, format: fmt, name: name.value.trim(), dir: dir.value.trim() }).catch(e => ({ error: e.message }));
+      const j = await api.post('jobs', cuts ? { kind: 'multipage', cuts: cuts.map(x => x.uuid), use: 'cuts', format: fmt, name: name.value.trim(), dir: dir.value.trim() }
+        : { kind: 'multipage', items: items.map(x => x.uuid), use, format: fmt, name: name.value.trim(), dir: dir.value.trim() }).catch(e => ({ error: e.message }));
       status(j.error || 'Making the file… (see Jobs; it opens in the Finder when done)'); pollJobs();
     }, true], ['Cancel', () => true]]);
 }
@@ -605,15 +676,21 @@ async function libEditIn(asset, app) {
 }
 function sideLibrary(side) {
   const d = LIB.detail;
+  if (LIB.mode === 'cutouts' && LIB.picks.size > 1) {
+    const ents = (LIB.cuts || []).filter(x => LIB.picks.has(x.uuid)), cuts = ents.flatMap(x => x.group ? x.cuts : [x]);
+    return side.append(group(`${cuts.length} cuts selected`,
+      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all. The same actions are in the Batch menu.'),
+      h('div', { class: 'btns' }, cutBatchActions(cuts).filter(a => a !== '-').map(a => h('button', { class: 'btn small' + (a.default ? ' default' : ''), title: a.title, disabled: a.disabled, onclick: a.do }, a.label)))));
+  }
   const c = LIB.mode === 'cutouts' && LIB.cut ? (LIB.cuts || []).find(x => x.uuid === LIB.cut) : null;
   if (c?.group) return side.append(objectGroup(c.object), group('Actions', h('div', { class: 'btns' },
     h('button', { class: 'btn small', title: 'Read the text of every side', onclick: libReadCuts }, 'Read text'))));
   if (c) {
+    if (c.object) side.append(objectGroup(c.object));
     side.append(group(c.name,
       c.rel ? h('div', { style: { textAlign: 'center' } }, h('img', { src: `/api/thumb?${qs({ rel: c.rel, size: 512 })}&v=${PREV_V}`, style: { maxWidth: '100%', maxHeight: '260px', background: bgCss() } })) : null,
       h('div', { class: 'small muted' }, `${c.width} × ${c.height} px${c.dpi ? ` · ${Math.round(c.dpi)} dpi` : ''} · ${c.sha256.slice(0, 12)}…`),
       h('div', { class: 'small' }, 'From ', h('a', { href: '#', onclick: e => { e.preventDefault(); libMode('objects'); libSelect(c.item); } }, c.title), c.region ? h('span', {}, ' › ', h('span', { class: 'sw', style: { display: 'inline-block', width: '9px', height: '9px', background: c.region.color, marginRight: '4px' } }), c.region.label) : null)),
-      c.object ? objectGroup(c.object) : null,
       group(`Texts (${c.texts.length})`, ...(c.texts.length ? c.texts.map(t => h('div', { class: 'libregion', style: { borderLeftColor: c.region?.color || '#ccc' } },
         h('div', { class: 'small lrtext' }, t.plain || '(no text found)'), h('div', { class: 'small muted' }, `${t.model || t.engine}${t.corrected_version ? ` · corrected ×${t.corrected_version}` : ''}${t.earlier ? ` · ${t.earlier} earlier reading(s) kept` : ''}`)))
         : [h('div', { class: 'small muted' }, 'No text read for this part yet.')])),
@@ -624,15 +701,6 @@ function sideLibrary(side) {
         c.rel ? h('button', { class: 'btn small', onclick: () => api.post('open', { what: 'finder', rel: c.rel }) }, 'Show in Finder') : null,
         h('button', { class: 'btn small', title: 'This cut goes to the Trash; its part is left out of the cut until it comes back', onclick: () => libTrash({ cuts: [c.uuid] }, `“${c.name}”`) }, 'Move to Trash'))));
     return;
-  }
-  if (LIB.mode === 'cutouts' && LIB.picks.size > 1) {
-    const ents = (LIB.cuts || []).filter(x => LIB.picks.has(x.uuid)), cuts = ents.flatMap(x => x.group ? x.cuts : [x]);
-    return side.append(group(`${cuts.length} cuts selected`,
-      h('div', { class: 'small muted' }, 'In the order shown. ⌘-click adds or removes one, ⇧-click a run, ⌘A all.'),
-      h('div', { class: 'btns' },
-        h('button', { class: 'btn default', title: 'These cuts are the same piece of paper (front and back, two pages, a drawing scanned in two goes): joined in the library, every view shows them together', onclick: () => joinDialog(cuts.map(c => ({ ref: c.uuid, label: c.region?.label || c.name, title: c.title, rel: c.rel, side: c.object?.side }))) }, 'Join as one object…'),
-        h('button', { class: 'btn', title: `Read the text of these cuts with ${ocrName()}`, onclick: libReadCuts }, 'Read text'),
-        h('button', { class: 'btn', title: 'These cuts go to the library’s Trash; their parts are left out of the cut until they come back', onclick: () => libTrash({ cuts: cuts.map(c => c.uuid) }, `${cuts.length} cuts`) }, 'Move to Trash'))));
   }
   if (LIB.mode === 'objects' && LIB.picks.size > 1) {
     // piu' fonti scelte: i lavori in blocco, come nella galleria, e il file a piu' pagine
@@ -1586,12 +1654,13 @@ async function archiveDialog() {
      ['Close', () => true]]);
 }
 // una copia dei tagli in cartelle, come l'esportazione di Eagle: per posto, per serie, o tutti insieme
-async function exportCutsDialog() {
+async function exportCutsDialog(only) {
   const inp = h('input', { type: 'text', class: 'f', value: store('exportdir') || '~/Desktop/Scan Studio cuts' });
   let structure = 'place', scope = 'all';
+  if (Array.isArray(only) && only.length) scope = 'picks';
   const radio = (name, v, label, on, set) => h('label', { class: 'radio' }, h('input', { type: 'radio', name, checked: on, onchange: () => set(v) }), ' ' + label);
   const shown = LIB.place ? (LIB.places || []).find(p => p.uuid === LIB.place)?.name : LIB.series ? (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name : null;
-  const picks = LIB.mode === 'cutouts' ? [...(LIB.picks || [])] : [];
+  const picks = Array.isArray(only) ? only : LIB.mode === 'cutouts' ? libPickedCuts(false).map(c => c.uuid) : [];
   // cosa viaggia: per destinazione, i campi scelti si ricordano
   let kind = store('exportkind') || 'folder';
   const tv = await api.get('travel', { kind }).catch(() => ({ fields: [], chosen: [] }));
@@ -1608,9 +1677,9 @@ async function exportCutsDialog() {
     radio('st', 'series', 'By series', false, v => structure = v),
     radio('st', 'flat', 'All in one folder', false, v => structure = v),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'Which cuts'),
-    radio('sc', 'all', 'All cuts', true, v => scope = v),
+    radio('sc', 'all', 'All cuts', !picks.length, v => scope = v),
     shown ? radio('sc', 'shown', `Those in “${shown}”`, false, v => scope = v) : null,
-    picks.length ? radio('sc', 'picks', `The ${picks.length} selected`, false, v => scope = v) : null,
+    picks.length ? radio('sc', 'picks', `The ${picks.length} selected`, true, v => scope = v) : null,
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'For'),
     ...[['eagle', 'Eagle'], ['archive', 'The archive site (its importer reads the .json)'], ['folder', 'Just a folder']].map(([v, l]) => radio('kd', v, l, kind === v, pickKind)),
     h('div', { class: 'gh', style: { marginTop: '8px' } }, 'What travels with each file'), boxes,
@@ -2971,10 +3040,8 @@ function batchActions(ctx) {
     { label: 'Pass whole…', title: 'Each source becomes one part and one cut, whole: nothing is cut away (paper scanned at its own size); turned if you say so', disabled: !n,
       do: () => keepWhole(rels) },
     '-',
-    { label: 'Read text of the cuts', title: `Reads every cut of these sources with ${ocrName()}`, disabled: !n,
-      do: job({ kind: 'ocr', rels }, 'Reading the cuts… (see Jobs)') },
-    { label: 'Read the whole documents', title: `Reads every word on each source with ${ocrName()}; the text is kept by the library`, disabled: !n,
-      do: () => readDocs(rels) },
+    { label: 'Read text…', title: 'Their cuts or the whole scans, with the reader you choose for this job', disabled: !n,
+      do: () => readFromCtx(ctx) },
     '-',
     { label: 'Join as one object…', title: 'The parts of these sources are the same piece of paper (front and back, two pages): joined in the library, every view shows them together', disabled: n < 1,
       do: () => joinFromRels(rels) },
@@ -2983,6 +3050,34 @@ function batchActions(ctx) {
     '-',
     { label: 'Move to Trash', title: 'The sources and their cuts go to the library’s Trash', disabled: !n,
       do: async () => { const its = items.length ? items : await libItemsFor(rels); if (its.length) libTrash({ items: its.map(x => x.uuid) }, `${its.length} source(s) and their cuts`); else status('These scans are not in the library yet'); } },
+  ];
+}
+// leggere da una galleria o dalle fonti: in una cartella di tagli sono i tagli stessi; se no le fonti (i loro tagli, o intere)
+function readFromCtx(ctx) {
+  const rels = ctx.rels || [];
+  if (!rels.length) return;
+  if (rels.every(r => r.startsWith('cut/'))) return textDialog({ files: rels, label: `${rels.length} cut(s)` });
+  textDialog({ sources: rels, label: `${rels.length} source(s)` });
+}
+// le azioni sui tagli scelti nella vista Cuts (menu Batch e pannello): cuts = [{uuid, rel, name, title, item, region, object}]
+function cutBatchActions(cuts) {
+  const n = cuts.length, rels = cuts.map(c => c.rel).filter(Boolean);
+  const rot = deg => async () => { const r = await api.post('cutouts', { action: 'rotate', rels, deg }).catch(e => ({ error: e.message })); status(r.error || `Turned ${rels.length} cut(s) ${deg > 0 ? 'right' : 'left'}, losslessly`); libLoad(); };
+  return [
+    { label: 'Read text…', title: 'With the reader you choose for this job; only those not read yet, or again', disabled: !n, default: true,
+      do: () => textDialog({ cuts: cuts.map(c => c.uuid), label: `${n} cut(s)` }) },
+    { label: 'Turn left', title: 'Each cut and its part turn 90° left, losslessly', disabled: !rels.length, do: rot(-90) },
+    { label: 'Turn right', title: 'Each cut and its part turn 90° right, losslessly', disabled: !rels.length, do: rot(90) },
+    '-',
+    { label: 'Join as one object…', title: 'These cuts are the same piece of paper (front and back, two pages): joined in the library', disabled: n < 2,
+      do: () => joinDialog(cuts.map(c => ({ ref: c.uuid, label: c.region?.label || c.name, title: c.title, rel: c.rel, side: c.object?.side }))) },
+    { label: 'Multipage file…', title: 'One PDF or TIFF with one page per cut, in this order, lossless', disabled: !n, do: () => multipageDialog([], cuts) },
+    { label: 'Export these cuts…', title: 'A copy in a folder of your choice (by place, series or flat), with what you choose to travel', disabled: !n, do: () => exportCutsDialog(cuts.map(c => c.uuid)) },
+    { label: 'Show their sources', title: 'Library › Sources with the sources of these cuts selected', disabled: !n,
+      do: async () => { const items = [...new Set(cuts.map(c => c.item))]; LIB.mode = 'objects'; store('libmode', 'objects'); await renderLibrary(); LIB.picks = new Set(items); $$('#libgrid .thumb').forEach((el, k) => el.classList.toggle('sel', LIB.picks.has(LIB.items[k]?.uuid))); renderSide(); } },
+    '-',
+    { label: 'Move to Trash', title: 'These cuts go to the library’s Trash; their parts are left out of the cut until they come back', disabled: !n,
+      do: () => libTrash({ cuts: cuts.map(c => c.uuid) }, `${n} cut(s)`) },
   ];
 }
 // i bottoni di quelle azioni (per i pannelli); le voci di menu sono le stesse cose
