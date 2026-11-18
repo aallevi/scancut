@@ -1546,6 +1546,7 @@ function mdToHtml(text, region, rot) {
     const tb = l.match(/^\u0000T(\d+)$/);
     if (tb) { close(); out.push(tables[+tb[1]]); continue; }
     const fig = l.match(/!\[[^\]]*\]\([^)]*\)\s*(\d+),(\d+),(\d+),(\d+)/);
+    if (fig && !(region && S.rel)) { close(); out.push('<p class="mnone">[picture]</p>'); continue; }   // senza la scansione: dove sta
     if (fig && region && S.rel) {
       close();
       const [p, r] = [fig.slice(1, 3), fig.slice(3, 5)].map(([u, v]) => unturn(u / 1000, v / 1000)), W = region[2] - region[0], H = region[3] - region[1];
@@ -1644,13 +1645,13 @@ async function readDocs(rels, embed) {
   if (x.status === 'failed' || !(x.result || []).length) return alertDialog('Read text', (x.log.find(l => l.includes('ERROR')) || 'Nothing could be read.'));
   showReader(x.result);
 }
-function showReader(docs) {
+function showReader(docs, sub) {
   const body = h('div', { class: 'reader' }, ...docs.map(d => h('div', { class: 'rdoc' },
     h('div', { class: 'rdh' }, h('b', {}, d.rel.split('/').pop()), h('span', { class: 'muted small' }, ' ' + d.rel.split('/').slice(0, -1).join(' › ')),
       h('a', { href: '#', style: { marginLeft: 'auto' }, title: 'Open it with its text (⌘-click: in a tab behind)', onclick: async e => { e.preventDefault(); if (wantsTab(e)) return newTab('scan:' + d.rel, e); $('.dlg-back')?.remove(); await openLoc('scan:' + d.rel, e); toggleTextPane(true); } }, 'Open')),
     h('div', { class: 'mtext', html: d.text ? mdToHtml(d.text, null) : '<p class="mnone">No text found.</p>' }))));
   const all = docs.map(d => `# ${d.rel.split('/').pop()}\n\n${(d.text || '').trim()}\n`).join('\n');
-  dialog('Text', `${docs.length} document${docs.length > 1 ? 's' : ''} · ${ocrName()}`, body, [
+  dialog('Text', `${docs.length} document${docs.length > 1 ? 's' : ''} · ${sub || ocrName()}`, body, [
     ['Copy all', () => { navigator.clipboard?.writeText(all); status('Text copied'); return false; }],
     ['Save .md', async () => { const r = await api.post('save_text', { rel: docs[0].rel, text: all }).catch(e => ({ error: e.message })); status(r.error || `Saved ${r.path}`); if (r.path) api.post('open', { what: 'finder', rel: r.path }); return false; }],
     ['Close', () => true, true]], { style: { width: 'min(820px, 90vw)', height: '82vh' } });
@@ -3361,10 +3362,17 @@ async function openJob(j, e) {
     if (rels.length === 1) { await openLoc('scan:' + rels[0], e); toggleTextPane(true); return; }
     if (rels.length) {
       const docs = await Promise.all(rels.map(async rel => {
+        // un taglio: i testi della sua parte; una scansione: quelli delle sue parti e aree, e quello della pagina intera
         const t = await api.get('library/texts_for', { rel }).catch(() => []);
-        return { rel, text: (t || []).map(x => x.plain).filter(Boolean).join('\n\n') };
+        let parts = [];
+        if (!/^cut\//.test(rel)) {
+          const st = await api.get('state', { rel }).catch(() => null);
+          parts = (st?.sheets || []).flatMap(sh => [sh.ocr, ...(sh.areas || []).map(a => a.text)]).concat((st?.loose || []).map(a => a.text));
+        }
+        const text = [...parts, ...(t || []).map(x => x.plain)].filter(Boolean).join('\n\n');
+        return { rel, text: text || (j.result || []).find(d => d.rel === rel)?.text || '' };
       }));
-      return showReader(docs);
+      return showReader(docs, 'the text in the library now, corrections included');
     }
   }
   if (j.kind === 'multipage') return openLoc('view:library', e);
