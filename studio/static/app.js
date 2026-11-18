@@ -1647,7 +1647,7 @@ async function readDocs(rels, embed) {
 function showReader(docs) {
   const body = h('div', { class: 'reader' }, ...docs.map(d => h('div', { class: 'rdoc' },
     h('div', { class: 'rdh' }, h('b', {}, d.rel.split('/').pop()), h('span', { class: 'muted small' }, ' ' + d.rel.split('/').slice(0, -1).join(' › ')),
-      h('a', { href: '#', style: { marginLeft: 'auto' }, onclick: e => { e.preventDefault(); $('.dlg-back')?.remove(); openLoc('scan:' + d.rel, e); } }, 'Open')),
+      h('a', { href: '#', style: { marginLeft: 'auto' }, title: 'Open it with its text (⌘-click: in a tab behind)', onclick: async e => { e.preventDefault(); if (wantsTab(e)) return newTab('scan:' + d.rel, e); $('.dlg-back')?.remove(); await openLoc('scan:' + d.rel, e); toggleTextPane(true); } }, 'Open')),
     h('div', { class: 'mtext', html: d.text ? mdToHtml(d.text, null) : '<p class="mnone">No text found.</p>' }))));
   const all = docs.map(d => `# ${d.rel.split('/').pop()}\n\n${(d.text || '').trim()}\n`).join('\n');
   dialog('Text', `${docs.length} document${docs.length > 1 ? 's' : ''} · ${ocrName()}`, body, [
@@ -3353,6 +3353,19 @@ async function openJob(j, e) {
     if (['ocr_sheets', 'ocr_box'].includes(j.kind)) toggleTextPane(true);
     if (j.kind === 'ocr_sheets' && a.ids) { selectIds(a.ids.filter(id => S.st?.sheets.some(x => x.id === id))); renderSide(); renderTextPane(); draw(); }
     return;
+  }
+  if (['read', 'readcuts'].includes(j.kind)) {
+    // un lavoro di lettura: quel che ha letto, col suo testo; uno solo nell'editor con il pannello del testo,
+    // piu' d'uno nel lettore dei testi (il testo di adesso, dalla libreria: anche le correzioni fatte dopo)
+    const rels = [...new Set([...(j.result || []).map(d => d.rel), ...(a.rels || [])].filter(r => typeof r === 'string'))];
+    if (rels.length === 1) { await openLoc('scan:' + rels[0], e); toggleTextPane(true); return; }
+    if (rels.length) {
+      const docs = await Promise.all(rels.map(async rel => {
+        const t = await api.get('library/texts_for', { rel }).catch(() => []);
+        return { rel, text: (t || []).map(x => x.plain).filter(Boolean).join('\n\n') };
+      }));
+      return showReader(docs);
+    }
   }
   if (j.kind === 'multipage') return openLoc('view:library', e);
   if (a.rels?.length && typeof a.rels[0] === 'string') {

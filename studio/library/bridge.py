@@ -1823,7 +1823,7 @@ def read_cutouts(lib, uuids, progress=None, log=print, mode='reader'):
         text = core.read_doc(rel, (lambda i, n, k=k: progress(k + i / n, len(uuids), a['original_name'])) if progress else None, redo=mode == 'redo')
         attach_doc_text(lib, a, text)
         log(f'{a["original_name"]}: ' + (f'{len(text.splitlines())} line(s)' if text else 'no text'))
-        done.append({'uuid': u, 'text': text})
+        done.append({'uuid': u, 'rel': rel, 'text': text})
     if skipped:
         log(f'{skipped} cut(s) already had text: left as they are')
     schedule_journal()
