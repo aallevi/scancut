@@ -3,7 +3,8 @@
 ## Tabs
 
 Tabs sit in the title bar, one source per tab. A click opens in this tab; ⌘-click, middle-click or
-right-click › Open in new tab opens a new one. ⌘T new tab, ⌘W close, ⌃Tab next. Each tab keeps its
+right-click (⌃-click) › Open in new tab opens a new one behind, as in a browser: you stay where you are and
+the new tab lights up for a moment (with ⇧ you go there at once). ⌘T and + open an empty tab in front. ⌘T new tab, ⌘W close, ⌃Tab next. Each tab keeps its
 place, zoom, selection and undo; work keeps running when you switch. Back in a tab opened from
 another goes back to it and closes the tab.
 

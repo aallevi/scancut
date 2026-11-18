@@ -966,7 +966,7 @@ function searchBox() {
     items = [];
     const sect = (title, list) => { if (list.length) { pop.append(h('div', { class: 'sh' }, title)); list.forEach(x => { items.push(x); pop.append(h('div', { class: 'si', onmousedown: e => { e.preventDefault(); pop.classList.remove('on'); x.do(e); } }, x.label, x.sub ? h('small', {}, x.sub) : null)); }); } };
     pop.innerHTML = '';
-    sect('Scans and cuts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel) : openScan(f.rel)) })));
+    sect('Scans and cuts', r.files.map(f => ({ label: f.name, sub: f.rel.split('/').slice(0, -1).join(' › '), do: e => (e?.metaKey ? newTab('scan:' + f.rel, e) : openScan(f.rel)) })));
     // un testo trovato apre il taglio che lo mostra (⌘: in una scheda nuova); ⌥-clic, o senza taglio, la fonte
     // con la parte scelta. Le aree di testo dentro una parte (strisce lette con "Read a box") contano come la parte
     sect('Labels and text', r.text.map(t => ({
@@ -974,8 +974,8 @@ function searchBox() {
       sub: '…' + t.snippet + '…' + (t.cut ? '' : ' · not cut yet: opens the source'),
       do: async e => {
         const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-        if (t.cut && !e?.altKey) { if (e?.metaKey) return newTab('scan:' + t.cut); await openScan(t.cut); return findInText(words); }
-        if (e?.metaKey) return newTab('scan:' + t.rel);
+        if (t.cut && !e?.altKey) { if (e?.metaKey) return newTab('scan:' + t.cut, e); await openScan(t.cut); return findInText(words); }
+        if (e?.metaKey) return newTab('scan:' + t.rel, e);
         await openScan(t.rel); if (t.sheet) { selectIds([t.sheet]); renderSide(); draw(); }
         findInText(words);
       } })));
@@ -997,8 +997,8 @@ function renderNavTree() {
   const node = (label, icon, key, { count, kids, onclick, sel } = {}) => {
     const wrap = h('div', { class: S.open.has(key) ? 'open' : '' });
     const loc = key.startsWith('v:') ? 'view:' + key.slice(2) : /^(series|place):/.test(key) ? key : 'dir:' + key;
-    const row = h('div', { class: 'node' + (sel ? ' sel' : ''), 'data-key': key, onclick: e => (wantsTab(e) && key !== 'v:settings' ? newTab(loc) : onclick?.(e)), ondblclick: () => kids && toggle(),
-      onauxclick: e => { if (e.button === 1 && key !== 'v:settings') { e.preventDefault(); newTab(loc); } },
+    const row = h('div', { class: 'node' + (sel ? ' sel' : ''), 'data-key': key, onclick: e => (wantsTab(e) && key !== 'v:settings' ? newTab(loc, e) : onclick?.(e)), ondblclick: () => kids && toggle(),
+      onauxclick: e => { if (e.button === 1 && key !== 'v:settings') { e.preventDefault(); newTab(loc, e); } },
       oncontextmenu: key === 'v:settings' ? null : e => { e.preventDefault(); tabMenu(row, loc, onclick); } },
       h('span', { class: 'tw', onclick: e => { e.stopPropagation(); toggle(); } }, kids?.length ? (S.open.has(key) ? '◢' : '▷') : ''),
       svg(icon), h('span', {}, label), count != null ? h('span', { class: 'count', id: key === 'v:jobs' ? 'jobcount' : null }, count) : null);
@@ -1142,20 +1142,38 @@ async function switchTab(i) {
   tabsSave(); renderTabs();
   await goLoc(t.loc);
 }
-async function newTab(loc) {
-  if (S.view === 'editor') await flushSave();
-  snapTab();
+// una cosa aperta in una scheda nuova (⌃-clic › Open in new tab, ⌘-clic, rotellina) va dietro, come in un browser:
+// si resta dove si e'. ⇧ ci porta subito; una scheda vuota (⌘T, +) e' sempre davanti
+async function newTab(loc, e) {
+  const front = !loc || !!e?.shiftKey;
+  const cur = TABS.list[TABS.i] || null;
   loc = loc || (S.dir ? 'dir:' + S.dir : 'dir:originals');
+  const name = tabLabel(loc);
   const have = loc.startsWith('scan:') ? TABS.list.findIndex(t => t.loc === loc) : -1;
   if (have >= 0) {
-    // gia' aperta: ci si va, e "indietro" riporta qui
-    if (have !== TABS.i) TABS.list[have].opener = TABS.list[TABS.i];
+    // gia' aperta: ci si va solo con ⇧ (e "indietro" riporta qui)
+    if (!front) { tabFlash(have); return status(`${name} is already open in a tab`); }
+    if (have !== TABS.i) TABS.list[have].opener = cur;
     return switchTab(have);
   }
-  TABS.list.splice(TABS.i + 1, 0, { loc, back: [], fwd: [], opener: TABS.list[TABS.i] || null });
+  if (!front) {
+    // dietro la scheda di adesso, dopo quelle aperte da lei prima (in ordine, come un browser)
+    let j = TABS.i + 1;
+    while (TABS.list[j] && TABS.list[j].opener === cur) j++;
+    TABS.list.splice(j, 0, { loc, back: [], fwd: [], opener: cur });
+    tabsSave(); renderTabs(); tabFlash(j);
+    return status(`Opened in a new tab: ${name} (⇧ to go there at once)`);
+  }
+  if (S.view === 'editor') await flushSave();
+  snapTab();
+  TABS.list.splice(TABS.i + 1, 0, { loc, back: [], fwd: [], opener: cur });
   TABS.i += 1; S.navBack = []; S.navFwd = []; S._here = null;
   tabsSave(); renderTabs();
   await goLoc(loc);
+}
+// la scheda appena aperta dietro (o gia' aperta) si accende un attimo, per vedere dov'e'
+function tabFlash(i) {
+  requestAnimationFrame(() => { const el = $$('#tabs .tab:not(.add)')[i]; if (!el) return; el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); });
 }
 async function closeTab(i) {
   if (TABS.list.length < 2) return;
@@ -1172,7 +1190,7 @@ async function closeTab(i) {
 const wantsTab = e => e && (e.button === 1 || e.metaKey);
 // aprire qualcosa: clic = nella scheda di adesso (con indietro/avanti), ⌘-clic = in una scheda nuova
 async function openLoc(loc, e) {
-  if (wantsTab(e)) return newTab(loc);
+  if (wantsTab(e)) return newTab(loc, e);
   const [kind, ...rest] = loc.split(':'), arg = rest.join(':');
   if (kind === 'scan') return openScan(arg);
   if (kind === 'dir') return openDir(arg);
@@ -1262,7 +1280,7 @@ function renderGallery() {
   const sub = S.items.filter(i => i.dir && (!S.filter || i.name.toLowerCase().includes(S.filter.toLowerCase())));
   // le cartelle come i file: un clic seleziona, doppio clic (o Invio) apre
   sub.forEach(c => grid.append(h('div', { class: 'thumb' + (S.selDir === c.rel ? ' sel' : ''), 'data-folder': c.rel, title: c.name, ondblclick: e => { S.selDir = null; e.metaKey ? newTab('dir:' + c.rel) : openDir(c.rel); },
-    onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('dir:' + c.rel); } },
+    onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('dir:' + c.rel, e); } },
     oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'dir:' + c.rel, () => openDir(c.rel)); },
     onclick: () => { S.selDir = c.rel; S.sel.clear(); gallerySel(); renderSide(); renderCmdbar(); } },
     h('div', { class: 'pic', html: folderTile(c.peek) }), h('div', { class: 'cap' }, `${c.name} (${c.count})`))));
@@ -1274,8 +1292,8 @@ function renderGallery() {
     if (it.done === 'failed' || S.dir.startsWith('failed')) badges.push(h('span', { class: 'badge fail' }, 'check'));
     if (it.sheets != null && !it.exported) badges.push(h('span', { class: 'badge edit', title: 'Edited, not cut yet' }, `${it.sheets} ✎`));
     const el = h('div', { class: 'thumb' + (S.sel.has(it.rel) ? ' sel' : '') + (busy.has(it.rel) ? ' working' : ''), 'data-rel': it.rel, title: it.name,
-      onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel) : openScan(it.rel)),
-      onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel); } },
+      onclick: e => clickItem(e, it, idx, items), ondblclick: e => (e.metaKey ? newTab('scan:' + it.rel, e) : openScan(it.rel)),
+      onauxclick: e => { if (e.button === 1) { e.preventDefault(); newTab('scan:' + it.rel, e); } },
       oncontextmenu: e => { e.preventDefault(); tabMenu(e.currentTarget, 'scan:' + it.rel, () => openScan(it.rel), [refreshItem(e.currentTarget)]); } },
       h('div', { class: 'badges' }, badges),
       h('div', { class: 'pic' }, h('img', { src: `/api/thumb?${qs({ rel: it.rel, size: thumbPx() })}&m=${it.mtime}&v=${PREV_V}`, loading: 'lazy', draggable: 'false', style: /\.png$/i.test(it.name) ? { background: bgCss() } : null })),
@@ -2761,7 +2779,7 @@ function cutRelOf(sh) {
 function openCutOf(sh, e) {
   if (e?.altKey) return cutoutDialog(sh);
   const rel = cutRelOf(sh);
-  if (rel) return newTab('scan:' + rel);
+  if (rel) return newTab('scan:' + rel, { shiftKey: true });
   status(sh.on === false ? 'This part is not in the cut.' : 'Not cut yet: press Cut (⌘S). Showing the preview.');
   cutoutDialog(sh);
 }
@@ -3820,7 +3838,7 @@ async function openHelp(q) {
   HELP.q = q || ''; HELP.hits = null;
   const t = TABS.list.findIndex(x => x.loc === 'view:help');
   if (t >= 0 && t !== TABS.i) await switchTab(t);
-  else if (S.view !== 'help') await newTab('view:help');
+  else if (S.view !== 'help') await newTab('view:help', { shiftKey: true });
   renderHelp();
 }
 // un argomento: id di sezione ("text/where-it-is-stored"), di capitolo, o un titolo; altrimenti si cerca
