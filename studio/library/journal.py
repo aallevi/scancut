@@ -191,6 +191,24 @@ def _pandoc(text, src, dst, *extra):
         return None
 
 
+def _fit_columns(t):
+    # una tabella larga (righe lunghe) prende larghezze di colonna in proporzione al testo piu' lungo di ognuna:
+    # pandoc fa allora colonne che vanno a capo dentro la pagina (senza, il testo usciva dal margine)
+    if re.search(r'<colgroup|<col\b', t, re.I):
+        return t
+    rows = [[len(re.sub(r'<[^>]+>', '', c).strip()) for c in re.findall(r'<t[dh]\b[^>]*>(.*?)</t[dh]>', tr, re.I | re.S)]
+            for tr in re.findall(r'<tr\b[^>]*>(.*?)(?:</tr>|(?=<tr\b)|$)', t, re.I | re.S)]
+    rows = [r for r in rows if r]
+    if not rows or max(sum(r) + 3 * len(r) for r in rows) <= 70:
+        return t
+    n = max(len(r) for r in rows)
+    longest = [max([r[k] for r in rows if k < len(r)] + [1]) for k in range(n)]
+    w = [max(5.0, 100.0 * x / sum(longest)) for x in longest]
+    w = [round(100.0 * x / sum(w), 2) for x in w]
+    cols = '<colgroup>' + ''.join(f'<col style="width: {x}%">' for x in w) + '</colgroup>'
+    return re.sub(r'(<table\b[^>]*>)', lambda m: m.group(1) + cols, t, count=1, flags=re.I)
+
+
 def _html_tables(text, dst):
     # le tabelle HTML dei lettori (celle unite, a capo, apici) lette da pandoc come HTML: tutto quel che dicono
     # arriva nel diario (LaTeX con multirow, Markdown a griglia). Segnaposto, poi al loro posto
@@ -198,7 +216,7 @@ def _html_tables(text, dst):
     found = {}
 
     def sub(m):
-        out = _pandoc(close_table(m.group(0)), 'html', dst)
+        out = _pandoc(_fit_columns(close_table(m.group(0))), 'html', dst)
         if out is None:
             return m.group(0)
         k = f'SCANSTUDIOTABLE{hashlib.md5(m.group(0).encode()).hexdigest()}'

@@ -504,6 +504,8 @@ class BridgeTest(unittest.TestCase):
         self.assertIn('longtable', tex)
         self.assertRegex(tex, r'c & d')
         self.assertNotIn('textless', tex)
+        wide = journal.pandoc_tex('<table><tr><td>' + 'on ma mama on ma mama</td><td>' * 4 + 'x</td></tr></table>')
+        self.assertIn(r'\raggedright\arraybackslash}p{', wide)                     # colonne che vanno a capo nella pagina
 
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti

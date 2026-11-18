@@ -2403,7 +2403,9 @@ def check(lib, deep=False):
             # le parole della prima riga, in fila: pandoc cambia la forma (titoli, trattini, virgolette), non le parole
             words = lambda x: ' ' + ' '.join(re.findall(r'[^\W_]+', x)) + ' '
             first = words(line).strip()
-            if not body or (first and words(first) not in words(body)):
+            # i comandi di LaTeX (\ldots, \textquotesingle...) non sono parole del testo
+            plain = re.sub(r'\\[a-zA-Z]+\*?(\{\})?', ' ', body) if tex else body
+            if not body or (first and words(first) not in words(plain)):
                 add('journal out of date', e['name'], f)
     return problems
 
