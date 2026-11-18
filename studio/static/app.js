@@ -1557,7 +1557,7 @@ function fitText(body, fs, min) {
   const over = () => body.scrollHeight > body.clientHeight + 1 || body.scrollWidth > body.clientWidth + 1;
   if (!body.clientHeight || !over()) return;
   let lo = min, hi = fs;
-  for (let k = 0; k < 12 && hi - lo > 0.25; k++) {
+  for (let k = 0; k < 20 && hi - lo > 0.05; k++) {
     const mid = (lo + hi) / 2; body.style.fontSize = mid + 'px';
     if (over()) hi = mid; else lo = mid;
   }
@@ -1578,7 +1578,8 @@ function renderMirror() {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
-    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? (secondary ? 'no text found in this area' : 'read whole: no text found') : 'not read yet'}</p>` });
+    const pad = Math.min(1.5 * ppm, 0.06 * Math.min(w, hh));             // un rettangolo piccolo non si mangia il testo
+    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: pad + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? (secondary ? 'no text found in this area' : 'read whole: no text found') : 'not read yet'}</p>` });
     const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
       style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
       h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title,
@@ -1593,7 +1594,11 @@ function renderMirror() {
       ta.addEventListener('keydown', ev => { if (ev.key === 'Escape') { ta.value = text || ''; ta.blur(); } ev.stopPropagation(); });
     });
     pg.append(el);
-    fitText(body, fs, 0.5 * ppm);
+    // il testo sta sempre nel suo rettangolo: rimpicciolisce quanto serve (si legge zoomando); di nuovo quando
+    // arrivano le figure, che lo allungano
+    const fit = () => { body.style.fontSize = fs + 'px'; fitText(body, fs, 0.02 * ppm); };
+    fit();
+    body.querySelectorAll('img').forEach(im => im.addEventListener('load', fit, { once: true }));
   };
   const on_ = sheets.filter(x => x.on !== false);
   sheets.forEach((sh, i) => {

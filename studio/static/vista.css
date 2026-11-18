@@ -518,7 +518,7 @@ html.native .window { overflow: hidden; }
 .mtext table { border-collapse: collapse; margin: .2em 0 .4em; }
 .mtext td, .mtext th { border: 1px solid #b8c4d0; padding: .1em .35em; text-align: left; }
 .mtext th { font-weight: 600; background: #0000000a; }
-.mtext .mfig { max-width: 100%; display: block; margin: .3em 0; }
+.mtext .mfig { max-width: 100%; max-height: 100%; object-fit: contain; display: block; margin: .3em 0; }
 .mtext .mnone { color: #8695a6; font-style: italic; }
 .mempty { color: #8695a6; }
 .jobrow { cursor: pointer; } .jobrow:hover td { background: var(--hot-bg); }
