@@ -16,12 +16,17 @@ Text in several languages is kept as written, never translated.
 
 ## Reading
 
-- **Read selected / Read all**: each part's text in its own block, editable; ↻ reads one again.
-- **Read a box** (T): drag over any writing. Inside a part it becomes a **secondary area** of that part
-  (text with its own place); outside every part a **loose area**.
-- **Add to the part's text**: when reading the whole part fails, read boxes and add each one to the
+- **Read selected parts / Read every part**: each part read whole. That is the part's own text, its
+  **whole part** block (for example "a · whole part"), editable; ↻ reads it again. "Read whole: no text
+  found" means the whole part was read and nothing came out.
+- **Read an area** (T): drag over any writing. Inside a part (or on a cut, which is its part) it becomes
+  a **secondary area** of that part, with its own text and place ("a·1"); outside every part a **loose
+  area**.
+- **Add to the part's text**: when reading the whole part fails, read areas and add each one to the
   part's own text (a button on every area). The area goes; ⌘Z brings it back.
-- **Read whole scan**: every word on the page, in a reader.
+- **Read the whole page** (on a scan): every word on the page as one text, the text of the whole
+  source, not of a part. On a cut the button is **Read the whole cut**: the cut is its part, so that is
+  the part's own text.
 - In a gallery: select files and use Text › Read the whole document, or read into the cut files.
 
 ## Reading many at once

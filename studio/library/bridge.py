@@ -1573,6 +1573,7 @@ def _refresh_cutout_text(lib, region_id):
         if cur.get('Identifier') == ref and str(cur.get('Description', '')).replace('\r\n', '\n').strip() == plain.strip():
             continue
         before = sha256(p)
+        key0 = core.file_key(core.relpath(p))
         os.makedirs(os.path.join(lib.path, 'cache'), exist_ok=True)
         txt = os.path.join(lib.path, 'cache', f'.text-{region_id}-{os.getpid()}-{threading.get_ident()}.txt')   # un nome per chi scrive
         with open(txt, 'w', encoding='utf-8') as f:
@@ -1584,6 +1585,7 @@ def _refresh_cutout_text(lib, region_id):
                            + [f'-XMP-dc:Relation+={x}' for x in refs] + [p],
                            capture_output=True, text=True, timeout=120)
         os.remove(txt)
+        core.keep_previews(core.relpath(p), key0)          # solo i metadati: le anteprime restano quelle
         if r.returncode != 0:
             lib.log('metadata', 'region', reg['uuid'], 'fail', path=p, error=r.stderr[-200:])
             continue
@@ -1921,7 +1923,7 @@ def texts_for_rel(lib, rel):
             name = _area_name(lib, t['region_id'])
         out.append({'box': box, 'reading': t['reading_id'], 'uuid': t['uuid'], 'plain': t['plain'], 'model': t['model'] or t['engine'],
                     'version': t['corrected_version'] or 0, 'title': reg['title'] if reg else '', 'item': reg['item'] if reg else None,
-                    'region': name or ((reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole file'), 'color': reg['color'] if reg else '#8a96a6',
+                    'region': name or (('whole part' if reg['kind'] == 'sheet' else reg['label'] or f'{reg["kind"]} {reg["position"] + 1}') if reg else 'whole page'), 'color': reg['color'] if reg else '#8a96a6',
                     'rel': reg['srel'] if reg else None, 'sid': key or None})
     return out
 

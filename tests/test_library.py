@@ -465,6 +465,31 @@ class BridgeTest(unittest.TestCase):
         self.assertFalse(core.load_state(cut).get('loose'))
         self.assertEqual(bridge.areas_on_cuts_to_parts(lib), 0)
 
+    def test_text_in_a_cut_keeps_its_previews(self):
+        # il testo scritto nei metadati di un taglio non cambia i pixel: anteprime e misure restano, non si rifanno
+        from studio.library import bridge
+        from studio import core
+        lib = bridge.library()
+        bridge.import_root(lib)
+        bridge.on_export(self.rel, core.export(self.rel, log=lambda m: None))
+        sid = core.load_state(self.rel)['sheets'][0]['id']
+        rid = lib.db.execute("SELECT id FROM region WHERE json_extract(source, '$.studio_id') = ?", (sid,)).fetchone()[0]
+        cut = core.relpath(lib.db.execute('SELECT path FROM cut WHERE region_id = ? ORDER BY id DESC LIMIT 1', (rid,)).fetchone()[0])
+        k0 = core.file_key(cut)
+        thumb = core.preview_path(cut, 256)
+        core.info(cut)
+        st = core.load_state(self.rel)
+        st['sheets'][0]['ocr'] = 'a new text for the cut'
+        core.save_state(st)
+        bridge.refresh_cutout_text(lib, rid)
+        if not core.tool('exiftool'):
+            self.skipTest('exiftool not installed')
+        k1 = core.file_key(cut)
+        self.assertNotEqual(k0, k1)                                                  # il file e' cambiato (metadati)
+        self.assertTrue(os.path.exists(thumb.replace(k0, k1)))                       # la miniatura c'e' gia'
+        self.assertTrue(os.path.exists(core._info_path(k1)))
+        self.assertEqual(core.preview_path(cut, 256), thumb.replace(k0, k1))
+
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
         from studio import core

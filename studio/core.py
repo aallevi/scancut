@@ -261,9 +261,15 @@ def has_alpha(rel):
 
 
 def preview_path(rel, size):
-    # anteprime: JPEG per le scansioni, PNG con la trasparenza per i ritagli
+    # anteprime: JPEG per le scansioni, PNG con la trasparenza per i ritagli. Quella gia' fatta si da' subito:
+    # sapere se il file ha trasparenza vuol dire aprirlo (un JPEG XL si decodifica tutto, un secondo o piu'),
+    # e ogni miniatura di una galleria lo faceva a ogni richiesta, in fila (la libreria restava bianca)
+    base = os.path.join(DATA, 'previews', f'{file_key(rel)}-{size}.')
+    for ext in ('png', 'jpg'):
+        if os.path.exists(base + ext):
+            return base + ext
     alpha_ = has_alpha(rel)
-    p = os.path.join(DATA, 'previews', f'{file_key(rel)}-{size}.' + ('png' if alpha_ else 'jpg'))
+    p = base + ('png' if alpha_ else 'jpg')
     if not os.path.exists(p):
         im = Image.open(abspath(rel))
         if alpha_:
@@ -278,6 +284,34 @@ def preview_path(rel, size):
         im.save(tmp, 'PNG' if alpha_ else 'JPEG', **({'compress_level': 3} if alpha_ else {'quality': 88}))
         os.replace(tmp, p)
     return p
+
+
+def keep_previews(rel, before):
+    # i metadati di un file cambiati (il testo nella descrizione, con exiftool): i pixel sono gli stessi, quindi
+    # anteprime, miniature e misure valgono anche per il file nuovo. Prima si rifacevano da capo (un JPEG XL si
+    # decodifica tutto): la miniatura di un taglio appena letto o corretto ci metteva secondi a tornare
+    try:
+        after = file_key(rel)
+    except OSError:
+        return
+    if after == before:
+        return
+    import glob
+    for f in glob.glob(os.path.join(DATA, 'previews', before + '-*')):
+        g = os.path.join(DATA, 'previews', after + os.path.basename(f)[len(before):])
+        if not os.path.exists(g):
+            try:
+                os.link(f, g)
+            except OSError:
+                shutil.copy2(f, g)
+    try:
+        with open(_info_path(before)) as fh:
+            d = json.load(fh)
+        d['key'] = after
+        with open(_info_path(after), 'w') as fh:
+            json.dump(d, fh)
+    except (OSError, ValueError):
+        pass
 
 
 def _info_path(k):
@@ -1836,9 +1870,15 @@ def embed_text(path, text):
     p = os.path.realpath(path)
     if any(p.startswith(os.path.realpath(abspath(d)) + os.sep) for d in ('originals', 'inbox', 'failed')):
         raise ValueError(f'not writing text into a scan: {relpath(p)}')
+    try:
+        before = file_key(relpath(p))
+    except OSError:
+        before = None
     r = subprocess.run(['exiftool', '-q', '-q', '-m', '-overwrite_original', f'-XMP-dc:Description={text}',
                         f'-IPTC:Caption-Abstract={text[:2000]}', f'-IFD0:ImageDescription={text}', path],
                        capture_output=True, text=True, timeout=120)
+    if before:
+        keep_previews(relpath(p), before)
     return r.returncode == 0
 
 

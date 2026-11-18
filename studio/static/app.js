@@ -307,11 +307,13 @@ const LIB_MODE_NAMES = { objects: 'Sources', cutouts: 'Cuts', texts: 'Texts', tr
 function libMode(m) { LIB.mode = m; store('libmode', m); LIB.cut = null; LIB.picks = new Set(); LIB.anchor = null; LIB.series = null; LIB.place = null; if (S.view === 'library') renderLibrary(); else go('library'); renderNav(); }
 async function renderLibrary() {
   const main = $('#main'); main.innerHTML = '';
+  main.append(h('div', { class: 'muted', style: { padding: '24px' } }, 'Loading the library…'));   // mai una pagina vuota
   const seq = LIB.renderSeq = (LIB.renderSeq || 0) + 1;      // due chiamate vicine: solo l'ultima disegna
   LIB.info = await api.get('library').catch(() => null);
   LIB.seriesList = await api.get('library/series').catch(() => []);
   await libPlaces(); renderNav(); renderTabs();
   if (S.view !== 'library' || seq !== LIB.renderSeq) return;
+  main.innerHTML = '';
   const head = h('div', { class: 'libhead' });
   const where = LIB.place ? (LIB.places || []).find(p => p.uuid === LIB.place)?.name : LIB.series ? (LIB.seriesList || []).find(x => (x.uuid || 'none') === LIB.series)?.name || 'No series' : null;
   main.append(addressBar(null, null, 'Library · ' + (where ? where + ' · ' : '') + (LIB_MODE_NAMES[LIB.mode] || LIB.mode)), head);
@@ -1364,7 +1366,7 @@ function renderTextPane() {
       t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '6px' }, title: 'Read this text again on its scan, the same pixels (the reading you have now is kept: Versions)', onclick: e => { e.stopPropagation(); rereadLibText(t); } }, '↻') : null,
       t.sid && t.rel ? h('span', { class: 'rr', style: { marginLeft: '2px' }, title: 'Every reading of this text, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions({ id: t.sid }, e.currentTarget, t.rel); } }, 'Versions ▾') : null,
       isLibArea(t) ? h('span', { class: 'x', title: 'Remove this area (kept in the history)', onclick: () => removeLibArea(t) }, '✕') : null),
-    h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
+    h('textarea', { rows: Math.min(14, Math.max(3, (t.plain || '').split('\n').length + 1)), spellcheck: false, placeholder: isLibArea(t) ? '(no text found in this area)' : '(read whole: no text found)',
       onchange: async e => { await api.post('library/correct', { reading: t.reading, text: e.target.value }); t.plain = e.target.value; t.version++; status('Text corrected: saved in the library, on its scan and in its cuts'); renderTextPane(); renderMirror(); } }, t.plain || ''),
     t.item ? h('div', { class: 'small' }, h('a', { href: '#', onclick: e => { e.preventDefault(); LIB.mode = 'objects'; go('library').then(() => libSelect(t.item)); } }, 'Show in the library')) : null));
   pane.append(
@@ -1373,10 +1375,12 @@ function renderTextPane() {
       h('span', { class: 'x', title: 'Close (Text › Show text pane)', onclick: () => { toggleTextPane(false); if (S.textView) toggleTextView(false); } }, '✕')),
     h('div', { class: 'row' }, h('label', {}, 'Reader'), reader, info('Apple Vision is built in and instant. GLM-OCR and Qwen3-VL (Add-ons) also read handwriting and keep the layout as Markdown. Text in several languages is kept as written, never translated. Only reading: pixels never change.')),
     h('div', { class: 'btns' },
-      h('button', { class: 'btn small default', disabled: !sel.length, onclick: () => ocrSheets(sel) }, `Read selected (${sel.length})`),
-      h('button', { class: 'btn small', disabled: !sheets.length, onclick: () => ocrSheets(sheets) }, `Read all (${sheets.length})`),
-      h('button', { class: 'btn small' + (S.tool === 'text' ? ' on' : ''), title: 'Drag a box over any writing (T)', onclick: () => setTool('text') }, '▭ Read a box'),
-      h('button', { class: 'btn small', title: 'Every word on the whole scan, as one page', onclick: readWholeScan }, 'Read whole scan')),
+      h('button', { class: 'btn small default', disabled: !sel.length, title: 'Each selected part read whole: its own text (whole part)', onclick: () => ocrSheets(sel) }, `Read selected parts (${sel.length})`),
+      h('button', { class: 'btn small', disabled: !sheets.length, title: 'Every part read whole: each its own text (whole part)', onclick: () => ocrSheets(sheets) }, `Read every part (${sheets.length})`),
+      h('button', { class: 'btn small' + (S.tool === 'text' ? ' on' : ''), title: 'Drag a box over any writing (T): an area of the part it is on, with its own text', onclick: () => setTool('text') }, '▭ Read an area'),
+      S.where?.role === 'cutout'
+        ? h('button', { class: 'btn small', title: 'The whole cut: it is its part, so this is the part’s own text (whole part)', onclick: readWholeScan }, 'Read the whole cut')
+        : h('button', { class: 'btn small', title: 'Every word on the scan as one text: the text of the whole page, not of a part', onclick: readWholeScan }, 'Read the whole page')),
     ...(lib.length ? [h('div', { class: 'small muted', style: { margin: '6px 0 2px' } }, S.where?.role === 'cutout' ? 'The text of this cut’s part (from the library; corrections go everywhere it appears):' : 'Text of the whole source (from the library):')] : []),
     ...lib,
     ...boxes.map((b, i) => h('div', { class: 'tblock box' },
@@ -1389,11 +1393,11 @@ function renderTextPane() {
           menu(e.currentTarget, sheets.map(sh => ({ label: `Add to ${letter(sh) || sh.label || 'sheet'}’s text`, do: () => mergeAreaText(sh, b, () => S.st.loose.splice(S.st.loose.indexOf(b), 1), letter(sh)) }))) }, 'Add to a part ▾') : null))),
     ...sheets.map((sh, i) => h('div', { class: 'tblock' + (isSel(sh.id) ? ' sel' : '') + (sh.on === false ? ' off' : '') },
       h('div', { class: 'tbh', onclick: () => { selectIds([sh.id]); renderSide(); draw(); renderTextPane(); } },
-        h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, letter(sh) || (sh.label || 'sheet')), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not cut yet'),
+        h('span', { class: 'sw', style: { background: sheetColor(S.st?.sheets?.[i], i) } }), h('b', {}, `${letter(sh) || (sh.label || 'sheet')} · whole part`), h('small', {}, (S.names[sh.id] || '').split('/').pop() || 'not cut yet'),
         h('span', { class: 'rr', title: 'Read this sheet again (the reading you have now is kept: Versions)', onclick: e => { e.stopPropagation(); ocrSheets([sh]); } }, '↻'),
         sh.ocr !== undefined ? h('span', { class: 'rr', title: 'Every reading of this part, by each reader: pick the one to use', onclick: e => { e.stopPropagation(); readingVersions(sh, e.currentTarget); } }, 'Versions ▾') : null),
-      sh.ocr === undefined ? h('div', { class: 'small muted' }, (sh.areas || []).length ? 'Whole sheet not read (only its areas).' : 'Not read yet.')
-        : h('textarea', { rows: Math.min(14, Math.max(2, (sh.ocr || '').split('\n').length + 1)), spellcheck: false, placeholder: '(no text found)',
+      sh.ocr === undefined ? h('div', { class: 'small muted' }, (sh.areas || []).length ? 'Whole part not read (only its areas).' : 'Whole part not read yet.')
+        : h('textarea', { rows: Math.min(14, Math.max(2, (sh.ocr || '').split('\n').length + 1)), spellcheck: false, placeholder: '(read on the whole part: no text found)',
             onchange: e => commit(() => { sh.ocr = e.target.value; }) }, sh.ocr || ''),
       ...(sh.areas || []).map((a, k) => h('div', { class: 'tarea', style: { borderLeftColor: sheetColor(S.st?.sheets?.[i], i) } },
         h('div', { class: 'tbh' }, h('b', {}, `${letter(sh) || 'sheet'}·${k + 1}`), h('small', {}, `secondary area · ${Math.round((a.box[2] - a.box[0]) / S.info.ppm)} × ${Math.round((a.box[3] - a.box[1]) / S.info.ppm)} mm · ${a.reader || ''}`),
@@ -1574,7 +1578,7 @@ function renderMirror() {
     const w = b[2] - b[0], hh = b[3] - b[1], chars = Math.max(20, (text || '').length);
     // carattere che riempie il rettangolo (in pixel della scansione), fra 1.5 e 9 mm
     const fs = Math.max(1.5 * ppm, Math.min(9 * ppm, Math.sqrt(w * hh * 0.55 / (chars * 0.8))));
-    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? 'no text found' : 'not read yet'}</p>` });
+    const body = h('div', { class: 'mtext', style: { fontSize: fs + 'px', padding: 1.5 * ppm + 'px' }, html: text ? markWords(mdToHtml(text, b, rot), S.find?.words) : `<p class="mnone">${text === '' ? (secondary ? 'no text found in this area' : 'read whole: no text found') : 'not read yet'}</p>` });
     const el = h('div', { class: 'mblock' + (secondary ? ' sec' : ''), title: onEdit ? 'Double-click to edit' : '',
       style: { left: b[0] + 'px', top: b[1] + 'px', width: w + 'px', height: hh + 'px', borderColor: col, background: col + (secondary ? '22' : '14'), borderWidth: Math.max(2, (secondary ? 0.3 : 0.4) * ppm) + 'px' } },
       h('div', { class: 'mtag', style: { background: col, fontSize: (secondary ? 2.2 : 2.6) * ppm + 'px' } }, title,
@@ -1596,7 +1600,7 @@ function renderMirror() {
     if (isInverted(sh) || (sh.ocr === undefined && !(sh.areas || []).length)) return;
     const col = sheetColor(S.st?.sheets?.[i], i), L = sheetLetter(sh);
     // l'area principale (il foglio), poi le sue aree secondarie sopra
-    block(bbox(sh.poly), col, sh.ocr, (L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet', v => commit(() => { sh.ocr = v; }), false, sh.rot);
+    block(bbox(sh.poly), col, sh.ocr, `${(L + (sh.label && L !== sh.label ? ' ' + sh.label : '')) || 'sheet'} · whole part`, v => commit(() => { sh.ocr = v; }), false, sh.rot);
     (sh.areas || []).forEach((a, k) => block(a.box, col, a.text, `${L}·${k + 1}`, v => commit(() => { a.text = v; delete a.reread; }), true, 0,
       () => commit(() => { sh.areas.splice(sh.areas.indexOf(a), 1); })));
   });
@@ -1632,10 +1636,11 @@ function showReader(docs) {
 async function readWholeScan() {
   if (!S.info) return;
   const rel = S.rel;
-  busy(true, `Reading the whole scan (${ocrName()})…`);
+  const what = S.where?.role === 'cutout' ? 'the whole cut' : 'the whole page';
+  busy(true, `Reading ${what} (${ocrName()})…`);
   try {
     const j = await api.post('jobs', { kind: 'read', rels: [rel] }); let x = j;
-    while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 700)); x = await api.get('job', { id: j.id }); busy(true, `Reading the whole scan: ${Math.round(x.pct || 0)}%${x.current ? ' · ' + x.current : ''}`, rel, (x.pct || 0) / 100); }
+    while (['queued', 'running'].includes(x.status)) { await new Promise(r => setTimeout(r, 700)); x = await api.get('job', { id: j.id }); busy(true, `Reading ${what}: ${Math.round(x.pct || 0)}%${x.current ? ' · ' + x.current : ''}`, rel, (x.pct || 0) / 100); }
     const t = x.result?.[0]?.text ?? '';
     // nella libreria: su un taglio e' il testo della sua parte, su una fonte il testo intero; si mostra quello
     const lt = await api.get('library/texts_for', { rel }).catch(() => []);
