@@ -409,6 +409,14 @@ class BridgeTest(unittest.TestCase):
         r = lib.db.execute("SELECT r.* FROM reading r JOIN current_text t ON t.reading_id = r.id WHERE t.plain = ?", (html,)).fetchone()
         self.assertEqual(r['plain'], html)                                        # niente convertito
         self.assertIn('"boxes"', r['raw'])                                        # tutta l'uscita
+        # la stessa lettura rifatta da un lettore che da' anche l'uscita intera: niente doppione, l'uscita si tiene
+        lib.db.execute('UPDATE reading SET raw = NULL WHERE id = ?', (r['id'],)); lib.db.commit()
+        textfmt.remember(html, '{"again": true}')
+        a = lib.db.execute('SELECT * FROM asset WHERE id = ?', (r['asset_id'],)).fetchone()
+        n0 = lib.db.execute('SELECT COUNT(*) FROM reading').fetchone()[0]
+        bridge.attach_doc_text(lib, a, html) if not r['region_id'] else bridge._keep_raw(lib, r['id'], html)
+        self.assertEqual(lib.db.execute('SELECT COUNT(*) FROM reading').fetchone()[0], n0)
+        self.assertIn('again', lib.db.execute('SELECT raw FROM reading WHERE id = ?', (r['id'],)).fetchone()[0])
         n = lib.db.execute('SELECT COUNT(*) FROM correction').fetchone()[0]
         core.save_state(core.load_state(self.rel) | {'sheets': st['sheets']})
         bridge.sync_rel(self.rel)

@@ -1321,9 +1321,10 @@ def on_read_sheet(rel, sid, text):
     aid, rid = _region_of(lib, rel, sid)
     if not rid:
         return                                        # parte nuova: la registra il salvataggio dello stato
-    cur = lib.db.execute('SELECT plain, engine, model FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
+    cur = lib.db.execute('SELECT reading_id, plain, engine, model FROM current_text WHERE region_id = ? ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid,)).fetchone()
     e_, m_ = reader_of()
     if cur and cur['plain'] == text and (cur['engine'], cur['model']) == (e_, m_):
+        _keep_raw(lib, cur['reading_id'], text)
         return
     lib.add_reading(aid, e_, text, region_id=rid, model=m_)
     _text_changed(lib, rid)
@@ -1719,6 +1720,15 @@ def cutout_list(lib, limit=1000, series=None, place=None):
 # Il testo si legge di solito sui ritagli gia' fatti: ogni ritaglio letto intero, il testo legato a lui
 # e alla sua zona, e scritto anche nello stato dello studio (il pannello Testo lo mostra).
 
+def _keep_raw(lib, reading_id, text):
+    # la stessa lettura rifatta: niente doppione, ma l'uscita intera del lettore si tiene se quella lettura non l'aveva
+    from .textfmt import raw_for
+    raw = raw_for(text)
+    if raw:
+        lib.db.execute('UPDATE reading SET raw = ? WHERE id = ? AND raw IS NULL', (raw, reading_id))
+        lib.db.commit()
+
+
 def attach_doc_text(lib, a, text, reader=None):
     # il testo letto su un file intero entra nella libreria:
     #  un taglio -> e' il testo della sua parte (foglio della fonte, metadati del taglio, diario)
@@ -1730,6 +1740,7 @@ def attach_doc_text(lib, a, text, reader=None):
                          ' ORDER BY created_at DESC, reading_id DESC LIMIT 1', (rid or a['id'],)).fetchone()
     if cur and cur['plain'] == text:
         r = cur['reading_id']                              # gia' cosi': niente doppioni
+        _keep_raw(lib, r, text)
     else:
         r = lib.add_reading(a['id'], e_, text, region_id=rid, model=m_, params={'read_on': 'cut' if rid else 'whole file'})
     lib.db.execute('INSERT OR IGNORE INTO text_link (reading_id, asset_id) VALUES (?, ?)', (r, a['id']))
