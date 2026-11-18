@@ -25,7 +25,30 @@ def raw_for(plain):
 
 
 # blocchi HTML che i lettori scrivono dentro il Markdown (LightOnOCR: tabelle, con celle unite e a capo)
-HTML_TABLE = re.compile(r'<table\b.*?</table>', re.I | re.S)
+# (anche una tabella che non si chiude: un lettore che si incanta finisce le parole prima di </table>)
+HTML_TABLE = re.compile(r'<table\b.*?(?:</table>|\Z)', re.I | re.S)
+_MATH = re.compile(r'(\$\$.+?\$\$|\$[^$\n]+?\$)', re.S)
+
+
+def close_table(t):
+    # una tabella interrotta (il lettore ha finito le parole): si chiude quel che e' aperto, cella, riga, tabella,
+    # perche' il lettore HTML di pandoc la legga come tabella; un tag mozzato in fondo resta fuori
+    if re.search(r'</table>\s*$', t, re.I):
+        return t
+    t = re.sub(r'<[^>]*$', '', t)
+    cell = re.search(r'<(t[dh])\b[^>]*>(?:(?!</t[dh]>).)*$', t, re.I | re.S)
+    if cell:
+        t += f'</{cell.group(1).lower()}>'
+    if len(re.findall(r'<tr\b', t, re.I)) > len(re.findall(r'</tr>', t, re.I)):
+        t += '</tr>'
+    return t + '</table>'
+
+
+def literal_marks(text):
+    # ^ ~ @ scritti dal lettore sono caratteri, non apici, pedici o citazioni di pandoc ("(^_^)" spariva):
+    # si proteggono fuori dalle formule; poi l'HTML in linea diventa le forme di pandoc
+    parts = _MATH.split(text)
+    return ''.join(p if i % 2 else re.sub(r'([\^~@])', r'\\\1', p) for i, p in enumerate(parts))
 _INLINE = [(re.compile(r'<sup>(.*?)</sup>', re.I | re.S), lambda m: '^' + m.group(1).replace(' ', '\\ ') + '^'),
            (re.compile(r'<sub>(.*?)</sub>', re.I | re.S), lambda m: '~' + m.group(1).replace(' ', '\\ ') + '~'),
            (re.compile(r'<u>(.*?)</u>', re.I | re.S), lambda m: '[' + m.group(1) + ']{.underline}'),
@@ -36,6 +59,7 @@ _INLINE = [(re.compile(r'<sup>(.*?)</sup>', re.I | re.S), lambda m: '^' + m.grou
 
 def inline_for_pandoc(text):
     # solo per rendere (mai salvato): l'HTML in linea nelle forme che il Markdown di pandoc conosce
+    text = literal_marks(text)
     for rx, fn in _INLINE:
         text = rx.sub(fn, text)
     return text

@@ -194,11 +194,11 @@ def _pandoc(text, src, dst, *extra):
 def _html_tables(text, dst):
     # le tabelle HTML dei lettori (celle unite, a capo, apici) lette da pandoc come HTML: tutto quel che dicono
     # arriva nel diario (LaTeX con multirow, Markdown a griglia). Segnaposto, poi al loro posto
-    from .textfmt import HTML_TABLE
+    from .textfmt import HTML_TABLE, close_table
     found = {}
 
     def sub(m):
-        out = _pandoc(m.group(0), 'html', dst)
+        out = _pandoc(close_table(m.group(0)), 'html', dst)
         if out is None:
             return m.group(0)
         k = f'SCANSTUDIOTABLE{hashlib.md5(m.group(0).encode()).hexdigest()}'
@@ -212,7 +212,7 @@ def pandoc_tex(text):
     # le righe restano righe
     from .textfmt import inline_for_pandoc
     t, tables = _html_tables(text, 'latex')
-    out = _pandoc(inline_for_pandoc(t), 'markdown+hard_line_breaks-raw_tex-raw_html-auto_identifiers', 'latex', '--shift-heading-level-by=1')
+    out = _pandoc(inline_for_pandoc(t), 'markdown+hard_line_breaks-raw_tex-raw_html-auto_identifiers-citations-example_lists-fancy_lists', 'latex', '--shift-heading-level-by=1')
     if out is None:
         return md_to_tex(text)                            # senza pandoc: la conversione semplice di prima
     for k, v in tables.items():

@@ -490,6 +490,21 @@ class BridgeTest(unittest.TestCase):
         self.assertTrue(os.path.exists(core._info_path(k1)))
         self.assertEqual(core.preview_path(cut, 256), thumb.replace(k0, k1))
 
+    def test_the_journal_keeps_every_character_of_a_reading(self):
+        # pandoc non mangia i caratteri del lettore: ^ ~ @ restano (fuori dalle formule), apici e formule veri si
+        # rendono, una tabella interrotta (il lettore ha finito le parole) e' ancora una tabella
+        from studio.library import journal
+        tex = journal.pandoc_tex(journal._with_figures('(^_^) @Bob ~ok~ x<sup>2</sup> \\( a^b \\)', 0, {}, False))
+        self.assertIn(r'(\^{}\_\^{})', tex)
+        self.assertIn('@Bob', tex)
+        self.assertIn(r'\textasciitilde ok', tex)
+        self.assertIn(r'x\textsuperscript{2}', tex)
+        self.assertIn('a^b', tex)                                                  # la formula resta formula
+        tex = journal.pandoc_tex('<table><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d')
+        self.assertIn('longtable', tex)
+        self.assertRegex(tex, r'c & d')
+        self.assertNotIn('textless', tex)
+
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
         from studio import core

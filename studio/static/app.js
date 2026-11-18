@@ -1520,7 +1520,7 @@ function mdToHtml(text, region, rot) {
   const unturn = (u, v) => q === 1 ? [v, 1 - u] : q === 2 ? [1 - u, 1 - v] : q === 3 ? [1 - v, u] : [u, v];
   // le tabelle HTML: un segnaposto per riga, poi la tabella com'e' (vedi safeHtml)
   const tables = [];
-  const lines = (text || '').replace(/<table\b[\s\S]*?<\/table>/gi, m => `\n\u0000T${tables.push(safeHtml(m)) - 1}\n`).split('\n'), out = [];
+  const lines = (text || '').replace(/<table\b[\s\S]*?(?:<\/table>|$(?![\s\S]))/gi, m => `\n\u0000T${tables.push(safeHtml(m)) - 1}\n`).split('\n'), out = [];
   let list = null, table = null;
   const close = () => { if (list) { out.push(`</${list}>`); list = null; } if (table) { out.push('</table>'); table = null; } };
   for (const [li0, raw] of lines.entries()) {
