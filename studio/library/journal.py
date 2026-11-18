@@ -196,8 +196,14 @@ def _fit_columns(t):
     # pandoc fa allora colonne che vanno a capo dentro la pagina (senza, il testo usciva dal margine)
     if re.search(r'<colgroup|<col\b', t, re.I):
         return t
-    rows = [[len(re.sub(r'<[^>]+>', '', c).strip()) for c in re.findall(r'<t[dh]\b[^>]*>(.*?)</t[dh]>', tr, re.I | re.S)]
-            for tr in re.findall(r'<tr\b[^>]*>(.*?)(?:</tr>|(?=<tr\b)|$)', t, re.I | re.S)]
+    def cells(tr):
+        # una cella unita su k colonne conta per un k-esimo in ognuna
+        out = []
+        for attrs, c in re.findall(r'<t[dh]\b([^>]*)>(.*?)</t[dh]>', tr, re.I | re.S):
+            k = int((re.search(r'colspan\s*=\s*["\']?(\d+)', attrs, re.I) or [0, 1])[1]) or 1
+            out += [len(re.sub(r'<[^>]+>', '', c).strip()) / k] * k
+        return out
+    rows = [cells(tr) for tr in re.findall(r'<tr\b[^>]*>(.*?)(?:</tr>|(?=<tr\b)|$)', t, re.I | re.S)]
     rows = [r for r in rows if r]
     if not rows or max(sum(r) + 3 * len(r) for r in rows) <= 70:
         return t
@@ -225,6 +231,19 @@ def _html_tables(text, dst):
     return HTML_TABLE.sub(sub, text), found
 
 
+_WIDTH = re.compile(r'p\{\(\\linewidth - (\d+)\\tabcolsep\) \* \\real\{([\d.]+)\}(?: \+ \d+\\tabcolsep)?\}')
+
+
+def _simple_widths(tex):
+    # le larghezze di colonna che pandoc scrive, (\linewidth - 8\tabcolsep) * \real{0.2}, il suo lettore LaTeX non le
+    # capisce: rilette da EasyPrint, le colonne tornavano strette e la tabella usciva dalla pagina. Scritte
+    # p{0.19\linewidth} si rileggono; un poco piu' strette per lo spazio fra le colonne, cosi' si compila anche da solo
+    def sub(m):
+        n = int(m.group(1)) // 2 + 1                      # le colonne della tabella
+        return 'p{%.4f\\linewidth}' % (float(m.group(2)) * max(0.5, 1 - 0.035 * n))
+    return _WIDTH.sub(sub, tex)
+
+
 def pandoc_tex(text):
     # il testo del lettore in LaTeX con pandoc (titoli, elenchi, tabelle anche HTML, enfasi, apici, formule);
     # le righe restano righe
@@ -235,6 +254,7 @@ def pandoc_tex(text):
         return md_to_tex(text)                            # senza pandoc: la conversione semplice di prima
     for k, v in tables.items():
         out = out.replace(k, v)
+    out = _simple_widths(out)
     # i titoli del testo stanno sotto quello del taglio, senza numeri (come lui)
     return re.sub(r'\\((?:sub)*section|paragraph)\{', r'\\\1*{', out)
 

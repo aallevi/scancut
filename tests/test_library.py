@@ -506,6 +506,11 @@ class BridgeTest(unittest.TestCase):
         self.assertNotIn('textless', tex)
         wide = journal.pandoc_tex('<table><tr><td>' + 'on ma mama on ma mama</td><td>' * 4 + 'x</td></tr></table>')
         self.assertIn(r'\raggedright\arraybackslash}p{', wide)                     # colonne che vanno a capo nella pagina
+        import subprocess                                                           # e restano tali riletto da pandoc (EasyPrint)
+        back = subprocess.run(['pandoc', '-f', 'latex', '-t', 'latex'], input='\\begin{document}' + wide + '\\end{document}',
+                              capture_output=True, text=True).stdout
+        self.assertIn(r'\real{', back)
+        self.assertNotIn('lllll', back)
 
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
