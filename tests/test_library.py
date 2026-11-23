@@ -520,6 +520,45 @@ class BridgeTest(unittest.TestCase):
         self.assertIn(r'\real{', back)
         self.assertNotIn('lllll', back)
 
+    def test_import_folders_like_eagle(self):
+        # una cartella scelta: le immagini nuove e ferme entrano fra le fonti; "move" le toglie quando sono al
+        # sicuro, "copy" le lascia e non le riprende; un doppione non entra due volte; la radice si rifiuta
+        import tempfile, shutil, time as _t
+        from studio.library import bridge, imports
+        from studio import core
+        lib = bridge.library()
+        out = tempfile.mkdtemp(prefix='scancut-import-')
+        try:
+            mv, cp = os.path.join(out, 'move'), os.path.join(out, 'copy')
+            os.makedirs(mv); os.makedirs(cp)
+            with self.assertRaises(ValueError):
+                imports.set_folders(lib, [{'path': os.path.join(self.root, 'inbox')}])
+            imports.set_folders(lib, [{'path': mv}, {'path': cp, 'mode': 'copy'}])
+            self.assertEqual([f['mode'] for f in imports.folders(lib)], ['move', 'copy'])
+            fake_scan(os.path.join(mv, 'imported 1.png'), sheets=[(0.5, 0.5, 80, 120, 0, (250, 250, 248))])
+            fake_scan(os.path.join(cp, 'kept 1.png'), sheets=[(0.5, 0.5, 90, 120, 0, (240, 245, 250))])
+            old = _t.time() - 60
+            for f in (os.path.join(mv, 'imported 1.png'), os.path.join(cp, 'kept 1.png')):
+                os.utime(f, (old, old))
+            imports._sizes.clear()
+            self.assertEqual(imports.run_once(lib, core.file_scans), [])               # primo giro: solo guardate
+            done = imports.run_once(lib, core.file_scans)                             # ferme: entrano
+            self.assertEqual(len(done), 2)
+            self.assertFalse(os.path.exists(os.path.join(mv, 'imported 1.png')))        # move: via dalla cartella
+            self.assertTrue(os.path.exists(os.path.join(cp, 'kept 1.png')))             # copy: resta
+            self.assertTrue(os.path.exists(core.abspath('originals/imported/imported 1.png')))
+            self.assertTrue(os.path.exists(core.abspath('originals/kept/kept 1.png')))
+            self.assertEqual(imports.run_once(lib, core.file_scans), [])               # copy: non si riprende
+            # la stessa immagine messa di nuovo in "move": riconosciuta, non entra due volte, lascia la cartella
+            shutil.copy2(core.abspath('originals/imported/imported 1.png'), os.path.join(mv, 'again.png'))
+            os.utime(os.path.join(mv, 'again.png'), (old, old))
+            imports.run_once(lib, core.file_scans); imports.run_once(lib, core.file_scans)
+            self.assertFalse(os.path.exists(os.path.join(mv, 'again.png')))
+            self.assertFalse(os.path.exists(core.abspath('originals/again')))
+            self.assertEqual(os.listdir(core.scanning_dir()), [])                     # niente resta a meta'
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+
     def test_text_is_never_written_into_a_scan(self):
         # i tagli si', una scansione mai (nemmeno nei metadati): cosi' erano cambiate tre fonti
         from studio import core

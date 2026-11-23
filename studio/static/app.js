@@ -182,6 +182,7 @@ function renderCmdbar() {
     cmd('File', null, { menu: () => [
       { label: 'Show in Finder', do: () => api.post('open', { what: 'finder', rel: S.rel || [...S.sel][0] }) , disabled: !S.rel && !S.sel.size },
       { label: 'Open scans folder', do: () => api.post('open', { what: 'finder' }) },
+      { label: 'Import folders…', do: importFoldersDialog, note: 'Folders the studio watches while it is open, like Eagle’s Auto-Import: new images come into the library.' },
       '-',
       { label: 'Settings…', do: settingsDialog, kbd: '⌘,' },
       { label: 'Reload', do: () => location.reload(), kbd: '⌘R' },
@@ -1673,6 +1674,29 @@ async function readWholeScan() {
   } catch (e) { alertDialog('Read text', e.message); }
   busy(false, null, rel); if (S.rel !== rel) return;
   toggleTextPane(true); renderMirror(); draw();
+}
+// cartelle d'importazione (come l'Auto-Import di Eagle): le immagini nuove e ferme entrano nella libreria come una
+// scansione dello studio; "move" le toglie dalla cartella quando sono al sicuro, "copy" le lascia
+async function importFoldersDialog() {
+  const cur = await api.get('library/import_folders').catch(() => ({ folders: [] }));
+  let list = (cur.folders || []).map(f => ({ ...f }));
+  const box = h('div', {});
+  const draw = () => {
+    box.innerHTML = '';
+    if (!list.length) box.append(h('div', { class: 'muted', style: { margin: '6px 0' } }, 'No import folders yet.'));
+    list.forEach((f, i) => box.append(h('div', { class: 'row', style: { alignItems: 'center', gap: '8px' } },
+      h('span', { style: { flex: 1, overflowWrap: 'anywhere' } }, f.path),
+      h('select', { class: 'f', style: { width: 'auto' }, onchange: e => { f.mode = e.target.value; } },
+        h('option', { value: 'move', selected: f.mode !== 'copy' }, 'Move in (leaves the folder when safe)'),
+        h('option', { value: 'copy', selected: f.mode === 'copy' }, 'Copy in (stays in the folder)')),
+      h('span', { class: 'x', title: 'Stop watching this folder (its files are not touched)', onclick: () => { list.splice(i, 1); draw(); } }, '✕'))));
+  };
+  draw();
+  dialog('Import folders', 'Watched while the studio is open', h('div', { style: { width: '640px', lineHeight: 1.5 } },
+    h('div', { class: 'small muted', style: { marginBottom: '8px' } }, `Like Eagle’s Auto-Import. A new image in one of these folders, once it stops changing, comes into the library as a scan: copied and checked, filed with the same rules (never overwritten, a repeat recognised, lossless JPEG XL when the files are inside the library), in Jobs. The scans folder’s own inbox (${cur.inbox || 'inbox'}) is always watched, also with the studio closed.`),
+    box,
+    h('button', { class: 'btn small', style: { marginTop: '6px' }, onclick: async () => { const r = await api.post('choose_folder', { prompt: 'Watch this folder for new images' }); if (r.dir && !list.some(f => f.path === r.dir.replace(/\/$/, ''))) { list.push({ path: r.dir.replace(/\/$/, ''), mode: 'move' }); draw(); } } }, 'Add folder…')),
+    [['Save', async () => { const r = await api.post('library/import_folders', { folders: list }).catch(e => ({ error: e.message })); if (r.error) { alertDialog('Import folders', r.error); return false; } status(r.folders.length ? `Watching ${r.folders.length} import folder(s)` : 'No import folders'); return true; }, true], ['Cancel', () => true]]);
 }
 async function journalDialog() {
   const cur = await api.get('library/journal').catch(() => ({}));

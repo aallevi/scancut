@@ -48,6 +48,16 @@ Finder shows as one file. First it shows what will happen, then it moves them on
 - The files as they were are kept in `.scancut/studio-data/replaced/switch-<date>/` until you remove them.
 - Affinity and Preview open `.jxl` directly. Eagle does not, so cuts sent to Eagle go as PNG.
 
+## Import folders
+
+File › Import folders… chooses folders the studio watches while it is open, like Eagle's Auto-Import:
+a camera card, Downloads, another program's export folder. A new image there, once it stops changing,
+comes into the library as a scan: copied and checked, then filed with the same rules as the inbox (never
+overwritten; lossless JPEG XL when the files are inside the library), in Jobs. **Move in** takes it out
+of the folder once it is safe; **Copy in** leaves it there and never takes it twice. An image already in
+the library, byte for byte, under any name, is recognised and not added again. The scans folder's own
+inbox is always watched, also with the studio closed; scans made from the studio go straight in.
+
 ## Trash
 
 **Move to Trash** (on a source, or on a cut) takes it out of every view: a source goes with its cuts; a
